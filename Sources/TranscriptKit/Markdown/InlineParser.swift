@@ -169,9 +169,11 @@ enum InlineParser {
         }
         if open { closeAtEnd(&state, count: count) }
         // An HTML tag left open styles the rest of the block, as in a browser.
+        // While the block is still being written, its closing tag may yet
+        // come, which an animated custom tag waits for.
         for tag in state.tags {
             state.spans.append(PendingSpan(from: tag.piece + 1, to: state.pieces.count, traits: tag.traits,
-                                           link: tag.custom?.decoration.link, customTag: tag.custom))
+                                           link: tag.custom?.decoration.link, customTag: open ? tag.custom?.waitingToClose : tag.custom))
         }
         return state.result()
     }

@@ -56,7 +56,10 @@ suggests ("Make it cheaper", "Add a day trip to Sintra", "Why did Q3 jump?",
   shape the app defines itself (`Zigzag`), and `<hl>` a soft highlighter
   band (`SoftUnderline`, also the app's own) that starts a little left of
   the text where a wrapped line begins: shapes may draw up to 12 points
-  outside the text view. Pills get room from the tag's
+  outside the text view. When an `<hl>` tag finishes arriving, its band
+  sweeps in and each letter jumps as the band reaches it and springs back
+  (`Boing`, an animation the app defines); `-slow 1` makes it easier to
+  watch. Pills get room from the tag's
   `padding`; their shapes are made when the text is laid out, so they stream
   in with the text. Every stream and document in the app is parsed with these
   tags; a tag the app doesn't define shows as written.

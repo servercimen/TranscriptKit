@@ -98,19 +98,24 @@ public struct TranscriptDecoration: Equatable, Sendable {
     /// Shapes drawn behind or over the text: `.pill`, `.underline`, or the
     /// app's own `.custom` ones.
     public var shapes: [Shape]
+    /// Played when the tag finishes arriving in streamed text: see
+    /// `TranscriptAnimationRecipe`. Until then the tag's text shows without
+    /// its shapes.
+    public var animation: Animation?
 
     public init(traits: InlineSpan.Traits = [], foreground: TranscriptColor? = nil, background: TranscriptColor? = nil,
-                link: String? = nil, padding: CGFloat = 0, shapes: [Shape] = []) {
+                link: String? = nil, padding: CGFloat = 0, shapes: [Shape] = [], animation: Animation? = nil) {
         self.traits = traits
         self.foreground = foreground
         self.background = background
         self.link = link
         self.padding = max(padding, 0)
         self.shapes = shapes
+        self.animation = animation
     }
 
     /// Whether layout has to do anything for it beyond styling the text.
-    var shapesText: Bool { padding > 0 || !shapes.isEmpty }
+    var shapesText: Bool { padding > 0 || !shapes.isEmpty || animation != nil }
 }
 
 /// A color for decorations, with a value for light and one for dark
@@ -183,15 +188,33 @@ extension InlineSpan {
         public let name: String
         public let attributes: [String: String]
         public let decoration: TranscriptDecoration
+        /// Set, for a tag with an animation, while its closing tag has not
+        /// arrived and more text may still come: its animation plays once
+        /// this is no longer so. Always false for other tags.
+        let isOpen: Bool
+        /// `decoration.shapesText`, and whether it has an animation, worked
+        /// out once: layout asks on every update.
+        let shapesText: Bool
+        let isAnimated: Bool
 
-        init(name: String, attributes: [String: String], decoration: TranscriptDecoration) {
+        init(name: String, attributes: [String: String], decoration: TranscriptDecoration, isOpen: Bool = false) {
             self.name = name
             self.attributes = attributes
             self.decoration = decoration
+            self.isOpen = isOpen && decoration.animation != nil
+            self.shapesText = decoration.shapesText
+            self.isAnimated = decoration.animation != nil
+        }
+
+        /// The same tag, still waiting for its closing tag. Itself for a tag
+        /// without an animation, which looks the same either way.
+        var waitingToClose: CustomTag {
+            decoration.animation == nil || isOpen ? self
+                : CustomTag(name: name, attributes: attributes, decoration: decoration, isOpen: true)
         }
 
         public static func == (a: CustomTag, b: CustomTag) -> Bool {
-            a === b || (a.name == b.name && a.attributes == b.attributes && a.decoration == b.decoration)
+            a === b || (a.name == b.name && a.attributes == b.attributes && a.decoration == b.decoration && a.isOpen == b.isOpen)
         }
     }
 }

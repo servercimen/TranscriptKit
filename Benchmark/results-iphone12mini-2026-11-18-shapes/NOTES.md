@@ -68,3 +68,23 @@ Custom tags didn't cause this: those texts have none. It is the first time they 
   the simulator. In a screenshot taken while the answer was still streaming it starts at the same place; whether
   that line was then drawn in the streaming strip or already in a tile can't be told from a screenshot. The pixel
   tests cover the strip.
+
+## Tag animations (later the same day)
+
+The chat sample's `<hl>` boing on the same phone, Debug build of the app, release build of the tests.
+
+- **It plays.** Instruments (Animation Hitches with Points of Interest, three launches) shows each animation as
+  an interval of 1.64 to 1.67 seconds, its full length, and no hitch while it played. Each launch has a 230 to
+  280 ms hitch at launch and one-frame hitches at about 3.5 and 8 seconds, outside the animation (what causes
+  them wasn't looked into); one launch also had a one-frame hitch 90 ms after the animation ended.
+- **A bug the phone found:** an animation could end 7 ms after it started. Text arriving right after the tag
+  ("." after "Monday") changes the last letter's advance through kerning, and the check that a playing tag had
+  not moved compared glyph widths too. It now compares where glyphs start; a test covers ".", ",", "'s" and words.
+- **Starting an animation** (the recipe plus drawing 45 glyph images at 3x): 0.46 to 0.64 ms on the main thread.
+- **Layout per update** with these changes: 32.9 µs for the paragraph with pills and markers (32.1 to 32.4 this
+  morning), 22.3 to 22.4 µs for the same paragraph without shapes (22.4 to 22.5), 19.4 to 19.5 µs for the
+  benchmark answer (19.6 to 19.8).
+- All 117 tests pass on the phone, among them the pixel test that the animation's last frame matches the view's own
+  drawing.
+- Screen recording (`devicectl device capture screen-record`) is not supported on this phone, and screenshots
+  take about a second each, so no screenshot caught the animation mid-way; Instruments did the checking.

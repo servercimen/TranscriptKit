@@ -19,6 +19,7 @@ public struct TranscriptText: UIViewRepresentable {
     private let source: Source
     private let style: TranscriptStyle
     private var loader: (@Sendable (TranscriptImage) async -> CGImage?)?
+    private var animatesTags = true
 
     public init(_ document: TranscriptDocument, style: TranscriptStyle = .init()) {
         self.source = .document(document)
@@ -39,6 +40,14 @@ public struct TranscriptText: UIViewRepresentable {
         return copy
     }
 
+    /// Whether custom tags with an animation play it when they finish
+    /// arriving; see `TranscriptTextView.animatesTags`. On by default.
+    public func animatesTags(_ animates: Bool) -> TranscriptText {
+        var copy = self
+        copy.animatesTags = animates
+        return copy
+    }
+
     public func makeUIView(context: Context) -> TranscriptTextView {
         let view = TranscriptTextView()
         view.setContentHuggingPriority(.required, for: .vertical)
@@ -48,6 +57,7 @@ public struct TranscriptText: UIViewRepresentable {
 
     public func updateUIView(_ view: TranscriptTextView, context: Context) {
         view.style = style
+        view.animatesTags = animatesTags
         switch source {
         case .document(let document): view.document = document
         case .stream(let stream): view.stream = stream

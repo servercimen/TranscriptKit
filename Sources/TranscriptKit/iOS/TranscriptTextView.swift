@@ -1,5 +1,12 @@
 #if canImport(UIKit) && !os(watchOS)
+import os
 import UIKit
+
+/// Why tags animate or not, at the debug level: shown in Xcode's console and
+/// in Console with debug messages on, and not stored otherwise.
+private let animationLog = Logger(subsystem: "TranscriptKit", category: "TagAnimations")
+/// Each tag animation as an interval in Instruments' Points of Interest.
+private let animationSignposter = OSSignposter(subsystem: "TranscriptKit", category: .pointsOfInterest)
 
 /// A read-only text view that draws a whole transcript with Core Text and
 /// exposes it to the system as one selectable document.
@@ -64,6 +71,16 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         }
     }
 
+    /// Whether custom tags with an animation play it when they finish
+    /// arriving (see `TranscriptAnimationRecipe`). Off, or with Reduce
+    /// Motion on, they just appear as they end up.
+    public var animatesTags = true {
+        didSet {
+            guard animatesTags != oldValue else { return }
+            updateAnimationsEnabled()
+        }
+    }
+
     /// Loads the picture for an image in the text, called off the main thread
     /// the first time each image source is laid out. Return nil to keep
     /// showing the image's alt text.
@@ -114,6 +131,20 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     private var selection: Range<Int>?
     private let textInteraction = UITextInteraction(for: .nonEditable)
     private let emptyInputView = UIView()
+    /// Holds the layers of tags' animations, above the tail layer.
+    private let animationLayer = CALayer()
+    /// Tags whose animations are playing, which the tiles leave out.
+    private var playing: [TagKey: PlayingTag] = [:]
+    private var playingKeys: Set<TagKey> = []
+
+    private struct PlayingTag {
+        let tag: AnimatedTag
+        let layer: CALayer
+        /// When it started, telling apart two plays of one tag.
+        let start: CFTimeInterval
+        let signpost: OSSignpostIntervalState
+    }
+
     /// The drawn text, in fixed-height tiles that exist only near the visible
     /// area. Memory stays flat however long the document is, and an update
     /// redraws only the tiles it touches.
@@ -146,6 +177,11 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         tailLayer.zPosition = 1
         tailLayer.actions = ["contents": NSNull(), "position": NSNull(), "bounds": NSNull(), "hidden": NSNull()]
         canvas.layer.addSublayer(tailLayer)
+        animationLayer.zPosition = 2
+        animationLayer.actions = ["bounds": NSNull(), "position": NSNull(), "sublayers": NSNull()]
+        canvas.layer.addSublayer(animationLayer)
+        NotificationCenter.default.addObserver(self, selector: #selector(reduceMotionChanged),
+                                               name: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil)
         engine.setOutputHandler { [weak self] in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.installFromEngine() }
@@ -159,7 +195,9 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         self.linkTap = linkTap
         registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitDisplayScale.self]) { (view: TranscriptTextView, _) in
             // The tiles take over everything, in the new colours; the tail
-            // starts again, in them too, with the next append.
+            // starts again, in them too, with the next append. Animations,
+            // drawn in the old ones, end.
+            view.finishAllAnimations()
             view.updateTailStyle()
             view.handTailToTiles()
             view.tiles.values.forEach { $0.setNeedsDisplay() }
@@ -200,6 +238,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         super.didMoveToWindow()
         scrollObservation = nil
         updateTailStyle()
+        updateAnimationsEnabled()
         guard window != nil else {
             handTailToTiles()
             return
@@ -304,7 +343,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         }
         let colors = resolvedColors()
         currentLayout.draw(in: context, dirtyRect: rect, text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent,
-                           dark: colors.dark)
+                           dark: colors.dark, hiding: playingKeys)
     }
 
     private func resolvedColors() -> TailRenderer.Colors {
@@ -397,11 +436,18 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         guard output.source == source, output.layout.width == bounds.width, output.layout.style == style else {
             // Made for an earlier source, width or style; a synchronous
             // relayout has replaced it or is about to.
+            engine.settleAnimations(output.started)
             return
         }
         let isAppend = output.isAppend && output.base != nil && output.base === installed
         install(output.layout, changedTop: isAppend ? output.changedTop : nil, tail: output.tail,
-                restyled: isAppend ? output.restyled : [])
+                restyled: isAppend ? output.restyled : [], started: output.started)
+        // A tail drawn without a tag whose animation has ended since: the
+        // tiles draw that part instead.
+        if output.tail != nil, !output.hidden.isSubset(of: playingKeys) {
+            engine.settleAnimations(output.hidden.subtracting(playingKeys))
+            handTailToTiles()
+        }
     }
 
     /// Lays out synchronously, for when the view cannot wait for the
@@ -430,7 +476,10 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     ///   transaction as the layout, so the two always match.
     /// - Parameter restyled: with `changedTop`, blocks above it drawn
     ///   differently in place; only those are drawn again, not all below them.
-    private func install(_ layout: DocumentLayout, changedTop: CGFloat?, tail: TailRenderer.Frame?, restyled: [CGRect] = []) {
+    /// - Parameter started: animated tags that closed in this update, whose
+    ///   animations start now.
+    private func install(_ layout: DocumentLayout, changedTop: CGFloat?, tail: TailRenderer.Frame?, restyled: [CGRect] = [],
+                         started: [TagKey] = []) {
         TranscriptDiagnostics.count(\.installs)
         let old = installed
         let isAppend = changedTop != nil && old != nil
@@ -471,10 +520,116 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             updateCanvas(forceRedraw: true)
         }
 
+        if isAppend {
+            // A playing tag whose glyphs moved (its line wrapped otherwise)
+            // ends where it is.
+            for (key, play) in playing where layout.animatedTag(key).map({ !$0.isPlaced(like: play.tag) }) ?? true {
+                finishAnimation(key)
+            }
+            for key in started { startAnimation(key, in: layout) }
+        } else {
+            // Everything was drawn again, at rest.
+            removeAllAnimations()
+            engine.settleAnimations(started)
+        }
+
         if !isAppend {
             inputDelegate?.textDidChange(self)
             refreshSelectionDisplay()
         }
+    }
+
+    // MARK: Tag animations
+
+    @objc private func reduceMotionChanged() {
+        updateAnimationsEnabled()
+    }
+
+    private func updateAnimationsEnabled() {
+        let enabled = animatesTags && window != nil && !UIAccessibility.isReduceMotionEnabled
+        if animatesTags, window != nil, UIAccessibility.isReduceMotionEnabled {
+            animationLog.debug("Tags are not animated: Reduce Motion is on")
+        }
+        engine.setAnimationsEnabled(enabled)
+        if !enabled { finishAllAnimations() }
+    }
+
+    /// Plays `key`'s animation over the text, which from now on leaves it out.
+    private func startAnimation(_ key: TagKey, in layout: DocumentLayout) {
+        if playing[key] != nil { finishAnimation(key) }
+        guard let tag = layout.animatedTag(key) else {
+            engine.settleAnimations([key])
+            return
+        }
+        let animation = tag.animation.animation(for: tag.fragments)
+        let colors = resolvedColors()
+        let scale = traitCollection.displayScale
+        let sprites = TagAnimationPlayer.sprites(for: tag, animation: animation,
+                                                 appearance: .init(text: colors.text, dark: colors.dark, scale: scale))
+        let start = CACurrentMediaTime()
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        let layer = TagAnimationPlayer.makeLayer(sprites: sprites, animation: animation, scale: scale, beginTime: start)
+        animationLayer.addSublayer(layer)
+        CATransaction.commit()
+        let signpost = animationSignposter.beginInterval("Tag animation", id: animationSignposter.makeSignpostID(),
+                                                         "\(key.name, privacy: .public)")
+        playing[key] = PlayingTag(tag: tag, layer: layer, start: start, signpost: signpost)
+        playingKeys.insert(key)
+        animationLog.debug("""
+            Playing <\(key.name, privacy: .public)>: \(sprites.count) sprites on \(tag.parts.count) lines, \
+            \(animation.duration, format: .fixed(precision: 2)) s
+            """)
+        redrawTiles(in: band(of: tag))
+        DispatchQueue.main.asyncAfter(deadline: .now() + animation.duration) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self, self.playing[key]?.start == start else { return }
+                self.finishAnimation(key)
+            }
+        }
+    }
+
+    /// Ends `key`'s animation: the tiles and the tail draw the tag again, in
+    /// the same transaction as its layers go.
+    private func finishAnimation(_ key: TagKey) {
+        guard let play = playing.removeValue(forKey: key) else { return }
+        animationSignposter.endInterval("Tag animation", play.signpost)
+        playingKeys.remove(key)
+        engine.settleAnimations([key])
+        let band = band(of: play.tag)
+        // The tail was drawn without the tag: the tiles take over from it.
+        if tailTop < band.upperBound { handTailToTiles() }
+        redrawTiles(in: band)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        play.layer.removeFromSuperlayer()
+        CATransaction.commit()
+    }
+
+    private func finishAllAnimations() {
+        for key in Array(playing.keys) { finishAnimation(key) }
+    }
+
+    /// Drops every animation without redrawing, for when everything is
+    /// being drawn again anyway.
+    private func removeAllAnimations() {
+        guard !playing.isEmpty else { return }
+        engine.settleAnimations(playingKeys)
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        for play in playing.values {
+            play.layer.removeFromSuperlayer()
+            animationSignposter.endInterval("Tag animation", play.signpost)
+        }
+        CATransaction.commit()
+        playing.removeAll()
+        playingKeys.removeAll()
+    }
+
+    /// The rows a tag's drawing can change, its shapes' reach included.
+    private func band(of tag: AnimatedTag) -> ClosedRange<CGFloat> {
+        let overhang = TranscriptPath.maximumOverhang
+        return (tag.band.lowerBound - overhang)...(tag.band.upperBound + overhang)
     }
 
     /// Asks the system to re-read selection geometry, e.g. after a reflow or a
@@ -502,6 +657,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     public override func layoutSubviews() {
         super.layoutSubviews()
         canvas.frame = bounds
+        animationLayer.frame = canvas.bounds
         if bounds.width > 0, installed?.width != bounds.width {
             relayoutNow()
             refreshSelectionDisplay()

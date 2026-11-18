@@ -184,7 +184,7 @@ final class BlockLayout: @unchecked Sendable {
             if let decorated, let text {
                 decorations = LineDecorations.make(line: ctLine, range: range, indexBase: indexBase, visibleWidth: metrics.width,
                                                    top: -metrics.ascent, bottom: metrics.height - metrics.ascent,
-                                                   lineX: insets.leading + leading, blockWidth: blockWidth,
+                                                   lineX: insets.leading + leading, blockWidth: blockWidth, block: block.id,
                                                    tags: decorated, text: text, textBase: indexBase)
             }
             lines.append(Line(
@@ -387,7 +387,8 @@ final class BlockLayout: @unchecked Sendable {
                                                            visibleWidth: metrics.width, top: -metrics.ascent,
                                                            bottom: metrics.height - metrics.ascent,
                                                            lineX: columnX[column] + padding + offset, blockWidth: blockWidth,
-                                                           tags: decorated, text: cell.text, textBase: cell.range.lowerBound)
+                                                           block: block.id, tags: decorated, text: cell.text,
+                                                           textBase: cell.range.lowerBound)
                     }
                     lines.append(Line(
                         ctLine: ctLine, indexBase: cell.range.lowerBound, range: range,

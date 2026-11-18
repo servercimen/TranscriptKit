@@ -46,6 +46,11 @@ final class LayoutEngine: @unchecked Sendable {
         /// The end of the document, drawn, while text is being appended.
         /// The view shows it in place of its own drawing from `tail.top` down.
         let tail: TailRenderer.Frame?
+        /// Animated tags that closed in this update: the view plays their
+        /// animations from now on. Their rows are in `restyled`.
+        var started: [TagKey] = []
+        /// The tags `tail` was drawn without, as their animations play.
+        var hidden: Set<TagKey> = []
     }
 
     let queue = DispatchQueue(label: "TranscriptKit.layout", qos: .userInitiated)
@@ -71,6 +76,10 @@ final class LayoutEngine: @unchecked Sendable {
     /// How to draw the tail, or nil to draw none (no window yet).
     private var tailStyle: (colors: TailRenderer.Colors, scale: CGFloat, generation: Int)?
     private var tailStyleGeneration = 0
+    /// Whether tags that close start their animations.
+    private var animationsEnabled = false
+    /// Tags whose animations play: the tail is drawn without them.
+    private var playing: Set<TagKey> = []
 
     // Only touched on `queue`.
     private var latestDocument = TranscriptDocument()
@@ -100,6 +109,18 @@ final class LayoutEngine: @unchecked Sendable {
             tailStyleGeneration += 1
             tailStyle = colors.map { ($0, scale, tailStyleGeneration) }
         }
+    }
+
+    /// Whether animated tags that close from now on start their animations.
+    /// Any thread.
+    func setAnimationsEnabled(_ enabled: Bool) {
+        lock.withLock { animationsEnabled = enabled }
+    }
+
+    /// The view has stopped playing these tags' animations: tails are drawn
+    /// with them again. Any thread.
+    func settleAnimations(_ keys: some Sequence<TagKey>) {
+        lock.withLock { playing.subtract(keys) }
     }
 
     /// Stops drawing the tail until text is appended again, for when the
@@ -200,18 +221,30 @@ final class LayoutEngine: @unchecked Sendable {
         var isAppend = false
         var changedTop: CGFloat?
         var restyled: [CGRect] = []
+        var started: [TagKey] = []
         if let previous, layout.document.extends(previous.document) {
             isAppend = true
             (changedTop, restyled) = layout.changes(since: previous)
+            // Tags that closed in this update start their animations: from
+            // now on the tail and the tiles leave them to the view.
+            if lock.withLock({ animationsEnabled }) {
+                for key in layout.newlyClosedAnimatedTags(since: previous) {
+                    guard let tag = layout.animatedTag(key) else { continue }
+                    started.append(key)
+                    restyled.append(CGRect(x: 0, y: tag.band.lowerBound, width: layout.width, height: tag.band.upperBound - tag.band.lowerBound))
+                }
+                if !started.isEmpty { lock.withLock { playing.formUnion(started) } }
+            }
         }
-        let tail = drawTail(of: layout, changedTop: changedTop, restyled: restyled)
+        let hidden = lock.withLock { playing }
+        let tail = drawTail(of: layout, changedTop: changedTop, restyled: restyled, hiding: hidden)
         post(Output(layout: layout, source: request.source, base: previous, isAppend: isAppend, changedTop: changedTop,
-                    restyled: restyled, tail: tail))
+                    restyled: restyled, tail: tail, started: started, hidden: hidden))
     }
 
     /// Draws `layout`'s tail if text is being appended. The first append
     /// starts the tail; it stays on for every output until settled.
-    private func drawTail(of layout: DocumentLayout, changedTop: CGFloat?, restyled: [CGRect]) -> TailRenderer.Frame? {
+    private func drawTail(of layout: DocumentLayout, changedTop: CGFloat?, restyled: [CGRect], hiding: Set<TagKey>) -> TailRenderer.Frame? {
         guard let style = lock.withLock({ tailStyle }) else {
             tailActive = false
             return nil
@@ -227,7 +260,7 @@ final class LayoutEngine: @unchecked Sendable {
         }
         if changedTop != nil { tailActive = true }
         guard tailActive, let tailRenderer else { return nil }
-        guard let frame = tailRenderer.render(layout, changedTop: changedTop, restyled: restyled) else {
+        guard let frame = tailRenderer.render(layout, changedTop: changedTop, restyled: restyled, hiding: hiding) else {
             // No surface free: the view draws the tail itself until the next append.
             tailActive = false
             tailRenderer.reset()
@@ -245,7 +278,8 @@ final class LayoutEngine: @unchecked Sendable {
                 let top: CGFloat? = earlier.changedTop.flatMap { a in output.changedTop.map { min(a, $0) } }
                 mailbox = Output(layout: output.layout, source: output.source, base: earlier.base,
                                  isAppend: earlier.isAppend && output.isAppend, changedTop: top,
-                                 restyled: earlier.restyled + output.restyled, tail: output.tail)
+                                 restyled: earlier.restyled + output.restyled, tail: output.tail,
+                                 started: earlier.started + output.started, hidden: output.hidden)
             } else {
                 mailbox = output
             }
@@ -285,10 +319,14 @@ final class LayoutEngine: @unchecked Sendable {
             base = layout
             measured = nil
             // The view draws everything itself after this; the tail starts
-            // again with the next append.
+            // again with the next append. Animations stop: the view shows
+            // every tag at rest after a relayout.
             tailActive = false
             tailRenderer?.reset()
-            lock.withLock { mailbox = nil }
+            lock.withLock {
+                mailbox = nil
+                playing.removeAll()
+            }
             return (layout, latestSource)
         }
     }

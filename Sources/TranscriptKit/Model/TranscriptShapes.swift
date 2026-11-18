@@ -89,11 +89,14 @@ public struct TranscriptFragment: Sendable, Equatable {
     /// edge is left of 0 by the line's indent (a list item's, say) plus the
     /// side overhang. Anything outside it is cut off.
     public let visibleRect: CGRect
+    /// The glyphs of the tag's text on this line, in order, for a tag with
+    /// an animation; empty for other tags.
+    public let glyphs: [TranscriptGlyph]
 
     /// Made by layout; public so apps can test their recipes.
     public init(textRect: CGRect, rect: CGRect, isStart: Bool, isEnd: Bool, ascent: CGFloat, descent: CGFloat, xHeight: CGFloat,
                 capHeight: CGFloat, underlineOffset: CGFloat, underlineThickness: CGFloat, seed: UInt64,
-                visibleRect: CGRect = .infinite) {
+                visibleRect: CGRect = .infinite, glyphs: [TranscriptGlyph] = []) {
         self.textRect = textRect
         self.rect = rect
         self.isStart = isStart
@@ -106,6 +109,7 @@ public struct TranscriptFragment: Sendable, Equatable {
         self.underlineThickness = underlineThickness
         self.seed = seed
         self.visibleRect = visibleRect
+        self.glyphs = glyphs
     }
 }
 

@@ -212,7 +212,9 @@ public struct TranscriptBlock: Identifiable, Equatable, Sendable {
             guard old.range.lowerBound == new.range.lowerBound, old.traits == new.traits,
                   (old.link == nil) == (new.link == nil),
                   old.extras === new.extras || (old.image == new.image && old.reference == new.reference
-                                                && old.customTag?.decoration == new.customTag?.decoration) else { return false }
+                                                && old.customTag?.decoration == new.customTag?.decoration
+                                                // An animated tag that closed now draws its shapes.
+                                                && old.customTag?.isOpen == new.customTag?.isOpen) else { return false }
             if old.range.upperBound != new.range.upperBound, old.range.upperBound != oldLength { return false }
         }
         // Any further spans must start in the new text.

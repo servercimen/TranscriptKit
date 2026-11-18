@@ -13,6 +13,8 @@ import UIKit
 /// - `<todo>`: a zigzag under the text, a shape the app draws itself.
 /// - `<hl>`: a soft highlighter band under the text, also the app's own
 ///   shape, which reaches a little left of the text where a line starts with it.
+///   When the tag finishes arriving, the band sweeps in and each letter jumps
+///   as it passes (`Boing`, the app's own animation).
 enum SampleTags {
     static let all: [TranscriptTag] = [
         TranscriptTag("mark", TranscriptDecoration(
@@ -44,10 +46,47 @@ enum SampleTags {
                            cornerRadius: 5)]
         )),
         TranscriptTag("todo", TranscriptDecoration(shapes: [.custom(Zigzag(color: TranscriptColor(UIColor.systemRed)))])),
-        TranscriptTag("hl", TranscriptDecoration(
-            shapes: [.custom(SoftUnderline(color: TranscriptColor(UIColor.systemYellow.withAlphaComponent(0.31))))]
-        )),
+        TranscriptTag("hl", TranscriptDecoration(shapes: [.custom(highlight)], animation: .custom(Boing(band: highlight)))),
     ]
+
+    private static let highlight = SoftUnderline(color: TranscriptColor(UIColor.systemYellow.withAlphaComponent(0.31)))
+}
+
+/// The tag's band sweeps in under its text, line after line, and each letter
+/// jumps as the band reaches it and springs back, squashing a little. The
+/// band is the tag's own shape, so the animation ends on exactly what the
+/// tag draws once it is over.
+struct Boing: TranscriptAnimationRecipe {
+    var band: SoftUnderline
+    /// How fast the band's front moves, in points per second.
+    var speed: CGFloat = 420
+    /// How high a letter jumps, as a fraction of its capital letters' height.
+    var lift: CGFloat = 0.32
+
+    func animation(for fragments: [TranscriptFragment]) -> TranscriptAnimation {
+        var animation = TranscriptAnimation()
+        var time: TimeInterval = 0.05
+        for (line, fragment) in fragments.enumerated() {
+            let sweep = Double(max(fragment.textRect.width, 1) / speed)
+            for path in band.paths(for: fragment) {
+                animation.paths.append(.init(fragment: line, path: path, reveal: .ramp(from: 0, to: 1, start: time, duration: sweep)))
+            }
+            let height = -fragment.capHeight * lift
+            for (index, glyph) in fragment.glyphs.enumerated() {
+                // A moment before the band's front reaches the letter's middle.
+                let reached = time + Double((glyph.bounds.midX - fragment.textRect.minX) / speed) - 0.04
+                let jump = TranscriptCurve.spring(peak: height, start: max(reached, 0), frequency: 3.6, damping: 0.32)
+                animation.glyphs.append(.init(
+                    fragment: line, glyph: index, offsetY: jump,
+                    // Narrower and taller going up, wider and flatter coming down.
+                    scaleX: jump.map { 1 - 0.05 * $0 / height },
+                    scaleY: jump.map { 1 + 0.05 * $0 / height }
+                ))
+            }
+            time += sweep
+        }
+        return animation
+    }
 }
 
 /// A soft highlighter band under the text, from a little above the baseline

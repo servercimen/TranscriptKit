@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import Testing
 @testable import TranscriptKit
@@ -166,3 +167,38 @@ func layoutTiming() {
     }
 }
 
+
+/// What starting a tag's animation costs the main thread: asking the recipe
+/// for the animation and drawing each glyph and path into its image.
+@Test(.enabled(if: ProcessInfo.processInfo.environment["TRANSCRIPTKIT_TIMING"] != nil))
+func animationStartTiming() throws {
+    struct Jump: TranscriptAnimationRecipe {
+        func animation(for fragments: [TranscriptFragment]) -> TranscriptAnimation {
+            var animation = TranscriptAnimation()
+            for (line, fragment) in fragments.enumerated() {
+                for index in fragment.glyphs.indices {
+                    let jump = TranscriptCurve.spring(peak: -3, start: Double(index) * 0.02)
+                    animation.glyphs.append(.init(fragment: line, glyph: index, offsetY: jump, scaleX: jump.map { 1 + $0 / 60 },
+                                                  scaleY: jump.map { 1 - $0 / 60 }))
+                }
+            }
+            return animation
+        }
+    }
+    let band = TranscriptDecoration.Shape.underline(.marker, color: TranscriptColor(red: 1, green: 0.8, blue: 0, alpha: 0.4))
+    let tags = [TranscriptTag("hl", TranscriptDecoration(shapes: [band], animation: .custom(Jump())))]
+    let text = "Fixed the <hl>login timeouts that support flagged on Monday</hl>, then took the rest."
+    let layout = DocumentLayout(document: MarkdownStreamParser.document(from: text, idPrefix: "t", tags: tags), width: 300)
+    let tag = try #require(layout.animatedTag(TagKey(block: "t-0", start: 10, name: "hl")))
+    var best = Double.infinity
+    var count = 0
+    for _ in 0..<20 {
+        let start = DispatchTime.now().uptimeNanoseconds
+        let animation = tag.animation.animation(for: tag.fragments)
+        let sprites = TagAnimationPlayer.sprites(for: tag, animation: animation,
+                                                 appearance: .init(text: CGColor(gray: 0, alpha: 1), dark: false, scale: 3))
+        count = sprites.count
+        best = min(best, Double(DispatchTime.now().uptimeNanoseconds - start) / 1e3)
+    }
+    print("ANIMATION start, \(count) sprites (45 characters on 2 lines, 3x): \(String(format: "%.0f", best)) µs")
+}

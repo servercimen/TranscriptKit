@@ -107,7 +107,9 @@ final class TailRenderer {
     ///   some other way.
     /// - Parameter restyled: blocks above `changedTop` drawn differently in
     ///   place; the parts of them inside the tail are drawn again.
-    func render(_ layout: DocumentLayout, changedTop: CGFloat?, restyled: [CGRect] = []) -> Frame? {
+    /// - Parameter hiding: animated tags playing their animation, which the
+    ///   view draws itself; see `DocumentLayout.draw`.
+    func render(_ layout: DocumentLayout, changedTop: CGFloat?, restyled: [CGRect] = [], hiding: Set<TagKey> = []) -> Frame? {
         if layout.width != width || context == nil {
             guard makeContext(width: layout.width) else { return nil }
             top = nil
@@ -149,7 +151,7 @@ final class TailRenderer {
             context.clip(to: band)
             context.clear(band)
             layout.draw(in: context, dirtyRect: band, text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent,
-                        dark: colors.dark)
+                        dark: colors.dark, hiding: hiding)
             context.restoreGState()
         }
         let firstRow = max(0, min(pixelHeight, Int(((start - currentTop) * scale).rounded(.down))))

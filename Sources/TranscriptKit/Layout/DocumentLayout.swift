@@ -291,6 +291,13 @@ public final class DocumentLayout: @unchecked Sendable {
     /// custom tags' colors.
     public func draw(in context: CGContext, dirtyRect: CGRect, text: CGColor, codeBackground: CGColor, accent: CGColor,
                      dark: Bool = false) {
+        draw(in: context, dirtyRect: dirtyRect, text: text, codeBackground: codeBackground, accent: accent, dark: dark, hiding: [])
+    }
+
+    /// - Parameter hiding: animated tags whose animation is playing, drawn
+    ///   above the text instead: their glyphs and shapes are left out.
+    func draw(in context: CGContext, dirtyRect: CGRect, text: CGColor, codeBackground: CGColor, accent: CGColor,
+              dark: Bool, hiding: Set<TagKey>) {
         context.saveGState()
         defer { context.restoreGState() }
         // Core Text draws y-up; flip glyphs so they are upright in a y-down context.
@@ -336,16 +343,22 @@ public final class DocumentLayout: @unchecked Sendable {
         // Drawn run by run: a run with its own color (a link) leaves that color
         // set on the context, so the text color is restored before each run.
         // Strikethrough and underline are drawn here too; images separately.
-        func drawLine(_ line: CTLine, at origin: CGPoint) {
+        // The glyphs for the characters in `hidden` (the line's string
+        // indexes) are left out.
+        func drawLine(_ line: CTLine, at origin: CGPoint, hidden: [Range<Int>] = []) {
             let runs = CTLineGetGlyphRuns(line) as! [CTRun]
             drawHighlights(runs, at: origin)
             for run in runs {
                 let attributes = CTRunGetAttributes(run) as NSDictionary
                 if attributes[Self.imageKey] != nil { continue }
-                let custom = (attributes[Self.foregroundKey] as? TranscriptColor)?.cgColor(dark: dark)
-                context.setFillColor(custom ?? text)
+                Self.setGlyphColor(of: attributes, in: context, text: text, dark: dark)
                 context.textPosition = origin
-                CTRunDraw(run, context, CFRange(location: 0, length: 0))
+                if hidden.isEmpty {
+                    CTRunDraw(run, context, CFRange(location: 0, length: 0))
+                } else {
+                    for range in Self.glyphRanges(of: run, leavingOut: hidden) { CTRunDraw(run, context, range) }
+                }
+                let custom = (attributes[Self.foregroundKey] as? TranscriptColor)?.cgColor(dark: dark)
                 let strike = attributes[Self.strikethroughKey] != nil
                 let underline = attributes[Self.underlineKey] != nil
                 guard strike || underline, let font = attributes[kCTFontAttributeName].map({ $0 as! CTFont }) else { continue }
@@ -380,12 +393,16 @@ public final class DocumentLayout: @unchecked Sendable {
             guard let decorations = line.decorations else { return }
             let paths = over ? decorations.over : decorations.behind
             guard !paths.isEmpty else { return }
+            let owners = over ? decorations.overTags : decorations.behindTags
             context.saveGState()
             let side = TranscriptPath.maximumSideOverhang
             context.clip(to: CGRect(x: -side, y: entry.y + line.frame.minY - decorations.inkAbove, width: entry.layout.width + 2 * side,
                                     height: line.frame.height + decorations.inkAbove + decorations.inkBelow))
             context.translateBy(x: line.frame.minX, y: entry.y + line.baseline)
-            for path in paths { path.draw(in: context, dark: dark) }
+            for (index, path) in paths.enumerated() {
+                if !hiding.isEmpty, index < owners.count, let owner = owners[index], hiding.contains(owner) { continue }
+                path.draw(in: context, dark: dark)
+            }
             context.restoreGState()
         }
 
@@ -475,7 +492,9 @@ public final class DocumentLayout: @unchecked Sendable {
 
             for index in visible where !lines[index].range.isEmpty {
                 let line = lines[index]
-                drawLine(line.ctLine, at: CGPoint(x: line.frame.minX, y: entry.y + line.baseline))
+                let hidden = line.decorations?.hiddenRanges(hiding) ?? []
+                drawLine(line.ctLine, at: CGPoint(x: line.frame.minX, y: entry.y + line.baseline),
+                         hidden: hidden.map { ($0.lowerBound - line.indexBase)..<($0.upperBound - line.indexBase) })
             }
 
             for attachment in layout.attachments {
@@ -486,6 +505,35 @@ public final class DocumentLayout: @unchecked Sendable {
 
             for index in visible { drawShapes(of: lines[index], in: entry, over: true) }
         }
+    }
+
+    /// The fill color a run's glyphs are drawn with: the tag's own color, or
+    /// the text's. A run with a color attribute (a link) uses that instead.
+    static func setGlyphColor(of attributes: NSDictionary, in context: CGContext, text: CGColor, dark: Bool) {
+        let custom = (attributes[foregroundKey] as? TranscriptColor)?.cgColor(dark: dark)
+        context.setFillColor(custom ?? text)
+    }
+
+    /// The runs of `run`'s glyphs whose characters are not in `hidden`.
+    static func glyphRanges(of run: CTRun, leavingOut hidden: [Range<Int>]) -> [CFRange] {
+        let count = CTRunGetGlyphCount(run)
+        let stringRange = CTRunGetStringRange(run)
+        let runChars = stringRange.location..<(stringRange.location + stringRange.length)
+        guard hidden.contains(where: { $0.overlaps(runChars) }) else { return [CFRange(location: 0, length: 0)] }
+        var indices = [CFIndex](repeating: 0, count: count)
+        CTRunGetStringIndices(run, CFRange(location: 0, length: 0), &indices)
+        var ranges: [CFRange] = []
+        var start: Int?
+        for glyph in 0..<count {
+            let shown = !hidden.contains { $0.contains(indices[glyph]) }
+            if shown, start == nil { start = glyph }
+            if !shown, let first = start {
+                ranges.append(CFRange(location: first, length: glyph - first))
+                start = nil
+            }
+        }
+        if let first = start { ranges.append(CFRange(location: first, length: count - first)) }
+        return ranges
     }
 
     private static let imageKey = TranscriptStyle.imageKey.rawValue

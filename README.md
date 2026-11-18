@@ -24,7 +24,8 @@ text streaming in at hundreds of characters a second doesn't make scrolling stut
   - HTML entities and a few HTML tags.
 - **Custom tags.** Define tags such as `<mention id="ana">@Ana</mention>` and how they look: font traits, colours, a
   link, padding, and shapes drawn behind or over the text. Pills and underlines (solid, dashed, dotted, wavy,
-  marker) are built in, and you can draw shapes of your own.
+  marker) are built in, and you can draw shapes of your own, and animate a tag's letters and shapes when it
+  finishes arriving.
 - **SwiftUI and UIKit.** `TranscriptText` for SwiftUI, `TranscriptTextView` for UIKit.
 
 ## Requirements
@@ -106,6 +107,37 @@ Tags the app doesn't define show as written. For a shape of your own, implement 
 paths for each line the tag's text is on and may draw a little outside the text, up to 12 points to the sides,
 past the view's edges. The chat sample has two such shapes, `Zigzag` and `SoftUnderline`, in
 [`SampleTags.swift`](Examples/ChatSample/ChatSample/SampleTags.swift).
+
+### Animated tags
+
+A tag can also play an animation when its closing tag arrives in streamed text. Implement
+`TranscriptAnimationRecipe`: from the tag's fragments, which then list their glyphs, it returns curves over time for
+each glyph (offset, scale, rotation) and paths to reveal or fade in.
+
+```swift
+struct Hop: TranscriptAnimationRecipe {
+    func animation(for fragments: [TranscriptFragment]) -> TranscriptAnimation {
+        var animation = TranscriptAnimation()
+        for (line, fragment) in fragments.enumerated() {
+            for (index, glyph) in fragment.glyphs.enumerated() {
+                // One letter after the other, a few points up and back.
+                let start = Double(glyph.index) * 0.03
+                animation.glyphs.append(.init(fragment: line, glyph: index, offsetY: .spring(peak: -4, start: start)))
+            }
+        }
+        return animation
+    }
+}
+
+TranscriptTag("hop", TranscriptDecoration(animation: .custom(Hop())))
+```
+
+Until its closing tag arrives, an animated tag shows its text without its shapes. The view then draws the tag's
+glyphs and the animation's paths on Core Animation layers above the text, and draws the tag as usual again when
+the animation ends, so the last frame should match that: glyphs back in place, paths fully shown. Only tags that
+close while text streams in are animated, not earlier messages. Turn animations off with `animatesTags` on the view
+or `.animatesTags(false)` on `TranscriptText`; with Reduce Motion on, nothing is animated. The chat sample's `Boing`
+sweeps a highlighter band in under the text while each letter jumps as the band reaches it.
 
 ### Images
 

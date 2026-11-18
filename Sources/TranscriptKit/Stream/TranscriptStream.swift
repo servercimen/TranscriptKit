@@ -8,6 +8,8 @@ import UIKit
 struct StreamUpdate: Sendable {
     let document: TranscriptDocument
     let sequence: Int
+    /// `finish()` has been called and no text appended since.
+    var isFinished = false
 }
 
 /// Streamed Markdown that views read directly, without going through SwiftUI.
@@ -207,11 +209,12 @@ final class StreamWorker: @unchecked Sendable {
         if !text.isEmpty { parser.append(text) }
         if finish { parser.finish() }
         let document = parser.document
-        // Text that is held back changes nothing visible.
-        guard document != before else { return nil }
+        // Text that is held back changes nothing visible; finishing is still
+        // news, as views may be waiting for it.
+        guard document != before || finish != lock.withLock({ latestUpdate.isFinished }) else { return nil }
 
         let (update, targets) = lock.withLock {
-            latestUpdate = StreamUpdate(document: document, sequence: latestUpdate.sequence + 1)
+            latestUpdate = StreamUpdate(document: document, sequence: latestUpdate.sequence + 1, isFinished: finish)
             return (latestUpdate, Array(sinks))
         }
         let finished = targets.filter { !$0.value(update) }.map(\.key)

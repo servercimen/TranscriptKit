@@ -1,6 +1,7 @@
 import CoreGraphics
 import CoreText
 import Foundation
+import IOSurface
 import Testing
 @testable import TranscriptKit
 
@@ -152,14 +153,14 @@ private let colors = TailRenderer.Colors(text: CGColor(gray: 0, alpha: 1), codeB
     #expect(try append(" timeouts").started.isEmpty)
     let closing = try append("</hop> on")
     #expect(closing.started == [TagKey(block: "e-1", start: 8, name: "hop")])
-    #expect(closing.hidden == Set(closing.started))
+    #expect(closing.hidden == TagHiding(playing: Set(closing.started)))
     // Its rows are drawn again, without it.
     #expect(!closing.restyled.isEmpty)
 
     // Not again on later updates, but still hidden until the view is done.
     let later = try append(" Monday.")
     #expect(later.started.isEmpty)
-    #expect(later.hidden == Set(closing.started))
+    #expect(later.hidden == TagHiding(playing: Set(closing.started)))
     engine.settleAnimations(closing.started)
     #expect(try append(" More.").hidden.isEmpty)
 
@@ -180,7 +181,7 @@ private let colors = TailRenderer.Colors(text: CGColor(gray: 0, alpha: 1), codeB
 
 // MARK: Drawing
 
-private func render(_ layout: DocumentLayout, hiding: Set<TagKey> = [], sprites: [TagAnimationPlayer.Sprite] = [],
+private func render(_ layout: DocumentLayout, hiding: TagHiding = .none, sprites: [TagAnimationPlayer.Sprite] = [],
                     scale: CGFloat = 2) -> [UInt8] {
     let width = Int((layout.width * scale).rounded())
     let height = Int(((layout.height + 12) * scale).rounded())
@@ -223,7 +224,7 @@ private let sample = "Before it. Fixed the <hop>login timeouts that support flag
     let tag = try #require(layout.animatedTag(key))
     #expect(tag.parts.count == 2) // it wraps
     let whole = render(layout)
-    let hidden = render(layout, hiding: [key])
+    let hidden = render(layout, hiding: TagHiding(playing: [key]))
     let rows = differingRows(whole, hidden, width: layout.width)
     #expect(!rows.isEmpty)
     #expect(rows.allSatisfy { tag.band.contains($0) }, "differs outside the tag's rows: \(rows.filter { !tag.band.contains($0) })")
@@ -258,7 +259,7 @@ func spritesAtRestRedrawTheTagExactly(scale: CGFloat) throws {
         let glyphCount = tag.parts.reduce(0) { $0 + $1.fragment.fragment.glyphs.count }
         #expect(sprites.filter { if case .glyph = $0.kind { true } else { false } }.count == glyphCount)
         let whole = render(layout, scale: scale)
-        let handedOff = render(layout, hiding: [key], sprites: sprites, scale: scale)
+        let handedOff = render(layout, hiding: TagHiding(playing: [key]), sprites: sprites, scale: scale)
         let rows = differingRows(whole, handedOff, width: layout.width, scale: scale, tolerance: 2)
         #expect(rows.isEmpty, "\(key.name): \(rows.count) rows differ, first \(rows.first ?? -1)")
     }
@@ -279,7 +280,7 @@ func spritesAtRestRedrawTheTagExactly(scale: CGFloat) throws {
             restyled.append(CGRect(x: 0, y: tag.band.lowerBound, width: next.width, height: tag.band.upperBound - tag.band.lowerBound))
         }
         frame = renderer.render(next, changedTop: changedTop, restyled: restyled,
-                                hiding: next.animatedTag(key) == nil ? [] : [key])
+                                hiding: next.animatedTag(key) == nil ? .none : TagHiding(playing: [key]))
         layout = next
     }
     let tail = try #require(frame)
@@ -296,7 +297,7 @@ func spritesAtRestRedrawTheTagExactly(scale: CGFloat) throws {
     context.translateBy(x: TailRenderer.sideMargin, y: -tail.top)
     final.draw(in: context, dirtyRect: CGRect(x: -TailRenderer.sideMargin, y: tail.top, width: final.width + 2 * TailRenderer.sideMargin,
                                               height: TailRenderer.height),
-               text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent, dark: false, hiding: [key])
+               text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent, dark: false, hiding: TagHiding(playing: [key]))
     let expected = Array(UnsafeRawBufferPointer(start: context.data!, count: width * height * 4))
     #expect(zip(pixels, expected).allSatisfy { abs(Int($0) - Int($1)) <= 2 })
 }
@@ -355,4 +356,114 @@ func textAfterATagKeepsItsAnimationGoing(next: String) throws {
     let before = try #require(closed.animatedTag(key))
     let after = try #require(later.animatedTag(key))
     #expect(before.isPlaced(like: after))
+}
+
+// MARK: Timing
+
+@Test func aStreamSaysWhenItHasFinished() throws {
+    let worker = StreamWorker(parser: MarkdownStreamParser(idPrefix: "w", tags: tags))
+    let first = try #require(worker.queue.sync { worker.apply("Some text", finish: false) })
+    #expect(!first.isFinished)
+    // Finishing changes nothing visible here, and is still an update.
+    let finished = try #require(worker.queue.sync { worker.apply("", finish: true) })
+    #expect(finished.isFinished && finished.document == first.document && finished.sequence > first.sequence)
+    #expect(worker.queue.sync { worker.apply("", finish: true) } == nil)
+    // More text: not finished any more.
+    let more = try #require(worker.queue.sync { worker.apply(" and more", finish: false) })
+    #expect(!more.isFinished)
+}
+
+/// A tag waiting to play is drawn as it was while open: its text without its shapes.
+@Test func aWaitingTagLooksAsItDidWhileOpen() throws {
+    var parser = MarkdownStreamParser(idPrefix: "a", tags: tags)
+    parser.append("Before it. Fixed the <hop>login timeouts that support flagged on Monday")
+    let open = DocumentLayout(document: parser.document, width: 260)
+    parser.append("</hop>")
+    let closed = DocumentLayout(document: parser.document, width: 260, reusing: open)
+    let key = TagKey(block: "a-0", start: 21, name: "hop")
+    #expect(closed.animatedTag(key) != nil)
+    #expect(render(closed, hiding: TagHiding(waiting: [key])) == render(open))
+    #expect(render(closed) != render(open))
+}
+
+@Test func theEngineCanLeaveTagsWaitingForTheView() throws {
+    let engine = LayoutEngine()
+    engine.setTailStyle(colors: colors, scale: 2)
+    engine.setAnimationsEnabled(true, immediately: false)
+    var parser = MarkdownStreamParser(idPrefix: "e", tags: tags)
+    parser.append("Now the <hop>login")
+    engine.submit(.init(document: parser.document, source: 1, sequence: 1))
+    _ = try #require(engine.relayout(width: 300, style: TranscriptStyle()))
+    var sequence = 2
+    func append(_ text: String, finished: Bool = false) throws -> LayoutEngine.Output {
+        parser.append(text)
+        engine.submit(.init(document: parser.document, source: 1, sequence: sequence, isFinished: finished))
+        sequence += 1
+        engine.drainNow()
+        return try #require(engine.takeOutput())
+    }
+    let key = TagKey(block: "e-0", start: 8, name: "hop")
+    let closing = try append(" timeouts</hop> on")
+    #expect(closing.started.isEmpty)
+    #expect(closing.waiting == [key])
+    #expect(closing.hidden == TagHiding(waiting: [key]))
+    #expect(!closing.isFinished)
+
+    // The tail shows the tag's text without its shapes.
+    let tail = try #require(closing.tail)
+    let renderer = TailRenderer(colors: colors, scale: 2)
+    _ = renderer.render(closing.layout, changedTop: nil, hiding: TagHiding(waiting: [key]))
+    let expected = try #require(renderer.currentPixels())
+    let shown = try #require(TailRendererProbe.pixels(of: tail.surface))
+    #expect(zip(shown, expected).allSatisfy { abs(Int($0) - Int($1)) <= 2 })
+
+    // Started by the view: from then on the tail leaves it out entirely.
+    engine.playAnimations([key])
+    #expect(try append(" Monday.").hidden == TagHiding(playing: [key]))
+    engine.settleAnimations([key])
+    let last = try append(" Done.", finished: true)
+    #expect(last.hidden.isEmpty)
+    #expect(last.isFinished)
+    #expect(try #require(engine.relayout(width: 300, style: TranscriptStyle())).isFinished)
+}
+
+/// Reads an IOSurface's rows without their padding.
+private enum TailRendererProbe {
+    static func pixels(of surface: IOSurface) -> [UInt8]? {
+        surface.lock(options: .readOnly, seed: nil)
+        defer { surface.unlock(options: .readOnly, seed: nil) }
+        let width = surface.width
+        var result: [UInt8] = []
+        for row in 0..<surface.height {
+            result.append(contentsOf: UnsafeRawBufferPointer(start: surface.baseAddress + row * surface.bytesPerRow, count: width * 4))
+        }
+        return result
+    }
+}
+
+/// A stream that finishes is often replaced by its document straight away
+/// (a new source). If the stream's last layout is still in the mailbox, the
+/// document's layout builds on it, so the two are merged: the view, which
+/// never saw the stream's last layout, still gets an append it can apply,
+/// and tags keep waiting or playing instead of being drawn at rest.
+@Test func aNewSourceThatContinuesTheTextStaysAnAppend() throws {
+    let engine = LayoutEngine()
+    engine.setAnimationsEnabled(true, immediately: false)
+    var parser = MarkdownStreamParser(idPrefix: "s", tags: tags)
+    parser.append("Fixed the <hop>login")
+    engine.submit(.init(document: parser.document, source: 1, sequence: 1))
+    let installed = try #require(engine.relayout(width: 300, style: TranscriptStyle())).layout
+    parser.append(" timeouts</hop> today.")
+    engine.submit(.init(document: parser.document, source: 1, sequence: 2))
+    engine.drainNow()
+    // Not taken yet: the stream ends and the view switches to its document.
+    parser.finish()
+    engine.submit(.init(document: parser.document, source: 2, sequence: 1, isFinished: true))
+    engine.drainNow()
+    let output = try #require(engine.takeOutput())
+    #expect(output.source == 2)
+    #expect(output.base === installed)
+    #expect(output.isAppend)
+    #expect(output.isFinished)
+    #expect(output.waiting == [TagKey(block: "s-0", start: 10, name: "hop")])
 }

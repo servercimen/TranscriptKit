@@ -139,6 +139,24 @@ close while text streams in are animated, not earlier messages. Turn animations 
 or `.animatesTags(false)` on `TranscriptText`; with Reduce Motion on, nothing is animated. The chat sample's `Boing`
 sweeps a highlighter band in under the text while each letter jumps as the band reaches it.
 
+By default a tag's animation plays as soon as its closing tag arrives. To wait, set a timing: a tag that has closed
+then waits, showing its text without its shapes, until every condition holds.
+
+```swift
+// Not before the tag is on screen and the whole answer is in:
+TranscriptText(stream: stream)
+    .tagAnimationTiming([.whenVisible, .afterStreamFinishes])
+
+// Only when the app says so: each time `revealCount` changes, waiting tags play.
+TranscriptText(stream: stream)
+    .tagAnimationTiming(.whenRequested)
+    .playTagAnimations(trigger: revealCount)
+```
+
+In UIKit, set `tagAnimationTiming` on `TranscriptTextView` and call `playTagAnimations()`. A tag that is still
+waiting when it can no longer play (Reduce Motion turned on, animations turned off, the view leaving its window, a
+new document) is shown as it ends up.
+
 ### Images
 
 Images in the text show their alt text unless you provide a loader. The library never fetches anything itself, so

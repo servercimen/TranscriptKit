@@ -109,7 +109,7 @@ final class TailRenderer {
     ///   place; the parts of them inside the tail are drawn again.
     /// - Parameter hiding: animated tags playing their animation, which the
     ///   view draws itself; see `DocumentLayout.draw`.
-    func render(_ layout: DocumentLayout, changedTop: CGFloat?, restyled: [CGRect] = [], hiding: Set<TagKey> = []) -> Frame? {
+    func render(_ layout: DocumentLayout, changedTop: CGFloat?, restyled: [CGRect] = [], hiding: TagHiding = .none) -> Frame? {
         if layout.width != width || context == nil {
             guard makeContext(width: layout.width) else { return nil }
             top = nil

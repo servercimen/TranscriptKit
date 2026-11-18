@@ -10,6 +10,8 @@ struct ChatView: View {
     @State private var openedLink: OpenedLink?
     @FocusState private var composerFocused: Bool
     @AppStorage(TranscriptHighlight.key) private var highlightsTranscriptViews = TranscriptHighlight.default
+    /// Taps on the sparkles button, which plays tags waiting to animate.
+    @State private var tagPlayRequests = 0
 
     var body: some View {
         NavigationStack {
@@ -43,10 +45,16 @@ struct ChatView: View {
                     }
                     .toggleStyle(.button)
                 }
+                if SampleTiming.timing.contains(.whenRequested) {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Play highlights", systemImage: "sparkles") { tagPlayRequests += 1 }
+                    }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("New chat", systemImage: "square.and.pencil") { conversation.startOver() }
                 }
             }
+            .environment(\.tagPlayRequests, tagPlayRequests)
             // Links in the text, the source cards and the composer all come here.
             .environment(\.openURL, OpenURLAction { url in
                 // A `<mention>`'s link (see `SampleTags`).

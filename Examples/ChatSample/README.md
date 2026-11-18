@@ -25,6 +25,7 @@ Launch arguments, for trying it from the command line or a scheme:
 | `-attachSample 1` | Attaches a generated photo to that prompt |
 | `-startEmpty 1` | Starts with no conversation, on the prompt suggestions |
 | `-slow 1` | Streams four times slower, to watch the text come in |
+| `-tagTiming visible,finished,requested` | When tags' animations play (any of the three, comma-separated): once on screen, once the answer has finished, once you tap the sparkles button that then appears in the toolbar. Without it they play as soon as the tag closes |
 
 Prompts the scripts know: "Plan a weekend in Lisbon", "Where should we eat?",
 "What did the team ship?", "Analyze our quarterly sales", anything with a photo attached, and the follow-ups each answer
@@ -59,7 +60,8 @@ suggests ("Make it cheaper", "Add a day trip to Sintra", "Why did Q3 jump?",
   outside the text view. When an `<hl>` tag finishes arriving, its band
   sweeps in and each letter jumps as the band reaches it and springs back
   (`Boing`, an animation the app defines); `-slow 1` makes it easier to
-  watch. Pills get room from the tag's
+  watch, and `-tagTiming` shows the ways an app can hold it back
+  (`SampleTiming`). Pills get room from the tag's
   `padding`; their shapes are made when the text is laid out, so they stream
   in with the text. Every stream and document in the app is parsed with these
   tags; a tag the app doesn't define shows as written.

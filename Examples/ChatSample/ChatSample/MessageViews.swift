@@ -114,10 +114,13 @@ struct SegmentText: View {
     let segment: TextSegment
     var style = TranscriptStyle.chat
     @AppStorage(TranscriptHighlight.key) private var highlighted = TranscriptHighlight.default
+    @Environment(\.tagPlayRequests) private var playRequests
 
     var body: some View {
         text
             .imageLoader(SampleImages.loader)
+            .tagAnimationTiming(SampleTiming.timing)
+            .playTagAnimations(trigger: playRequests)
             .background { if highlighted { TranscriptHighlight() } }
     }
 

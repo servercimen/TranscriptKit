@@ -1,3 +1,4 @@
+import SwiftUI
 import TranscriptKit
 import UIKit
 
@@ -130,4 +131,30 @@ struct Zigzag: TranscriptShapeRecipe {
         }
         return [TranscriptPath(path, stroke: color, lineWidth: 1.2, lineCap: .round, lineJoin: .round)]
     }
+}
+
+/// When the tags' animations play, from the `-tagTiming` launch argument:
+/// a comma-separated list of `visible`, `finished` and `requested`, such as
+/// `-tagTiming visible,finished`. Without it they play as soon as the tag
+/// closes. With `requested`, the sparkles button in the toolbar plays the
+/// tags that are waiting.
+enum SampleTiming {
+    static let timing: TranscriptAnimationTiming = {
+        var timing = TranscriptAnimationTiming.immediately
+        let words = (UserDefaults.standard.string(forKey: "tagTiming") ?? "").split(separator: ",")
+        for word in words.map({ $0.trimmingCharacters(in: .whitespaces).lowercased() }) {
+            switch word {
+            case "visible": timing.insert(.whenVisible)
+            case "finished": timing.insert(.afterStreamFinishes)
+            case "requested": timing.insert(.whenRequested)
+            default: break
+            }
+        }
+        return timing
+    }()
+}
+
+extension EnvironmentValues {
+    /// Goes up each time the toolbar's sparkles button is tapped.
+    @Entry var tagPlayRequests = 0
 }

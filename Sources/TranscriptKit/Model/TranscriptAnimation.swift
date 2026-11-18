@@ -255,6 +255,36 @@ public struct TranscriptCurve: Sendable, Equatable {
     }
 }
 
+/// When a custom tag's animation plays, once its closing tag has arrived:
+/// right away (`immediately`, the default), or not before every condition
+/// in the set holds. Until then the tag shows its text without its shapes,
+/// as it did while it was open.
+///
+/// ```swift
+/// // On screen, and not before the whole answer is in:
+/// view.tagAnimationTiming = [.whenVisible, .afterStreamFinishes]
+/// ```
+///
+/// A tag that is still waiting when animations can no longer play (Reduce
+/// Motion turned on, `animatesTags` turned off, the view leaving its window,
+/// or a new document) is shown as it ends up, shapes and all.
+public struct TranscriptAnimationTiming: OptionSet, Hashable, Sendable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+
+    /// As soon as the tag's closing tag arrives.
+    public static let immediately: TranscriptAnimationTiming = []
+    /// Not before the tag's text is on screen: a tag that closes while it is
+    /// scrolled out of view plays when it is scrolled into view.
+    public static let whenVisible = TranscriptAnimationTiming(rawValue: 1 << 0)
+    /// Not before the stream has finished (`TranscriptStream.finish()`), or
+    /// the view shows a document that was set directly rather than streamed.
+    public static let afterStreamFinishes = TranscriptAnimationTiming(rawValue: 1 << 1)
+    /// Not before the app asks: `TranscriptTextView.playTagAnimations()`
+    /// lets every tag waiting at that moment play.
+    public static let whenRequested = TranscriptAnimationTiming(rawValue: 1 << 2)
+}
+
 /// One glyph of a custom tag's text, for a `TranscriptAnimationRecipe`. In
 /// its fragment's coordinates (x from where the line's glyphs start, y down
 /// from its baseline).

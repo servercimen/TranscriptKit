@@ -86,6 +86,22 @@ struct TagKey: Hashable, Sendable {
     let name: String
 }
 
+/// Animated tags that drawing leaves out, in part or whole.
+struct TagHiding: Equatable, Sendable {
+    /// Playing their animations, which draw them: glyphs and shapes are left out.
+    var playing: Set<TagKey> = []
+    /// Waiting to play: shown as text, so their shapes are left out.
+    var waiting: Set<TagKey> = []
+
+    static let none = TagHiding()
+
+    var isEmpty: Bool { playing.isEmpty && waiting.isEmpty }
+
+    func hidesShapes(of key: TagKey) -> Bool {
+        playing.contains(key) || waiting.contains(key)
+    }
+}
+
 /// A glyph of a line, found again: run `run`, glyph `index` in it.
 struct GlyphSource: @unchecked Sendable {
     let run: CTRun

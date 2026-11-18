@@ -27,6 +27,9 @@ final class LayoutEngine: @unchecked Sendable {
         var source: Int
         /// Order within a source.
         var sequence: Int
+        /// No more text is coming: the stream has finished, or the document
+        /// was set directly.
+        var isFinished = false
     }
 
     struct Output: Sendable {
@@ -46,11 +49,17 @@ final class LayoutEngine: @unchecked Sendable {
         /// The end of the document, drawn, while text is being appended.
         /// The view shows it in place of its own drawing from `tail.top` down.
         let tail: TailRenderer.Frame?
-        /// Animated tags that closed in this update: the view plays their
-        /// animations from now on. Their rows are in `restyled`.
+        /// Animated tags that closed in this update and play right away:
+        /// the view plays their animations from now on. Their rows are in
+        /// `restyled`.
         var started: [TagKey] = []
-        /// The tags `tail` was drawn without, as their animations play.
-        var hidden: Set<TagKey> = []
+        /// Animated tags that closed in this update and wait for the view to
+        /// start them; they are drawn without their shapes until then.
+        var waiting: [TagKey] = []
+        /// How `tail` was drawn: which tags it left out, and how far.
+        var hidden: TagHiding = .none
+        /// The request's `isFinished`.
+        var isFinished = false
     }
 
     let queue = DispatchQueue(label: "TranscriptKit.layout", qos: .userInitiated)
@@ -78,12 +87,15 @@ final class LayoutEngine: @unchecked Sendable {
     private var tailStyleGeneration = 0
     /// Whether tags that close start their animations.
     private var animationsEnabled = false
-    /// Tags whose animations play: the tail is drawn without them.
-    private var playing: Set<TagKey> = []
+    /// Whether they start as soon as they close, or wait for the view.
+    private var startsImmediately = true
+    /// Tags whose animations play, or wait to: the tail is drawn without them.
+    private var hiding = TagHiding()
 
     // Only touched on `queue`.
     private var latestDocument = TranscriptDocument()
     private var latestSource = 0
+    private var latestFinished = false
     private var base: DocumentLayout?
     /// A layout made for `sizeThatFits` at a width other than the current one.
     private var measured: DocumentLayout?
@@ -111,16 +123,33 @@ final class LayoutEngine: @unchecked Sendable {
         }
     }
 
-    /// Whether animated tags that close from now on start their animations.
-    /// Any thread.
-    func setAnimationsEnabled(_ enabled: Bool) {
-        lock.withLock { animationsEnabled = enabled }
+    /// Whether animated tags that close from now on start their
+    /// animations, and whether they start as soon as they close or wait
+    /// until the view starts them. Any thread.
+    func setAnimationsEnabled(_ enabled: Bool, immediately: Bool = true) {
+        lock.withLock {
+            animationsEnabled = enabled
+            startsImmediately = immediately
+        }
     }
 
-    /// The view has stopped playing these tags' animations: tails are drawn
-    /// with them again. Any thread.
+    /// The view has started these waiting tags' animations: tails leave
+    /// them out entirely. Any thread.
+    func playAnimations(_ keys: some Sequence<TagKey>) {
+        lock.withLock {
+            for key in keys where hiding.waiting.remove(key) != nil { hiding.playing.insert(key) }
+        }
+    }
+
+    /// The view has stopped playing these tags' animations, or stopped
+    /// waiting to: tails are drawn with them again. Any thread.
     func settleAnimations(_ keys: some Sequence<TagKey>) {
-        lock.withLock { playing.subtract(keys) }
+        lock.withLock {
+            for key in keys {
+                hiding.playing.remove(key)
+                hiding.waiting.remove(key)
+            }
+        }
     }
 
     /// Stops drawing the tail until text is appended again, for when the
@@ -211,6 +240,7 @@ final class LayoutEngine: @unchecked Sendable {
         guard let request = next else { return }
         latestDocument = request.document
         latestSource = request.source
+        latestFinished = request.isFinished
         // Without a width there is nothing to lay out yet; the view lays out
         // synchronously once it has one.
         guard width > 0 else { return }
@@ -222,29 +252,43 @@ final class LayoutEngine: @unchecked Sendable {
         var changedTop: CGFloat?
         var restyled: [CGRect] = []
         var started: [TagKey] = []
+        var waiting: [TagKey] = []
         if let previous, layout.document.extends(previous.document) {
             isAppend = true
             (changedTop, restyled) = layout.changes(since: previous)
-            // Tags that closed in this update start their animations: from
-            // now on the tail and the tiles leave them to the view.
-            if lock.withLock({ animationsEnabled }) {
+            // Tags that closed in this update start their animations, from
+            // now on leaving the tag to the view, or wait for the view to
+            // start them, without their shapes until then.
+            let (enabled, immediately) = lock.withLock { (animationsEnabled, startsImmediately) }
+            if enabled {
                 for key in layout.newlyClosedAnimatedTags(since: previous) {
                     guard let tag = layout.animatedTag(key) else { continue }
-                    started.append(key)
-                    restyled.append(CGRect(x: 0, y: tag.band.lowerBound, width: layout.width, height: tag.band.upperBound - tag.band.lowerBound))
+                    if immediately {
+                        started.append(key)
+                        restyled.append(CGRect(x: 0, y: tag.band.lowerBound, width: layout.width,
+                                               height: tag.band.upperBound - tag.band.lowerBound))
+                    } else {
+                        waiting.append(key)
+                    }
                 }
-                if !started.isEmpty { lock.withLock { playing.formUnion(started) } }
+                if !started.isEmpty || !waiting.isEmpty {
+                    lock.withLock {
+                        hiding.playing.formUnion(started)
+                        hiding.waiting.formUnion(waiting)
+                    }
+                }
             }
         }
-        let hidden = lock.withLock { playing }
+        let hidden = lock.withLock { hiding }
         let tail = drawTail(of: layout, changedTop: changedTop, restyled: restyled, hiding: hidden)
         post(Output(layout: layout, source: request.source, base: previous, isAppend: isAppend, changedTop: changedTop,
-                    restyled: restyled, tail: tail, started: started, hidden: hidden))
+                    restyled: restyled, tail: tail, started: started, waiting: waiting, hidden: hidden,
+                    isFinished: request.isFinished))
     }
 
     /// Draws `layout`'s tail if text is being appended. The first append
     /// starts the tail; it stays on for every output until settled.
-    private func drawTail(of layout: DocumentLayout, changedTop: CGFloat?, restyled: [CGRect], hiding: Set<TagKey>) -> TailRenderer.Frame? {
+    private func drawTail(of layout: DocumentLayout, changedTop: CGFloat?, restyled: [CGRect], hiding: TagHiding) -> TailRenderer.Frame? {
         guard let style = lock.withLock({ tailStyle }) else {
             tailActive = false
             return nil
@@ -273,13 +317,17 @@ final class LayoutEngine: @unchecked Sendable {
     private func post(_ output: Output) {
         let handler: (@Sendable () -> Void)? = lock.withLock {
             guard !isShutDown else { return nil }
-            if let earlier = mailbox, earlier.source == output.source {
-                // Not installed yet: install the newest, measured against what is on screen.
+            // Not installed yet: install the newest, measured against what is
+            // on screen. Also across sources when the newest builds on it, as
+            // a finished stream replaced by its document does: the view never
+            // saw the stream's last layout, and still gets an append.
+            if let earlier = mailbox, earlier.source == output.source || output.base === earlier.layout {
                 let top: CGFloat? = earlier.changedTop.flatMap { a in output.changedTop.map { min(a, $0) } }
                 mailbox = Output(layout: output.layout, source: output.source, base: earlier.base,
                                  isAppend: earlier.isAppend && output.isAppend, changedTop: top,
                                  restyled: earlier.restyled + output.restyled, tail: output.tail,
-                                 started: earlier.started + output.started, hidden: output.hidden)
+                                 started: earlier.started + output.started, waiting: earlier.waiting + output.waiting,
+                                 hidden: output.hidden, isFinished: output.isFinished)
             } else {
                 mailbox = output
             }
@@ -305,11 +353,12 @@ final class LayoutEngine: @unchecked Sendable {
 
     /// Lays out the newest document at `width` now and makes it the base for
     /// what follows. Anything waiting in the mailbox is older and dropped.
-    func relayout(width: CGFloat, style: TranscriptStyle) -> (layout: DocumentLayout, source: Int)? {
+    func relayout(width: CGFloat, style: TranscriptStyle) -> (layout: DocumentLayout, source: Int, isFinished: Bool)? {
         queue.sync {
             if let request = takePending() {
                 latestDocument = request.document
                 latestSource = request.source
+                latestFinished = request.isFinished
             }
             self.width = width
             self.style = style
@@ -325,9 +374,9 @@ final class LayoutEngine: @unchecked Sendable {
             tailRenderer?.reset()
             lock.withLock {
                 mailbox = nil
-                playing.removeAll()
+                hiding = TagHiding()
             }
-            return (layout, latestSource)
+            return (layout, latestSource, latestFinished)
         }
     }
 

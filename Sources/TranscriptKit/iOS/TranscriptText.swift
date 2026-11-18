@@ -20,6 +20,8 @@ public struct TranscriptText: UIViewRepresentable {
     private let style: TranscriptStyle
     private var loader: (@Sendable (TranscriptImage) async -> CGImage?)?
     private var animatesTags = true
+    private var animationTiming: TranscriptAnimationTiming = .immediately
+    private var playTrigger: AnyHashable?
 
     public init(_ document: TranscriptDocument, style: TranscriptStyle = .init()) {
         self.source = .document(document)
@@ -48,6 +50,39 @@ public struct TranscriptText: UIViewRepresentable {
         return copy
     }
 
+    /// When tags' animations play once their closing tag has arrived; see
+    /// `TranscriptAnimationTiming`. Right away by default.
+    public func tagAnimationTiming(_ timing: TranscriptAnimationTiming) -> TranscriptText {
+        var copy = self
+        copy.animationTiming = timing
+        return copy
+    }
+
+    /// With a timing that includes `.whenRequested`: each time `trigger`
+    /// changes, the tags waiting to animate play
+    /// (`TranscriptTextView.playTagAnimations()`).
+    ///
+    /// ```swift
+    /// TranscriptText(stream: stream)
+    ///     .tagAnimationTiming(.whenRequested)
+    ///     .playTagAnimations(trigger: highlightsShown)
+    /// ```
+    public func playTagAnimations(trigger: some Hashable) -> TranscriptText {
+        var copy = self
+        copy.playTrigger = AnyHashable(trigger)
+        return copy
+    }
+
+    public final class Coordinator {
+        var playTrigger: AnyHashable?
+    }
+
+    public func makeCoordinator() -> Coordinator {
+        let coordinator = Coordinator()
+        coordinator.playTrigger = playTrigger
+        return coordinator
+    }
+
     public func makeUIView(context: Context) -> TranscriptTextView {
         let view = TranscriptTextView()
         view.setContentHuggingPriority(.required, for: .vertical)
@@ -58,6 +93,11 @@ public struct TranscriptText: UIViewRepresentable {
     public func updateUIView(_ view: TranscriptTextView, context: Context) {
         view.style = style
         view.animatesTags = animatesTags
+        view.tagAnimationTiming = animationTiming
+        if playTrigger != context.coordinator.playTrigger {
+            context.coordinator.playTrigger = playTrigger
+            view.playTagAnimations()
+        }
         switch source {
         case .document(let document): view.document = document
         case .stream(let stream): view.stream = stream

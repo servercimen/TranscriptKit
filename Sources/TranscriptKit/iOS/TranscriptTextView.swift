@@ -32,11 +32,19 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     public var document: TranscriptDocument {
         get { stream?.document ?? directDocument }
         set {
-            if stream != nil { stream = nil }
-            guard newValue != directDocument else { return }
+            let replacesStream = stream != nil
+            guard replacesStream || newValue != directDocument else { return }
             directDocument = newValue
             directSequence += 1
-            engine.submit(.init(document: newValue, source: source, sequence: directSequence))
+            if replacesStream {
+                // Detaching submits `directDocument`, now the new one. Only
+                // one document goes to the engine: an earlier one in between
+                // would make the new one look like a replacement rather than
+                // what the stream's text grew into.
+                stream = nil
+            } else {
+                engine.submit(.init(document: newValue, source: source, sequence: directSequence, isFinished: true))
+            }
             layOutNowIfNothingIsShown()
         }
     }
@@ -50,16 +58,17 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             sinkID = nil
             source += 1
             guard let stream else {
-                engine.submit(.init(document: directDocument, source: source, sequence: directSequence))
+                engine.submit(.init(document: directDocument, source: source, sequence: directSequence, isFinished: true))
                 return
             }
             let engine = engine
             let source = source
             let attachment = stream.attachSink { update in
-                engine.submit(.init(document: update.document, source: source, sequence: update.sequence))
+                engine.submit(.init(document: update.document, source: source, sequence: update.sequence, isFinished: update.isFinished))
             }
             sinkID = attachment.id
-            engine.submit(.init(document: attachment.latest.document, source: source, sequence: attachment.latest.sequence))
+            engine.submit(.init(document: attachment.latest.document, source: source, sequence: attachment.latest.sequence,
+                                isFinished: attachment.latest.isFinished))
             layOutNowIfNothingIsShown()
         }
     }
@@ -79,6 +88,26 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             guard animatesTags != oldValue else { return }
             updateAnimationsEnabled()
         }
+    }
+
+    /// When a tag's animation plays once its closing tag has arrived: right
+    /// away (the default), or once it is on screen, once the stream has
+    /// finished, or once the app calls `playTagAnimations()`, in any
+    /// combination. See `TranscriptAnimationTiming`.
+    public var tagAnimationTiming: TranscriptAnimationTiming = .immediately {
+        didSet {
+            guard tagAnimationTiming != oldValue else { return }
+            updateAnimationsEnabled()
+            startWaitingTags()
+        }
+    }
+
+    /// Lets every tag waiting to animate now play, as soon as the rest of
+    /// `tagAnimationTiming` allows. Tags that close later wait for the next
+    /// call. Does nothing unless the timing includes `.whenRequested`.
+    public func playTagAnimations() {
+        requested.formUnion(waiting)
+        startWaitingTags()
     }
 
     /// Loads the picture for an image in the text, called off the main thread
@@ -136,6 +165,14 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// Tags whose animations are playing, which the tiles leave out.
     private var playing: [TagKey: PlayingTag] = [:]
     private var playingKeys: Set<TagKey> = []
+    /// Tags that have closed and wait for `tagAnimationTiming` to let them
+    /// play; the tiles draw them without their shapes.
+    private var waiting: Set<TagKey> = []
+    /// Waiting tags the app has asked to play (`playTagAnimations()`).
+    private var requested: Set<TagKey> = []
+    /// No more text is coming to the document on screen.
+    private var isFinished = false
+    private var hiding: TagHiding { TagHiding(playing: playingKeys, waiting: waiting) }
 
     private struct PlayingTag {
         let tag: AnimatedTag
@@ -281,6 +318,8 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     }
 
     private func updateCanvas(forceRedraw: Bool = false, changed: ClosedRange<CGFloat>? = nil) {
+        // Tags waiting to be on screen may be now.
+        if !waiting.isEmpty, tagAnimationTiming.contains(.whenVisible) { startWaitingTags() }
         let visible = visibleRect
         guard !visible.isNull, visible.height > 0, bounds.width > 0 else {
             if forceRedraw { tiles.values.forEach { $0.setNeedsDisplay() } }
@@ -343,7 +382,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         }
         let colors = resolvedColors()
         currentLayout.draw(in: context, dirtyRect: rect, text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent,
-                           dark: colors.dark, hiding: playingKeys)
+                           dark: colors.dark, hiding: hiding)
     }
 
     private func resolvedColors() -> TailRenderer.Colors {
@@ -436,16 +475,16 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         guard output.source == source, output.layout.width == bounds.width, output.layout.style == style else {
             // Made for an earlier source, width or style; a synchronous
             // relayout has replaced it or is about to.
-            engine.settleAnimations(output.started)
+            engine.settleAnimations(output.started + output.waiting)
             return
         }
         let isAppend = output.isAppend && output.base != nil && output.base === installed
         install(output.layout, changedTop: isAppend ? output.changedTop : nil, tail: output.tail,
-                restyled: isAppend ? output.restyled : [], started: output.started)
-        // A tail drawn without a tag whose animation has ended since: the
-        // tiles draw that part instead.
-        if output.tail != nil, !output.hidden.isSubset(of: playingKeys) {
-            engine.settleAnimations(output.hidden.subtracting(playingKeys))
+                restyled: isAppend ? output.restyled : [], started: output.started, waiting: output.waiting,
+                isFinished: output.isFinished)
+        // A tail drawn while a tag was in another state than it is now (its
+        // animation has started or ended since): the tiles draw that part.
+        if output.tail != nil, output.hidden != hiding {
             handTailToTiles()
         }
     }
@@ -455,7 +494,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     private func relayoutNow() {
         guard bounds.width > 0, let result = engine.relayout(width: bounds.width, style: style) else { return }
         guard result.source == source else { return }
-        install(result.layout, changedTop: nil, tail: nil)
+        install(result.layout, changedTop: nil, tail: nil, isFinished: result.isFinished)
     }
 
     private func layOutNowIfNothingIsShown() {
@@ -478,8 +517,12 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     ///   differently in place; only those are drawn again, not all below them.
     /// - Parameter started: animated tags that closed in this update, whose
     ///   animations start now.
+    /// - Parameter waiting: animated tags that closed in this update and
+    ///   wait for `tagAnimationTiming` to let them play.
+    /// - Parameter isFinished: no more text is coming.
     private func install(_ layout: DocumentLayout, changedTop: CGFloat?, tail: TailRenderer.Frame?, restyled: [CGRect] = [],
-                         started: [TagKey] = []) {
+                         started: [TagKey] = [], waiting newlyWaiting: [TagKey] = [], isFinished: Bool = false) {
+        self.isFinished = isFinished
         TranscriptDiagnostics.count(\.installs)
         let old = installed
         let isAppend = changedTop != nil && old != nil
@@ -527,10 +570,12 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
                 finishAnimation(key)
             }
             for key in started { startAnimation(key, in: layout) }
+            waiting.formUnion(newlyWaiting)
+            startWaitingTags()
         } else {
             // Everything was drawn again, at rest.
             removeAllAnimations()
-            engine.settleAnimations(started)
+            engine.settleAnimations(started + newlyWaiting)
         }
 
         if !isAppend {
@@ -550,17 +595,74 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         if animatesTags, window != nil, UIAccessibility.isReduceMotionEnabled {
             animationLog.debug("Tags are not animated: Reduce Motion is on")
         }
-        engine.setAnimationsEnabled(enabled)
-        if !enabled { finishAllAnimations() }
+        engine.setAnimationsEnabled(enabled, immediately: tagAnimationTiming == .immediately)
+        if !enabled {
+            finishAllAnimations()
+            showWaitingTagsAtRest()
+        }
+    }
+
+    /// Starts the waiting tags that `tagAnimationTiming` lets play now.
+    private func startWaitingTags() {
+        guard !waiting.isEmpty, let layout = installed else { return }
+        let timing = tagAnimationTiming
+        if timing.contains(.afterStreamFinishes), !isFinished { return }
+        let visible = timing.contains(.whenVisible) ? visibleRect : .null
+        var ready: [TagKey] = []
+        for key in waiting {
+            if timing.contains(.whenRequested), !requested.contains(key) { continue }
+            if timing.contains(.whenVisible) {
+                guard window != nil, let tag = layout.animatedTag(key), Self.isOnScreen(tag.band, in: visible) else { continue }
+            }
+            ready.append(key)
+        }
+        guard !ready.isEmpty else { return }
+        for key in ready.sorted(by: { ($0.block, $0.start) < ($1.block, $1.start) }) {
+            waiting.remove(key)
+            requested.remove(key)
+            engine.playAnimations([key])
+            startAnimation(key, in: layout, wasWaiting: true)
+        }
+    }
+
+    /// Whether a tag's rows count as on screen: all of them, or for a tag
+    /// taller than what is visible, some of them.
+    private static func isOnScreen(_ band: ClosedRange<CGFloat>, in visible: CGRect) -> Bool {
+        guard !visible.isNull, visible.height > 0 else { return false }
+        if band.upperBound - band.lowerBound > visible.height {
+            return band.upperBound > visible.minY && band.lowerBound < visible.maxY
+        }
+        return band.lowerBound >= visible.minY && band.upperBound <= visible.maxY
+    }
+
+    /// Draws every waiting tag as it ends up, shapes and all, for when it
+    /// can no longer play.
+    private func showWaitingTagsAtRest() {
+        guard !waiting.isEmpty else { return }
+        let keys = waiting
+        waiting.removeAll()
+        requested.removeAll()
+        engine.settleAnimations(keys)
+        for key in keys {
+            guard let tag = installed?.animatedTag(key) else { continue }
+            let band = band(of: tag)
+            // The tail was drawn without the tag's shapes.
+            if tailTop < band.upperBound { handTailToTiles() }
+            redrawTiles(in: band)
+        }
     }
 
     /// Plays `key`'s animation over the text, which from now on leaves it out.
-    private func startAnimation(_ key: TagKey, in layout: DocumentLayout) {
+    ///
+    /// - Parameter wasWaiting: it waited for its timing, and the tail, drawn
+    ///   when it was waiting, still shows its glyphs.
+    private func startAnimation(_ key: TagKey, in layout: DocumentLayout, wasWaiting: Bool = false) {
         if playing[key] != nil { finishAnimation(key) }
         guard let tag = layout.animatedTag(key) else {
             engine.settleAnimations([key])
             return
         }
+        if wasWaiting, tailTop < band(of: tag).upperBound { handTailToTiles() }
         let animation = tag.animation.animation(for: tag.fragments)
         let colors = resolvedColors()
         let scale = traitCollection.displayScale
@@ -613,6 +715,9 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// Drops every animation without redrawing, for when everything is
     /// being drawn again anyway.
     private func removeAllAnimations() {
+        engine.settleAnimations(waiting)
+        waiting.removeAll()
+        requested.removeAll()
         guard !playing.isEmpty else { return }
         engine.settleAnimations(playingKeys)
         CATransaction.begin()

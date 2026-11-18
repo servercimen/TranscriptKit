@@ -291,13 +291,14 @@ public final class DocumentLayout: @unchecked Sendable {
     /// custom tags' colors.
     public func draw(in context: CGContext, dirtyRect: CGRect, text: CGColor, codeBackground: CGColor, accent: CGColor,
                      dark: Bool = false) {
-        draw(in: context, dirtyRect: dirtyRect, text: text, codeBackground: codeBackground, accent: accent, dark: dark, hiding: [])
+        draw(in: context, dirtyRect: dirtyRect, text: text, codeBackground: codeBackground, accent: accent, dark: dark, hiding: .none)
     }
 
     /// - Parameter hiding: animated tags whose animation is playing, drawn
-    ///   above the text instead: their glyphs and shapes are left out.
+    ///   above the text instead (their glyphs and shapes are left out), or
+    ///   waiting to play (their shapes are left out).
     func draw(in context: CGContext, dirtyRect: CGRect, text: CGColor, codeBackground: CGColor, accent: CGColor,
-              dark: Bool, hiding: Set<TagKey>) {
+              dark: Bool, hiding: TagHiding) {
         context.saveGState()
         defer { context.restoreGState() }
         // Core Text draws y-up; flip glyphs so they are upright in a y-down context.
@@ -400,7 +401,7 @@ public final class DocumentLayout: @unchecked Sendable {
                                     height: line.frame.height + decorations.inkAbove + decorations.inkBelow))
             context.translateBy(x: line.frame.minX, y: entry.y + line.baseline)
             for (index, path) in paths.enumerated() {
-                if !hiding.isEmpty, index < owners.count, let owner = owners[index], hiding.contains(owner) { continue }
+                if !hiding.isEmpty, index < owners.count, let owner = owners[index], hiding.hidesShapes(of: owner) { continue }
                 path.draw(in: context, dark: dark)
             }
             context.restoreGState()
@@ -492,7 +493,7 @@ public final class DocumentLayout: @unchecked Sendable {
 
             for index in visible where !lines[index].range.isEmpty {
                 let line = lines[index]
-                let hidden = line.decorations?.hiddenRanges(hiding) ?? []
+                let hidden = line.decorations?.hiddenRanges(hiding.playing) ?? []
                 drawLine(line.ctLine, at: CGPoint(x: line.frame.minX, y: entry.y + line.baseline),
                          hidden: hidden.map { ($0.lowerBound - line.indexBase)..<($0.upperBound - line.indexBase) })
             }

@@ -1,0 +1,38 @@
+[
+ {
+  "renderer": "transcriptkit-stream",
+  "scenario": "history",
+  "ok": false,
+  "repeat": 0
+ },
+ {
+  "renderer": "transcriptkit-stream",
+  "scenario": "history",
+  "ok": false,
+  "repeat": 1
+ },
+ {
+  "renderer": "transcriptkit-stream",
+  "scenario": "history",
+  "ok": false,
+  "repeat": 2
+ },
+ {
+  "renderer": "transcriptkit-stream",
+  "scenario": "realistic",
+  "ok": false,
+  "repeat": 0
+ },
+ {
+  "renderer": "transcriptkit-stream",
+  "scenario": "realistic",
+  "ok": false,
+  "repeat": 1
+ },
+ {
+  "renderer": "transcriptkit-stream",
+  "scenario": "realistic",
+  "ok": false,
+  "repeat": 2
+ }
+]

@@ -1,0 +1,137 @@
+# TranscriptKit
+
+A native Markdown renderer for streamed text on iOS, such as a chat model's answers. It parses Markdown as it arrives,
+lays it out with Core Text and draws it in one selectable text view. Parsing and layout run off the main thread, so
+text streaming in at hundreds of characters a second doesn't make scrolling stutter.
+
+![The chat sample](Examples/ChatSample/Screenshots/1-answer-top.png)
+
+## Features
+
+- **Streaming first.** Chunks can split anywhere, even inside a Markdown marker. Text that could still turn into
+  markup is held back for a character or two, so what is on screen almost never changes style or shrinks.
+- **Off the main thread.** Each frame's chunks are parsed on a background queue and laid out on another. Only the
+  blocks that changed are laid out again, and the line being written is drawn on the layout queue into a surface.
+  The main thread installs the result and redraws what changed.
+- **One selectable document.** The whole text is one view with the system's selection handles, loupe and edit menu,
+  and a selection can run from one block to the next: across headings, paragraphs, lists and code blocks.
+- **Markdown:**
+  - headings, paragraphs, emphasis, strikethrough and inline code;
+  - nested lists, task lists and quotes;
+  - fenced and indented code blocks and tables;
+  - links, bare URLs and email addresses, and reference links;
+  - images, drawn by a loader your app provides;
+  - HTML entities and a few HTML tags.
+- **Custom tags.** Define tags such as `<mention id="ana">@Ana</mention>` and how they look: font traits, colours, a
+  link, padding, and shapes drawn behind or over the text. Pills and underlines (solid, dashed, dotted, wavy,
+  marker) are built in, and you can draw shapes of your own.
+- **SwiftUI and UIKit.** `TranscriptText` for SwiftUI, `TranscriptTextView` for UIKit.
+
+## Requirements
+
+iOS 17 or later, Swift 6 (Xcode 16 or later). The parser and document model also build on macOS 14, which is where
+the tests run.
+
+## Installation
+
+Add the package with Swift Package Manager:
+
+```swift
+dependencies: [
+    .package(url: "https://github.com/servercimen/TranscriptKit.git", branch: "main"),
+]
+```
+
+There are no tagged releases yet. The API may still change.
+
+## Usage
+
+Stream text into a `TranscriptStream` and show it with `TranscriptText`:
+
+```swift
+import SwiftUI
+import TranscriptKit
+
+struct AnswerView: View {
+    @State private var stream = TranscriptStream()
+
+    var body: some View {
+        ScrollView {
+            TranscriptText(stream: stream)
+                .padding()
+        }
+        .task {
+            for await chunk in model.answer() {   // your source of text
+                stream.append(chunk)
+            }
+            stream.finish()
+        }
+    }
+}
+```
+
+`append` only stores the text. Once per frame, everything appended since the last frame is parsed and laid out in
+the background and goes straight to the view, without a SwiftUI update. SwiftUI is involved only when the text's
+height changes. `finish()` shows any text that was held back in case it turned into markup.
+
+For text that is already complete, parse it once and pass the document:
+
+```swift
+let document = MarkdownStreamParser.document(from: markdown)
+TranscriptText(document, style: style)
+```
+
+### Custom tags
+
+```swift
+let tags = [
+    TranscriptTag("mention") { attributes in
+        TranscriptDecoration(
+            traits: .bold,
+            foreground: TranscriptColor(UIColor.systemIndigo),
+            link: attributes["id"].map { "myapp://person/\($0)" },
+            padding: 5,
+            shapes: [.pill(fill: TranscriptColor(UIColor.systemIndigo.withAlphaComponent(0.1)),
+                           border: TranscriptColor(UIColor.systemIndigo.withAlphaComponent(0.45)))]
+        )
+    },
+    TranscriptTag("mark", TranscriptDecoration(
+        shapes: [.underline(.marker, color: TranscriptColor(UIColor.systemYellow.withAlphaComponent(0.6)))]
+    )),
+]
+let stream = TranscriptStream(tags: tags)
+```
+
+Tags the app doesn't define show as written. For a shape of your own, implement `TranscriptShapeRecipe`. It returns
+paths for each line the tag's text is on and may draw a little outside the text, up to 12 points to the sides,
+past the view's edges. The chat sample has two such shapes, `Zigzag` and `SoftUnderline`, in
+[`SampleTags.swift`](Examples/ChatSample/ChatSample/SampleTags.swift).
+
+### Images
+
+Images in the text show their alt text unless you provide a loader. The library never fetches anything itself, so
+whether to load a URL from a model's answer is up to your app:
+
+```swift
+TranscriptText(stream: stream)
+    .imageLoader { image in await myImageCache.cgImage(for: image.source) }
+```
+
+### Styling
+
+`TranscriptStyle` sets the body size, line, block and list spacing, indents, padding and the maximum image height.
+
+## In this repository
+
+| Folder | Contents |
+| --- | --- |
+| `Sources/TranscriptKit` | The library |
+| `Tests/TranscriptKitTests` | Unit, layout and pixel tests: `swift test` |
+| [`Examples/ChatSample`](Examples/ChatSample) | A chat app that mixes streamed TranscriptKit text with native SwiftUI views (cards, charts, photos), custom tags and text beside other views |
+| `Demo` | A small app for trying selection and streaming |
+| `Benchmark` | A benchmark app and script that compare TranscriptKit with other renderers on the simulator and on phones, with results and notes |
+| [`Docs/architecture.html`](Docs/architecture.html) | How the parser, layout and drawing work, and the measurements behind the design; download it and open it in a browser |
+
+## License
+
+MIT. See [LICENSE](LICENSE).

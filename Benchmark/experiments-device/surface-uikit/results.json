@@ -1,0 +1,38 @@
+[
+ {
+  "renderer": "transcriptkit-uikit",
+  "scenario": "history",
+  "ok": false,
+  "repeat": 0
+ },
+ {
+  "renderer": "transcriptkit-uikit",
+  "scenario": "history",
+  "ok": false,
+  "repeat": 1
+ },
+ {
+  "renderer": "transcriptkit-uikit",
+  "scenario": "history",
+  "ok": false,
+  "repeat": 2
+ },
+ {
+  "renderer": "transcriptkit-uikit",
+  "scenario": "realistic",
+  "ok": false,
+  "repeat": 0
+ },
+ {
+  "renderer": "transcriptkit-uikit",
+  "scenario": "realistic",
+  "ok": false,
+  "repeat": 1
+ },
+ {
+  "renderer": "transcriptkit-uikit",
+  "scenario": "realistic",
+  "ok": false,
+  "repeat": 2
+ }
+]

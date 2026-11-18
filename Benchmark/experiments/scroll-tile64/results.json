@@ -1,0 +1,74 @@
+[
+ {
+  "charactersPerSecond": 300,
+  "scenario": "scroll",
+  "mainThreadCPUSeconds": 1.563199333,
+  "processCPUSeconds": 1.604558,
+  "memoryAfterMB": 38.001708984375,
+  "memoryBeforeMB": 29.282936096191406,
+  "memoryPeakMB": 48.548583984375,
+  "renderer": "transcriptkit-stream",
+  "historyMessages": 50,
+  "frames": {
+   "frameMs": 16.654624996590428,
+   "seconds": 11.291710416669957,
+   "p99FrameMs": 16.65458333445713,
+   "worstFrameMs": 16.78649999666959,
+   "droppedFrames": 0,
+   "frames": 678,
+   "hitchMsPerSecond": 0
+  },
+  "memoryAfterReliefMB": 38.001708984375,
+  "characters": 0,
+  "ok": true,
+  "repeat": 0
+ },
+ {
+  "scenario": "scroll",
+  "historyMessages": 50,
+  "processCPUSeconds": 2.275828,
+  "memoryBeforeMB": 29.361038208007812,
+  "characters": 0,
+  "mainThreadCPUSeconds": 2.216853625,
+  "memoryAfterMB": 39.611061096191406,
+  "memoryPeakMB": 48.767311096191406,
+  "frames": {
+   "hitchMsPerSecond": 0,
+   "p99FrameMs": 16.65345834044274,
+   "frameMs": 16.65366666566115,
+   "droppedFrames": 0,
+   "frames": 681,
+   "seconds": 11.34098183333117,
+   "worstFrameMs": 16.78429167077411
+  },
+  "memoryAfterReliefMB": 39.611061096191406,
+  "charactersPerSecond": 300,
+  "renderer": "transcriptkit-stream",
+  "ok": true,
+  "repeat": 1
+ },
+ {
+  "scenario": "scroll",
+  "historyMessages": 50,
+  "memoryBeforeMB": 29.157913208007812,
+  "mainThreadCPUSeconds": 2.1641427920000003,
+  "charactersPerSecond": 300,
+  "characters": 0,
+  "renderer": "transcriptkit-stream",
+  "processCPUSeconds": 2.22212,
+  "memoryAfterReliefMB": 37.970436096191406,
+  "frames": {
+   "p99FrameMs": 16.655916668241844,
+   "frameMs": 16.654624996590428,
+   "hitchMsPerSecond": 0,
+   "droppedFrames": 0,
+   "frames": 670,
+   "worstFrameMs": 16.791083340649493,
+   "seconds": 11.158617458335357
+  },
+  "memoryPeakMB": 48.548561096191406,
+  "memoryAfterMB": 37.970436096191406,
+  "ok": true,
+  "repeat": 2
+ }
+]

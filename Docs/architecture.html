@@ -1,0 +1,783 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TranscriptKit architecture</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Source+Serif+4:opsz,wght@8..60,600;8..60,700&display=swap" rel="stylesheet">
+<style>
+/* Layout: one reading column for prose, wider figures; thread colours carry meaning throughout. */
+:root {
+  --bg: #f4f6f9;
+  --surface: #ffffff;
+  --ink: #18202c;
+  --muted: #5a6575;
+  --rule: #d6dce5;
+  --accent: #2b55c9;
+  /* Threads: main thread, parse queue, layout queue, render server. */
+  --main: #b8521c;
+  --parse: #0f7a64;
+  --layout: #6546bd;
+  --server: #6b7484;
+  --main-tint: rgba(184, 82, 28, 0.08);
+  --parse-tint: rgba(15, 122, 100, 0.08);
+  --layout-tint: rgba(101, 70, 189, 0.08);
+  --server-tint: rgba(107, 116, 132, 0.08);
+  --font-display: "Source Serif 4", Georgia, "Times New Roman", serif;
+  --font-body: "IBM Plex Sans", -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f141b;
+    --surface: #161d27;
+    --ink: #e6eaf1;
+    --muted: #9ba6b6;
+    --rule: #2b3542;
+    --accent: #8aaaff;
+    --main: #f0945c;
+    --parse: #45c7a6;
+    --layout: #ad94ff;
+    --server: #9aa3b2;
+    --main-tint: rgba(240, 148, 92, 0.12);
+    --parse-tint: rgba(69, 199, 166, 0.11);
+    --layout-tint: rgba(173, 148, 255, 0.12);
+    --server-tint: rgba(154, 163, 178, 0.10);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f141b;
+  --surface: #161d27;
+  --ink: #e6eaf1;
+  --muted: #9ba6b6;
+  --rule: #2b3542;
+  --accent: #8aaaff;
+  --main: #f0945c;
+  --parse: #45c7a6;
+  --layout: #ad94ff;
+  --server: #9aa3b2;
+  --main-tint: rgba(240, 148, 92, 0.12);
+  --parse-tint: rgba(69, 199, 166, 0.11);
+  --layout-tint: rgba(173, 148, 255, 0.12);
+  --server-tint: rgba(154, 163, 178, 0.10);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.6 var(--font-body);
+}
+main { max-width: 1120px; margin: 0 auto; padding: 48px 20px 80px; display: grid; gap: 56px; }
+section { display: grid; gap: 18px; }
+.prose { max-width: 68ch; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; line-height: 1.2; }
+h1 { font-size: 2.6rem; letter-spacing: -0.01em; }
+h2 { font-size: 1.75rem; }
+h3 { font-size: 1.15rem; font-family: var(--font-body); font-weight: 600; }
+p { margin: 0; }
+p + p { margin-top: 0.8em; }
+a { color: var(--accent); }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+.lede { font-size: 1.15rem; color: var(--ink); max-width: 64ch; }
+.meta { color: var(--muted); font-size: 0.92rem; }
+header { display: grid; gap: 14px; }
+
+.legend { display: flex; flex-wrap: wrap; gap: 10px 18px; font-size: 0.9rem; color: var(--muted); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.swatch { width: 14px; height: 14px; border-radius: 3px; border: 2px solid currentColor; }
+.sw-main { color: var(--main); background: var(--main-tint); }
+.sw-parse { color: var(--parse); background: var(--parse-tint); }
+.sw-layout { color: var(--layout); background: var(--layout-tint); }
+.sw-server { color: var(--server); background: var(--server-tint); }
+
+figure { margin: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 20px; display: grid; gap: 14px; }
+figure .scroll { overflow-x: auto; }
+figure svg { display: block; width: 100%; height: auto; min-width: 640px; color: var(--ink); }
+figcaption { color: var(--muted); font-size: 0.92rem; max-width: 80ch; }
+
+/* SVG roles, styled from the page so both themes apply. */
+.lane-main { fill: var(--main-tint); stroke: var(--main); }
+.lane-parse { fill: var(--parse-tint); stroke: var(--parse); }
+.lane-layout { fill: var(--layout-tint); stroke: var(--layout); }
+.lane-server { fill: var(--server-tint); stroke: var(--server); }
+.lane-label { font: 600 13px var(--font-body); }
+.t-main { fill: var(--main); }
+.t-parse { fill: var(--parse); }
+.t-layout { fill: var(--layout); }
+.t-server { fill: var(--server); }
+.box { fill: var(--surface); stroke: currentColor; stroke-width: 1.2; }
+.box-main { stroke: var(--main); }
+.box-parse { stroke: var(--parse); }
+.box-layout { stroke: var(--layout); }
+.box-server { stroke: var(--server); }
+.box-note { fill: var(--surface); stroke: var(--muted); stroke-dasharray: 4 3; }
+.b-title { font: 600 13px var(--font-body); fill: currentColor; }
+.b-sub { font: 400 11.5px var(--font-body); fill: var(--muted); }
+.b-mono { font: 500 12px var(--font-mono); fill: currentColor; }
+.edge { stroke: currentColor; stroke-width: 1.4; fill: none; }
+.edge-label { font: 400 11.5px var(--font-body); fill: var(--muted); }
+.thin { stroke: var(--rule); stroke-width: 1; fill: none; }
+.muted-fill { fill: var(--muted); }
+.ink-fill { fill: currentColor; }
+.tile { fill: var(--main-tint); stroke: var(--main); stroke-width: 1.2; }
+.tail { fill: var(--layout-tint); stroke: var(--layout); stroke-width: 1.6; }
+.offscreen { fill: none; stroke: var(--rule); stroke-dasharray: 5 4; }
+.viewport { fill: none; stroke: currentColor; stroke-width: 2; }
+.cutoff { stroke: var(--layout); stroke-width: 1.5; stroke-dasharray: 6 4; }
+.textline { fill: currentColor; opacity: 0.55; }
+.textline-tail { fill: var(--layout); opacity: 0.7; }
+.selection { fill: var(--accent); opacity: 0.22; }
+.handle { fill: var(--accent); }
+.bar-commit { fill: var(--parse); }
+.bar-spec { fill: var(--layout); }
+.bar-held { fill: var(--server); }
+.cell { fill: var(--surface); stroke: var(--rule); }
+.cell-filled { fill: var(--parse-tint); stroke: var(--parse); }
+.version { fill: none; stroke: currentColor; stroke-width: 1.4; }
+.frontier { stroke: var(--parse); stroke-width: 2; stroke-dasharray: 4 3; }
+
+.grid { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+.card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 16px 18px; display: grid; gap: 8px; align-content: start; }
+.card h3 { font-size: 1rem; }
+.card p { font-size: 0.94rem; color: var(--ink); }
+.card .files { font-family: var(--font-mono); font-size: 0.8rem; color: var(--muted); }
+.card ul { margin: 0; padding-left: 1.1em; font-size: 0.94rem; }
+.card li + li { margin-top: 2px; }
+.card.k-main { border-top: 3px solid var(--main); }
+.card.k-parse { border-top: 3px solid var(--parse); }
+.card.k-layout { border-top: 3px solid var(--layout); }
+.card.k-api { border-top: 3px solid var(--accent); }
+
+table { border-collapse: collapse; width: 100%; font-size: 0.94rem; background: var(--surface); }
+.table-wrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 10px; }
+th, td { text-align: left; padding: 10px 14px; border-bottom: 1px solid var(--rule); vertical-align: top; }
+th { font-weight: 600; font-size: 0.86rem; color: var(--muted); background: var(--bg); }
+tr:last-child td { border-bottom: none; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+td .pill { display: inline-block; padding: 1px 8px; border-radius: 99px; font-size: 0.8rem; font-weight: 600; }
+.pill-main { color: var(--main); background: var(--main-tint); }
+.pill-parse { color: var(--parse); background: var(--parse-tint); }
+.pill-layout { color: var(--layout); background: var(--layout-tint); }
+.pill-server { color: var(--server); background: var(--server-tint); }
+.pill-other { color: var(--muted); background: var(--bg); border: 1px solid var(--rule); }
+.chip { fill: var(--surface); stroke: var(--parse); stroke-width: 1; }
+.tbl-head { fill: var(--server-tint); }
+.bar-quote { fill: var(--muted); }
+
+ol.steps { margin: 0; padding-left: 1.3em; max-width: 72ch; }
+ol.steps li { margin: 0.35em 0; }
+ul.plain { margin: 0; padding-left: 1.2em; max-width: 72ch; }
+ul.plain li { margin: 0.3em 0; }
+.note { font-size: 0.9rem; color: var(--muted); max-width: 72ch; }
+.two { display: grid; gap: 18px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); align-items: start; }
+
+@media (max-width: 600px) {
+  main { padding-top: 32px; gap: 44px; }
+  h1 { font-size: 2rem; }
+  h2 { font-size: 1.45rem; }
+  figure { padding: 14px; }
+}
+</style>
+</head>
+<body>
+<main>
+
+<header>
+  <p class="meta">Swift package · iOS 17+ · state as of 16 November 2026</p>
+  <h1>TranscriptKit architecture</h1>
+  <p class="lede">TranscriptKit renders a streaming LLM conversation as one selectable document. Markdown arrives in chunks, is parsed incrementally, laid out with Core Text and drawn into a single view, so a selection can run from the first message to the last. Almost all of that work happens off the main thread: the main thread installs finished layouts and draws only what scrolls into view. The Markdown is CommonMark's blocks, nested in any order, plus GitHub's tables, task lists and strikethrough.</p>
+  <div class="legend" aria-label="Colour key for threads">
+    <span><i class="swatch sw-main"></i>Main thread</span>
+    <span><i class="swatch sw-parse"></i>Parse queue (one per <code>TranscriptStream</code>)</span>
+    <span><i class="swatch sw-layout"></i>Layout queue (one per view)</span>
+    <span><i class="swatch sw-server"></i>Render server (another process)</span>
+  </div>
+</header>
+
+<section aria-labelledby="pipeline">
+  <h2 id="pipeline">From a chunk to the screen</h2>
+  <p class="prose">An app streams text with <code>stream.append(chunk)</code> and shows it with <code>TranscriptText(stream:)</code> in SwiftUI or a <code>TranscriptTextView</code> in UIKit. Each chunk crosses three threads before it reaches the screen, and only the last step happens on the main thread.</p>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 1060 430" role="img" aria-label="A chunk is buffered on the main thread, parsed on the parse queue, laid out and partly drawn on the layout queue, and installed on the main thread in one Core Animation commit.">
+      <defs>
+        <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <!-- lanes -->
+      <rect class="lane-main" x="6" y="8" width="1046" height="96" rx="8"/>
+      <rect class="lane-parse" x="6" y="112" width="1046" height="96" rx="8"/>
+      <rect class="lane-layout" x="6" y="216" width="1046" height="96" rx="8"/>
+      <rect class="lane-server" x="6" y="320" width="1046" height="96" rx="8"/>
+      <text class="lane-label t-main" x="20" y="52">Main</text><text class="lane-label t-main" x="20" y="68">thread</text>
+      <text class="lane-label t-parse" x="20" y="156">Parse</text><text class="lane-label t-parse" x="20" y="172">queue</text>
+      <text class="lane-label t-layout" x="20" y="260">Layout</text><text class="lane-label t-layout" x="20" y="276">queue</text>
+      <text class="lane-label t-server" x="20" y="364">Render</text><text class="lane-label t-server" x="20" y="380">server</text>
+
+      <!-- main lane -->
+      <rect class="box box-main" x="150" y="28" width="160" height="56" rx="6"/>
+      <text class="b-mono" x="230" y="52" text-anchor="middle">append(chunk)</text>
+      <text class="b-sub" x="230" y="70" text-anchor="middle">only buffers the text</text>
+
+      <rect class="box box-main" x="330" y="28" width="160" height="56" rx="6"/>
+      <text class="b-title" x="410" y="52" text-anchor="middle">Display link</text>
+      <text class="b-sub" x="410" y="70" text-anchor="middle">once per frame</text>
+
+      <rect class="box-note" x="510" y="28" width="320" height="56" rx="6"/>
+      <text class="b-title" x="670" y="52" text-anchor="middle">Tiles, drawn here only on scroll</text>
+      <text class="b-sub" x="670" y="70" text-anchor="middle">or when the tail is handed back</text>
+
+      <rect class="box box-main" x="870" y="28" width="160" height="56" rx="6"/>
+      <text class="b-title" x="950" y="52" text-anchor="middle">Install</text>
+      <text class="b-sub" x="950" y="70" text-anchor="middle">layout + tail, one commit</text>
+
+      <!-- parse lane -->
+      <rect class="box box-parse" x="330" y="132" width="160" height="56" rx="6"/>
+      <text class="b-title" x="410" y="156" text-anchor="middle">Parse new text</text>
+      <text class="b-sub" x="410" y="174" text-anchor="middle">lines once, checkpoints</text>
+
+      <rect class="box box-parse" x="510" y="132" width="160" height="56" rx="6"/>
+      <text class="b-title" x="590" y="156" text-anchor="middle">TranscriptDocument</text>
+      <text class="b-sub" x="590" y="174" text-anchor="middle">settled + open blocks</text>
+
+      <!-- layout lane -->
+      <rect class="box box-layout" x="510" y="236" width="160" height="56" rx="6"/>
+      <text class="b-title" x="590" y="260" text-anchor="middle">Submit</text>
+      <text class="b-sub" x="590" y="278" text-anchor="middle">newest document wins</text>
+
+      <rect class="box box-layout" x="690" y="236" width="160" height="56" rx="6"/>
+      <text class="b-title" x="770" y="260" text-anchor="middle">DocumentLayout</text>
+      <text class="b-sub" x="770" y="278" text-anchor="middle">≤ 1 per frame, reused</text>
+
+      <rect class="box box-layout" x="870" y="236" width="160" height="56" rx="6"/>
+      <text class="b-title" x="950" y="260" text-anchor="middle">TailRenderer</text>
+      <text class="b-sub" x="950" y="278" text-anchor="middle">end of text → IOSurface</text>
+
+      <!-- render server -->
+      <rect class="box box-server" x="870" y="340" width="160" height="56" rx="6"/>
+      <text class="b-title" x="950" y="364" text-anchor="middle">Core Animation</text>
+      <text class="b-sub" x="950" y="382" text-anchor="middle">composites tiles + tail</text>
+
+      <!-- edges -->
+      <line class="edge" x1="310" y1="56" x2="328" y2="56" marker-end="url(#arrow)"/>
+      <line class="edge" x1="410" y1="84" x2="410" y2="130" marker-end="url(#arrow)"/>
+      <text class="edge-label" x="418" y="112">pending text</text>
+      <line class="edge" x1="490" y1="160" x2="508" y2="160" marker-end="url(#arrow)"/>
+      <line class="edge" x1="590" y1="188" x2="590" y2="234" marker-end="url(#arrow)"/>
+      <text class="edge-label" x="598" y="216">sink, no main hop</text>
+      <line class="edge" x1="670" y1="264" x2="688" y2="264" marker-end="url(#arrow)"/>
+      <line class="edge" x1="850" y1="264" x2="868" y2="264" marker-end="url(#arrow)"/>
+      <line class="edge" x1="950" y1="236" x2="950" y2="86" marker-end="url(#arrow)"/>
+      <text class="edge-label" x="958" y="120">mailbox,</text>
+      <text class="edge-label" x="958" y="134">main.async</text>
+      <path class="edge" d="M1030,56 H1044 V368 H1032" marker-end="url(#arrow)"/>
+      <text class="edge-label" x="1038" y="330" text-anchor="end">commit</text>
+    </svg>
+    </div>
+    <figcaption>The path of one streamed chunk. Text crosses to the parse queue once per frame, the document goes straight from the parse queue to the view's layout queue, and the main thread is woken once with a finished layout and a drawn tail, which it installs in a single Core Animation transaction.</figcaption>
+  </figure>
+  <ol class="steps">
+    <li><strong>Buffer.</strong> <code>TranscriptStream.append</code> appends to a string and unpauses a <code>CADisplayLink</code>. Hundreds of tiny chunks a second cost one string append each.</li>
+    <li><strong>Hand off once per frame.</strong> On each tick, whatever arrived is handed to the stream's serial parse queue, unless a parse is still running. When that parse finishes, more text schedules another tick, so the last chunk is never stranded.</li>
+    <li><strong>Parse.</strong> The incremental parser turns the new text into a new <code>TranscriptDocument</code>, numbered with a sequence. Registered views receive it on the parse queue, without going through the main thread.</li>
+    <li><strong>Lay out.</strong> The view's <code>LayoutEngine</code> keeps only the newest waiting document and lays it out at most once per display frame, reusing everything from the previous layout that did not change.</li>
+    <li><strong>Draw the tail.</strong> While text is being appended, the engine's <code>TailRenderer</code> draws the bottom 256 points of the document into one of a few IOSurfaces.</li>
+    <li><strong>Install.</strong> The finished layout and the drawn tail land in a mailbox. The main thread takes them in one go: it swaps in the layout, sets the tail layer's contents, moves the tiles' cutoff and reports a new height if there is one. That is one commit; nothing is drawn on the main thread.</li>
+  </ol>
+</section>
+
+<section aria-labelledby="modules">
+  <h2 id="modules">The parts</h2>
+  <div class="grid">
+    <div class="card k-api">
+      <h3>Public API</h3>
+      <ul>
+        <li><code>TranscriptStream</code>: append chunks, <code>finish()</code>, <code>flush()</code></li>
+        <li><code>TranscriptText</code>: SwiftUI view, from a stream or a document</li>
+        <li><code>TranscriptTextView</code>: the UIKit view itself</li>
+        <li><code>MarkdownStreamParser</code>, <code>TranscriptDocument</code>, <code>TranscriptStyle</code></li>
+        <li><code>imageLoader</code> on the view, or <code>.imageLoader { }</code> on <code>TranscriptText</code> (read once, when the view is made): off by default</li>
+        <li><code>TranscriptTag</code>: the app's own inline tags and their <code>TranscriptDecoration</code> (colors, padding and shapes: <code>.pill</code>, <code>.underline</code>, or a <code>TranscriptShapeRecipe</code>), given to the stream or parser</li>
+      </ul>
+      <p class="files">Stream/ · iOS/ · Model/</p>
+    </div>
+    <div class="card k-parse">
+      <h3>Markdown</h3>
+      <p>Block parser fed line by line: quotes and list items nest as a stack of containers around leaf blocks (paragraphs, ATX and setext headings, fenced and indented code, tables, rules), with task items, link reference definitions and hidden HTML comments; list items are numbered as CommonMark numbers them. Inline parser on UTF-16 with resumable checkpoints: emphasis, strikethrough, code spans, inline and reference links, images, angle-bracket and bare URLs and email addresses, escapes, numeric and all 2,125 named HTML entities, a few HTML tags, and the app's own tags with attributes.</p>
+      <p class="files">MarkdownStreamParser · BlockParser · InlineParser</p>
+    </div>
+    <div class="card k-parse">
+      <h3>Model</h3>
+      <p>A document is blocks of display text plus style spans, in one flat UTF-16 offset space with blocks joined by "\n". Each block records the quotes and list items it sits in and, on an item's first block, its marker. The document also keeps the link reference definitions, which reference links are resolved against. Finished blocks live in a <code>SharedList</code> that every version shares.</p>
+      <p class="files">TranscriptDocument · TranscriptBlock · SharedList</p>
+    </div>
+    <div class="card k-layout">
+      <h3>Layout</h3>
+      <p>Core Text line layout per block, stacked into a document layout with positions and offsets. Containers become indents, quote bars and markers; tables are typeset cell by cell; images get their space from a run delegate. Immutable once made, so it is built on one thread and read on another.</p>
+      <p class="files">DocumentLayout · BlockLayout · TranscriptStyle · ImageStore</p>
+    </div>
+    <div class="card k-layout">
+      <h3>Engine</h3>
+      <p>Per-view background layout with a latest-wins request slot, a per-frame cap, a merging mailbox, synchronous paths for the first layout and width changes, and the tail renderer.</p>
+      <p class="files">LayoutEngine · TailRenderer</p>
+    </div>
+    <div class="card k-main">
+      <h3>View</h3>
+      <p>Draws settled text into 256-point tiles near the visible area, shows the tail layer, and answers every <code>UITextInput</code> query so the system's selection handles, loupe and edit menu work across the whole transcript.</p>
+      <p class="files">TranscriptTextView · CanvasView</p>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="blocks">
+  <h2 id="blocks">Containers and leaf blocks</h2>
+  <p class="prose">Quotes and list items nest in any order, as in CommonMark. The parser keeps the open ones as a stack and matches each new line against it, but what reaches the document is flat: one block per leaf, carrying the stack it sits in. Layout needs nothing more to draw the nesting.</p>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 1000 310" role="img" aria-label="Eight source lines become five blocks. Each block lists its containers, outermost first: quote; quote, quote; list item with a checked task marker; list item, list item with a bullet; and a table with none. On the right, the same blocks drawn: a quote bar that runs on through the gap into the nested quote, a second bar, a checkbox, a bullet in the inner item's gutter, and a table grid.">
+      <defs>
+        <marker id="arrow4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <text class="b-sub" x="20" y="24">source lines</text>
+      <text class="b-sub" x="430" y="24">blocks: containers, outermost first, then the leaf</text>
+      <text class="b-sub" x="830" y="24">drawn</text>
+
+      <!-- source -->
+      <text class="b-mono" x="20" y="62" xml:space="preserve">&gt; Quotes can hold blocks:</text>
+      <text class="b-mono" x="20" y="88" xml:space="preserve">&gt;</text>
+      <text class="edge-label" x="40" y="88">blank in the quote: ends the paragraph</text>
+      <text class="b-mono" x="20" y="114" xml:space="preserve">&gt; &gt; a nested quote</text>
+      <text class="b-mono" x="20" y="154" xml:space="preserve">- [x] done task</text>
+      <text class="b-mono" x="20" y="190" xml:space="preserve">  - nested ~~old~~ new</text>
+      <text class="b-mono" x="20" y="234" xml:space="preserve">| Name   | Notes |</text>
+      <text class="b-mono" x="20" y="260" xml:space="preserve">| :---   | ---:  |</text>
+      <text class="b-mono" x="20" y="286" xml:space="preserve">| Tables | rows  |</text>
+
+      <!-- arrows -->
+      <line class="edge" x1="232" y1="58" x2="426" y2="58" marker-end="url(#arrow4)"/>
+      <text class="edge-label" x="330" y="51" text-anchor="middle">"&gt;" opens a quote</text>
+      <line class="edge" x1="232" y1="110" x2="426" y2="110" marker-end="url(#arrow4)"/>
+      <text class="edge-label" x="330" y="103" text-anchor="middle">a second "&gt;" nests one</text>
+      <line class="edge" x1="232" y1="150" x2="426" y2="150" marker-end="url(#arrow4)"/>
+      <text class="edge-label" x="330" y="143" text-anchor="middle">"[x]" after the marker: a task</text>
+      <line class="edge" x1="232" y1="186" x2="426" y2="186" marker-end="url(#arrow4)"/>
+      <text class="edge-label" x="330" y="179" text-anchor="middle">indented 2: inside the item</text>
+      <line class="edge" x1="232" y1="256" x2="426" y2="256" marker-end="url(#arrow4)"/>
+      <text class="edge-label" x="330" y="249" text-anchor="middle">delimiter row makes a header</text>
+
+      <!-- blocks -->
+      <rect class="box box-parse" x="430" y="43" width="370" height="30" rx="6"/>
+      <rect class="chip" x="440" y="49" width="24" height="18" rx="4"/>
+      <text class="b-mono" x="452" y="62" text-anchor="middle">&gt;</text>
+      <text class="b-mono" x="474" y="62">paragraph</text>
+      <text class="b-sub" x="610" y="62">Quotes can hold blocks:</text>
+
+      <rect class="box box-parse" x="430" y="95" width="370" height="30" rx="6"/>
+      <rect class="chip" x="440" y="101" width="24" height="18" rx="4"/>
+      <text class="b-mono" x="452" y="114" text-anchor="middle">&gt;</text>
+      <rect class="chip" x="468" y="101" width="24" height="18" rx="4"/>
+      <text class="b-mono" x="480" y="114" text-anchor="middle">&gt;</text>
+      <text class="b-mono" x="502" y="114">paragraph</text>
+      <text class="b-sub" x="610" y="114">a nested quote</text>
+
+      <rect class="box box-parse" x="430" y="135" width="370" height="30" rx="6"/>
+      <rect class="chip" x="440" y="141" width="24" height="18" rx="4"/>
+      <text class="b-mono" x="452" y="154" text-anchor="middle">li</text>
+      <text class="b-mono" x="474" y="154">paragraph · task ✓</text>
+      <text class="b-sub" x="640" y="154">done task</text>
+
+      <rect class="box box-parse" x="430" y="171" width="370" height="30" rx="6"/>
+      <rect class="chip" x="440" y="177" width="24" height="18" rx="4"/>
+      <text class="b-mono" x="452" y="190" text-anchor="middle">li</text>
+      <rect class="chip" x="468" y="177" width="24" height="18" rx="4"/>
+      <text class="b-mono" x="480" y="190" text-anchor="middle">li</text>
+      <text class="b-mono" x="502" y="190">paragraph · bullet</text>
+      <text class="b-sub" x="640" y="190">nested <tspan style="text-decoration: line-through">old</tspan> new</text>
+
+      <rect class="box box-parse" x="430" y="216" width="370" height="80" rx="6"/>
+      <text class="b-mono" x="442" y="238">table · 2 columns × 2 rows · no containers</text>
+      <text class="b-mono" x="442" y="262">"Name⇥Notes↵Tables⇥rows"</text>
+      <text class="b-sub" x="442" y="284">cells are ranges of that text; columns: leading, trailing</text>
+
+      <!-- drawn -->
+      <rect class="bar-quote" x="832" y="43" width="3" height="82"/>
+      <rect class="textline" x="846" y="54" width="120" height="7" rx="2"/>
+      <rect class="bar-quote" x="846" y="95" width="3" height="30"/>
+      <rect class="textline" x="860" y="106" width="104" height="7" rx="2"/>
+      <rect class="handle" x="834" y="144" width="11" height="11" rx="2"/>
+      <rect class="textline" x="856" y="146" width="80" height="7" rx="2"/>
+      <circle cx="866" cy="186" r="2.5" style="fill: none; stroke: currentColor; stroke-width: 1.2"/>
+      <rect class="textline" x="876" y="182" width="96" height="7" rx="2"/>
+      <rect class="tbl-head" x="832" y="216" width="156" height="40" rx="5"/>
+      <rect class="cell" x="832" y="216" width="156" height="80" rx="5" style="fill: none"/>
+      <line class="thin" x1="832" y1="256" x2="988" y2="256"/>
+      <line class="thin" x1="900" y1="216" x2="900" y2="296"/>
+      <rect class="textline" x="840" y="233" width="38" height="7" rx="2"/>
+      <rect class="textline" x="944" y="233" width="36" height="7" rx="2"/>
+      <rect class="textline" x="840" y="273" width="44" height="7" rx="2"/>
+      <rect class="textline" x="954" y="273" width="26" height="7" rx="2"/>
+    </svg>
+    </div>
+    <figcaption>One block per paragraph, heading, code block, rule or table, each with the quotes and list items around it. Layout turns that stack into an indent per container, a bar per quote (running on through the gap while the next block is in the same quote) and the marker in the gutter of the innermost list item.</figcaption>
+  </figure>
+  <ul class="plain">
+    <li><strong>Matching a line.</strong> A line first continues as many open containers as it can: "&gt;" for a quote, enough indentation for a list item, where a blank line also counts. Containers it does not continue close, unless the line is a lazy continuation of a paragraph. Then new quotes and items open, and what is left is the leaf.</li>
+    <li><strong>Tables.</strong> A one-line paragraph with a "|" becomes a header when the next line is a delimiter row with as many cells. Rows join until a blank line or another block starts. The block's text is the cells joined by tabs and the rows by newlines, so selection and copy treat it like any other block.</li>
+    <li><strong>Images.</strong> An image is one U+FFFC character with an image span. Nothing is fetched unless the app sets an <code>imageLoader</code>, because an image URL written by a model can carry data out of the conversation in its address. Without one, or until the picture arrives, a chip shows the alt text.</li>
+    <li><strong>References.</strong> A definition line (<code>[label]: url</code>) is never shown; the document keeps the first definition of each label. Text never depends on definitions, which usually come after the links that use them: <code>[text][label]</code> shows "text", and a shortcut <code>[1]</code> keeps its brackets. A reference span carries its label, is styled as a link once the label is defined, and is resolved when tapped. A new definition restyles the blocks that use it, wherever they are; the layout reports them as rectangles, and only those are redrawn, not everything below them.</li>
+    <li><strong>Custom tags.</strong> An app defines tags such as <code>&lt;mark&gt;</code> or <code>&lt;mention id="42"&gt;</code> with <code>TranscriptTag</code>, each with a decoration: traits (bold, italic, monospaced, underline, strikethrough), a text color, a highlight behind the text, and a link, any of them worked out from the tag's attributes. The parser must know the tags, to tell <code>&lt;mark&gt;</code> from <code>Array&lt;Int&gt;</code>, so they are given to <code>TranscriptStream</code> or <code>MarkdownStreamParser</code>; any other tag shows as written. The decoration is worked out once, when the tag is parsed, and the span keeps the tag, its attributes and its decoration, so a document needs nothing else to be drawn. Colors carry a light and a dark value, because the tail is drawn off the main thread, where dynamic colors can't be resolved. A highlight is drawn behind the whole line's glyphs, one rounded rectangle across neighbouring runs, and stays inside the line, so redrawing a band of lines never cuts one. A decoration's link goes through the view's <code>openLink</code>, so tapping a mention reaches the app like any link.</li>
+    <li><strong>Shapes around tagged text.</strong> A decoration can also draw shapes and ask for padding: a pill with a fill and an outline, an underline (solid, dashed, dotted, wavy, or a hand-drawn highlighter stroke), or the app's own shape, a <code>TranscriptShapeRecipe</code> that returns paths. Shapes are made when a line is laid out, on the layout queue, once per line the tag's text is on, and kept on the line; drawing only fills and strokes them, behind the text or over it. So the tiles and the tail draw the same pixels, recipes never run while drawing, and lines reused from the last layout keep their shapes. Each line's part of a tag gets its box, its font's metrics, whether the tag starts or ends there (a pill that wraps is open where it breaks), and a seed that is the same in every launch, for a hand-drawn look. Built-in shapes are measured along x from the fragment's start, so what is on screen stays put as the text grows. Padding is extra spacing on the character before the tag and on its last character, and a line that starts with a padded tag is moved over; the text itself is unchanged, so copy, selection offsets and accessibility are not affected. Shapes may reach 6 points above or below their line (the space between list items) and are clipped there; every place that decides what to redraw (the changed top, the tail's top and bottom, restyled blocks, the tiles) allows for that. Sideways they may reach 12 points past the text column on either side, so an app's own shape can start left of the text, as a highlighter band does where a wrapped line begins: the tiles and the tail are 24 points wider than the view and draw outside its frame, so the text never moves to make room. Each fragment says where its paths can be seen (<code>visibleRect</code>); the app leaves that much room around the view, as most layouts' padding does. All of a block's shapes behind the text are drawn before its text, so a pill never covers the line above. Only the tags on the lines laid out again are looked at: a streamed paragraph with a pill or a marker every few words costs 27 µs of layout per update on a Mac, against 19 µs for the same text without shapes.</li>
+    <li><strong>API change.</strong> <code>TranscriptBlock.Kind</code> lost <code>.quote</code> and <code>.listItem</code> and gained <code>.table</code>. Blocks now have <code>containers</code>, outermost first, and a <code>marker</code> (bullet, number, or task) on an item's first block. Spans can have a <code>reference</code> and a <code>customTag</code> (kept out of line with the image, so a span is smaller than before), documents have <code>linkDefinitions</code>, and <code>destination(of:)</code> says where a span links to.</li>
+  </ul>
+</section>
+
+<section aria-labelledby="rendering">
+  <h2 id="rendering">How the text is drawn</h2>
+  <p class="prose">There is no text view or label underneath: every glyph is drawn with Core Text into layers the view owns. Two kinds of layer share the job, and a cutoff line decides which one draws what.</p>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 1000 560" role="img" aria-label="The view's content: tiles drawn on the main thread cover the visible area plus half a screen above and below; below the cutoff, the tail layer drawn on the layout queue shows the growing end of the document; the system's selection overlays sit above both.">
+      <defs>
+        <marker id="arrow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <!-- off-screen part of the document -->
+      <rect class="offscreen" x="60" y="16" width="340" height="96" rx="4"/>
+      <text class="b-sub" x="230" y="60" text-anchor="middle">earlier messages</text>
+      <text class="b-sub" x="230" y="76" text-anchor="middle">no tiles exist here</text>
+
+      <!-- tiles -->
+      <rect class="tile" x="60" y="120" width="340" height="96"/>
+      <rect class="tile" x="60" y="216" width="340" height="96"/>
+      <rect class="tile" x="60" y="312" width="340" height="96"/>
+      <!-- text in tiles -->
+      <rect class="textline" x="78" y="136" width="290" height="7" rx="2"/>
+      <rect class="textline" x="78" y="152" width="250" height="7" rx="2"/>
+      <rect class="textline" x="78" y="168" width="300" height="7" rx="2"/>
+      <rect class="textline" x="78" y="192" width="180" height="7" rx="2"/>
+      <rect class="textline" x="78" y="232" width="296" height="7" rx="2"/>
+      <rect class="textline" x="78" y="248" width="270" height="7" rx="2"/>
+      <rect class="textline" x="78" y="264" width="220" height="7" rx="2"/>
+      <rect class="textline" x="78" y="290" width="300" height="7" rx="2"/>
+      <rect class="textline" x="78" y="306" width="260" height="7" rx="2"/>
+      <rect class="textline" x="78" y="322" width="284" height="7" rx="2"/>
+      <rect class="textline" x="78" y="338" width="230" height="7" rx="2"/>
+
+      <!-- tail layer -->
+      <rect class="tail" x="60" y="352" width="340" height="168" rx="3"/>
+      <rect class="textline-tail" x="78" y="366" width="296" height="7" rx="2"/>
+      <rect class="textline-tail" x="78" y="382" width="270" height="7" rx="2"/>
+      <rect class="textline-tail" x="78" y="398" width="132" height="7" rx="2"/>
+      <rect class="ink-fill" x="214" y="395" width="2" height="13"/>
+      <text class="b-sub" x="230" y="452" text-anchor="middle">room for the next lines;</text>
+      <text class="b-sub" x="230" y="468" text-anchor="middle">moves down 48 pt before the bottom</text>
+
+      <!-- cutoff -->
+      <line class="cutoff" x1="40" y1="352" x2="420" y2="352"/>
+
+      <!-- selection overlay -->
+      <rect class="selection" x="200" y="262" width="176" height="13" rx="2"/>
+      <rect class="selection" x="78" y="286" width="300" height="13" rx="2"/>
+      <rect class="selection" x="78" y="378" width="200" height="13" rx="2"/>
+      <circle class="handle" cx="200" cy="258" r="4"/>
+      <rect class="handle" x="199" y="258" width="2" height="18"/>
+      <circle class="handle" cx="278" cy="396" r="4"/>
+      <rect class="handle" x="277" y="378" width="2" height="18"/>
+
+      <!-- viewport -->
+      <rect class="viewport" x="44" y="196" width="372" height="236" rx="18"/>
+      <line class="thin" x1="416" y1="420" x2="470" y2="420"/>
+      <text class="b-title" x="478" y="416">Visible area</text>
+      <text class="b-sub" x="478" y="434">the scroll view's bounds</text>
+
+      <!-- annotations -->
+      <line class="thin" x1="404" y1="168" x2="470" y2="168"/>
+      <text class="b-title" x="478" y="164"><tspan class="t-main">Tiles</tspan> · main thread</text>
+      <text class="b-sub" x="478" y="182">256-pt views drawn in draw(_:), half a screen beyond</text>
+      <text class="b-sub" x="478" y="198">the visible area each way, recycled while scrolling</text>
+
+      <line class="thin" x1="424" y1="352" x2="470" y2="352"/>
+      <text class="b-title" x="478" y="348"><tspan class="t-layout">Cutoff</tspan> = tail.top</text>
+      <text class="b-sub" x="478" y="366">tiles clip their drawing here, so every line</text>
+      <text class="b-sub" x="478" y="382">is drawn by exactly one layer</text>
+
+      <line class="thin" x1="404" y1="470" x2="470" y2="470"/>
+      <text class="b-title" x="478" y="466"><tspan class="t-layout">Tail layer</tspan> · layout queue</text>
+      <text class="b-sub" x="478" y="484">an IOSurface as layer contents while text arrives,</text>
+      <text class="b-sub" x="478" y="500">handed back to the tiles 1 s after the last update</text>
+
+      <line class="thin" x1="380" y1="292" x2="470" y2="272"/>
+      <text class="b-title" x="478" y="268"><tspan style="fill: var(--accent)">Selection</tspan> · UIKit</text>
+      <text class="b-sub" x="478" y="286">highlight, handles and loupe from UITextInteraction,</text>
+      <text class="b-sub" x="478" y="302">above both kinds of layer, one range across blocks</text>
+    </svg>
+    </div>
+    <figcaption>One view, two drawing paths. Settled text is drawn into tiles on the main thread, but only when a tile scrolls into view or the tail is handed back. The growing end is drawn on the layout queue and shown as a surface, so streaming no longer redraws tiles every frame.</figcaption>
+  </figure>
+
+  <div class="two">
+    <div>
+      <h3>Tiles</h3>
+      <ul class="plain">
+        <li>Fixed 256-point bands of the document, each a <code>CanvasView</code> that draws its slice with <code>DocumentLayout.draw</code>.</li>
+        <li>Only tiles within half a screen of the visible area exist; others are hidden and reused, so memory stays flat however long the conversation is.</li>
+        <li>When something above the cutoff changes, only the band that changed is invalidated, and only lines intersecting it are drawn.</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Tail</h3>
+      <ul class="plain">
+        <li>Starts at the last line when text begins arriving and stays put while the text fills it; it moves to the then-last line once the text comes within 48 points of its bottom.</li>
+        <li>Each frame redraws only the changed band into a CPU bitmap, on whole pixels, and copies just the changed rows into the next free surface (pool of up to four, never one the render server still holds).</li>
+        <li>Surfaces are tagged sRGB, like the bitmap, so colours match the tiles exactly.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<section aria-labelledby="coretext">
+  <h2 id="coretext">One block through Core Text</h2>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 1000 170" role="img" aria-label="A block's text and spans become an attributed string with cached fonts, a CTTypesetter breaks it into CTLines greedily, and each line is drawn run by run.">
+      <defs>
+        <marker id="arrow3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="currentColor"/>
+        </marker>
+      </defs>
+      <rect class="box box-parse" x="10" y="20" width="170" height="62" rx="6"/>
+      <text class="b-title" x="95" y="46" text-anchor="middle">TranscriptBlock</text>
+      <text class="b-sub" x="95" y="64" text-anchor="middle">display text + spans</text>
+
+      <rect class="box box-layout" x="210" y="20" width="170" height="62" rx="6"/>
+      <text class="b-title" x="295" y="46" text-anchor="middle">Attributed string</text>
+      <text class="b-sub" x="295" y="64" text-anchor="middle">fonts cached by role, traits</text>
+
+      <rect class="box box-layout" x="410" y="20" width="170" height="62" rx="6"/>
+      <text class="b-mono" x="495" y="46" text-anchor="middle">CTTypesetter</text>
+      <text class="b-sub" x="495" y="64" text-anchor="middle">greedy line breaks</text>
+
+      <rect class="box box-layout" x="610" y="20" width="170" height="62" rx="6"/>
+      <text class="b-mono" x="695" y="46" text-anchor="middle">CTLine × n</text>
+      <text class="b-sub" x="695" y="64" text-anchor="middle">frames, baselines, ranges</text>
+
+      <rect class="box box-main" x="810" y="20" width="180" height="62" rx="6"/>
+      <text class="b-mono" x="900" y="46" text-anchor="middle">CTRunDraw</text>
+      <text class="b-sub" x="900" y="64" text-anchor="middle">per run, colour reset</text>
+
+      <line class="edge" x1="180" y1="51" x2="208" y2="51" marker-end="url(#arrow3)"/>
+      <line class="edge" x1="380" y1="51" x2="408" y2="51" marker-end="url(#arrow3)"/>
+      <line class="edge" x1="580" y1="51" x2="608" y2="51" marker-end="url(#arrow3)"/>
+      <line class="edge" x1="780" y1="51" x2="808" y2="51" marker-end="url(#arrow3)"/>
+
+      <!-- reuse note -->
+      <path class="edge" d="M695,82 V120 H495 V86" marker-end="url(#arrow3)"/>
+      <text class="edge-label" x="595" y="138" text-anchor="middle">growing block: lines above the last are kept,</text>
+      <text class="edge-label" x="595" y="154" text-anchor="middle">typesetting restarts at the last line</text>
+      <text class="edge-label" x="900" y="110" text-anchor="middle">tiles (main) or</text>
+      <text class="edge-label" x="900" y="126" text-anchor="middle">tail (layout queue)</text>
+    </svg>
+    </div>
+    <figcaption>Layout and drawing are separate. A <code>BlockLayout</code> holds the lines; drawing happens later, wherever the line lands: a tile on the main thread or the tail on the layout queue.</figcaption>
+  </figure>
+  <ul class="plain">
+    <li><strong>Styles.</strong> Spans may overlap (bold inside a link), so each stretch between span boundaries gets the union of the spans over it. Text takes the context's fill colour, so light and dark mode need no relayout, only a redraw.</li>
+    <li><strong>Blocks.</strong> Each container adds its indent. A quote's bar runs on through the gap into the next block in the same quote. A list item's marker (bullet, number or checkbox) sits in the gutter of the innermost item, on the first baseline. Code blocks get padding and a rounded background, rules a 1-point line.</li>
+    <li><strong>Tables.</strong> Each cell is typeset on its own. Columns take the width of their widest cell; when the table does not fit, it is laid out as browsers lay out tables: every column gets at least its longest word, and the space left goes to the columns in proportion to how much more they want, so one long cell does not squeeze the others until their words break. While a table streams, rows that were already complete are not measured or typeset again and keep their lines while the columns stay the same, so only the row being written is redrawn. A row that widens a column lays out and redraws the whole table.</li>
+    <li><strong>Drawn by hand.</strong> Core Text has no strikethrough, so strikethrough and underline are drawn per run after the glyphs. A picture is drawn into the space its run delegate reserved, and the U+FFFC glyph is skipped.</li>
+    <li><strong>Lines reused.</strong> Line breaks are greedy, so text appended to a block can only change its last line. When a block is the previous block with text added at the end and the same styles, its earlier lines are carried over and Core Text starts again at the last line.</li>
+    <li><strong>Offsets.</strong> Each line remembers the string offset it was typeset from, so caret positions and hit testing still work on lines typeset from a substring.</li>
+  </ul>
+</section>
+
+<section aria-labelledby="parsing">
+  <h2 id="parsing">Parsing a stream incrementally</h2>
+  <p class="prose">Every update has to look the same as parsing the whole text from scratch, and text already on screen must only grow at its end. The parser does work in proportion to the new text, not to what came before.</p>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 1000 250" role="img" aria-label="In the open block, text up to the checkpoint is never parsed again; text after it is parsed again on each update; trailing characters that could still become markup are held back.">
+      <text class="b-sub" x="10" y="28">source of the open block, as streamed so far</text>
+      <text class="b-mono" x="10" y="58" textLength="470" lengthAdjust="spacingAndGlyphs" style="font-size:16px">Each block is **parsed once**, then `frozen.app</text>
+      <rect class="bar-commit" x="10" y="70" width="360" height="8" rx="2"/>
+      <rect class="bar-spec" x="370" y="70" width="110" height="8" rx="2"/>
+      <text class="edge-label" x="10" y="96">checkpoint: decided, never parsed again</text>
+      <text class="edge-label" x="370" y="96">unclosed code span: parsed again each update</text>
+
+      <text class="b-mono" x="10" y="148" textLength="180" lengthAdjust="spacingAndGlyphs" style="font-size:16px">That costs 2 * 3 *</text>
+      <rect class="bar-commit" x="10" y="160" width="170" height="8" rx="2"/>
+      <rect class="bar-held" x="180" y="160" width="10" height="8" rx="2"/>
+      <text class="edge-label" x="182" y="186">held back: "*" could still open emphasis</text>
+
+      <line class="thin" x1="560" y1="20" x2="560" y2="230"/>
+      <text class="b-sub" x="590" y="28">what is shown</text>
+      <text x="590" y="58" style="font: 400 16px var(--font-body); fill: currentColor">Each block is <tspan style="font-weight:700">parsed once</tspan>, then <tspan style="font-family: var(--font-mono); font-size:14px">frozen.app</tspan></text>
+      <text class="edge-label" x="590" y="80">unclosed markup is styled as if it closed at the end,</text>
+      <text class="edge-label" x="590" y="96">so the closer only ever appends</text>
+      <text x="590" y="148" style="font: 400 16px var(--font-body); fill: currentColor">That costs 2 * 3</text>
+      <text class="edge-label" x="590" y="170">the "*" appears with the next character</text>
+    </svg>
+    </div>
+    <figcaption>Inside the block being written. The inline parser works on UTF-16 code units and keeps a checkpoint at the last decision no later text can change. A token that needed to see past the stable text (an unclosed code span, a link still missing its ")", a run of "*" at the very end) stops the checkpoint, and everything after it is parsed again on the next update.</figcaption>
+  </figure>
+  <ul class="plain">
+    <li><strong>Lines.</strong> Each complete line goes through the block parser once. The unterminated last line is parsed on a copy of the state, because it may still turn out to be markup ("#", "-", "12.", a fence or a rule); such a line is held back until it is decided.</li>
+    <li><strong>Frozen blocks.</strong> When a later block begins, the earlier one is parsed a final time and appended to the settled list. It is never looked at again.</li>
+    <li><strong>Hold-back.</strong> Trailing <code>* _ ~ ` \ [ ] !</code> and an unfinished entity such as <code>&amp;am</code> or <code>&amp;#82</code> wait for the next character, and so do a partial HTML tag or comment. A custom tag is hidden until its "&gt;" arrives, for up to 256 characters, past which it shows as written however it arrives; attributes must have values, so a word after a tag's name is decided by the next one. A "[" hides what follows it, for up to 64 characters, until the "]" and the character after it say whether it is a link, a reference or text, so neither a link nor a citation like "[1]" rewrites what was shown. An image shows nothing until its ")" arrives. A line that starts with "|" waits for the line below, which says whether it is a table header, and one that starts with "[" waits until it is clearly not a link definition. The word at the end of the decided text is parsed again with the next update, in case an "@" turns it into an email address. So text on screen almost never shrinks or changes style behind the reader. The known exceptions: a paragraph becomes a heading when the next line is "===" or "---"; a header row with no leading "|" shows as a paragraph until its delimiter row arrives; a bracket longer than 64 characters shows as written and loses its "[" if it turns out to be a link; and markup still unclosed when the stream finishes is shown literally. A link that turns blue when its URL or address completes, or its definition arrives, changes style only.</li>
+    <li><strong>Settled result.</strong> The checkpoint also keeps the text, offsets and spans of everything that can no longer change, so an update builds only the text after it. The line being written is converted to UTF-16 a chunk at a time, and each complete line once. An open tag no longer holds the settled part back: its place in the text never changes, and its span is put in among the settled ones when the result is made. A paragraph streamed inside an unclosed tag went from 22.7 to 4.6 µs per append, against 3.8 µs for the same text without one. Under the test suite, debug builds rebuild the whole result as well and check that the two agree.</li>
+    <li><strong>Cost.</strong> On a Mac in a release build, with two characters per append: 3.4 µs of work per append on the benchmark answer (4.0 µs on 15 November, before the Markdown additions, and 10.7 µs for the first, non-incremental parser), 4.4 µs on the second benchmark text, and 4.1 µs on a 3,900-character single-line paragraph (35.8 µs on 15 November, 469 µs at first). A 15,600-character line costs 9.1 µs: what is left grows with the paragraph through copying the block's style spans, the parser's state for it and its text on each update. On the iPhone 12 mini the parse queue is under 3% of the app's CPU while streaming. Just after the additions it was about 7%: their line scanning copied strings, and an older inefficiency, parsing an unfinished first line whole on every update, had become costlier with the richer inline parser. Both are fixed.</li>
+  </ul>
+</section>
+
+<section aria-labelledby="storage">
+  <h2 id="storage">Sharing what stopped changing</h2>
+  <p class="prose">Every frame produces a new document and a new layout, but almost all of both is the same as last frame. <code>SharedList</code> lets successive versions share one buffer and grow it without copying.</p>
+  <figure>
+    <div class="scroll">
+    <svg viewBox="0 0 820 250" role="img" aria-label="Three versions of a settled list point into one buffer with counts 3, 5 and 6; appending writes past every existing version, so nothing is copied.">
+      <text class="b-sub" x="20" y="24">one buffer, capacity 8</text>
+      <rect class="cell-filled" x="20" y="36" width="80" height="40" rx="3"/>
+      <rect class="cell-filled" x="100" y="36" width="80" height="40" rx="3"/>
+      <rect class="cell-filled" x="180" y="36" width="80" height="40" rx="3"/>
+      <rect class="cell-filled" x="260" y="36" width="80" height="40" rx="3"/>
+      <rect class="cell-filled" x="340" y="36" width="80" height="40" rx="3"/>
+      <rect class="cell-filled" x="420" y="36" width="80" height="40" rx="3"/>
+      <rect class="cell" x="500" y="36" width="80" height="40" rx="3"/>
+      <rect class="cell" x="580" y="36" width="80" height="40" rx="3"/>
+      <text class="b-mono" x="60" y="61" text-anchor="middle">block 0</text>
+      <text class="b-mono" x="140" y="61" text-anchor="middle">block 1</text>
+      <text class="b-mono" x="220" y="61" text-anchor="middle">block 2</text>
+      <text class="b-mono" x="300" y="61" text-anchor="middle">block 3</text>
+      <text class="b-mono" x="380" y="61" text-anchor="middle">block 4</text>
+      <text class="b-mono" x="460" y="61" text-anchor="middle">block 5</text>
+      <line class="frontier" x1="500" y1="28" x2="500" y2="84"/>
+      <text class="edge-label" x="508" y="96">frontier: next append writes here</text>
+
+      <path class="version" d="M20,118 V128 H260 V118"/>
+      <text class="b-title" x="272" y="130">document v1 · count 3</text>
+      <path class="version" d="M20,158 V168 H420 V158"/>
+      <text class="b-title" x="432" y="170">v2 · count 5</text>
+      <path class="version" d="M20,198 V208 H500 V198"/>
+      <text class="b-title" x="512" y="210">v3 · count 6, still being shown while v4 is built</text>
+      <text class="edge-label" x="20" y="240">An older version that appends forks into its own buffer, as an Array would; readers on other threads only ever read below their own count.</text>
+    </svg>
+    </div>
+    <figcaption>Versions share storage; appending to the newest version copies nothing. The same structure holds a document's settled blocks, a layout's settled entries and a growing block's lines, so a frame copies no list of finished work.</figcaption>
+  </figure>
+  <ul class="plain">
+    <li><strong>Documents.</strong> A <code>TranscriptDocument</code> is settled blocks (shared) plus one or two open blocks. Comparing two versions, or checking that one only appends to the other, looks at the open blocks only.</li>
+    <li><strong>Layouts.</strong> A <code>DocumentLayout</code> carries the settled entries over untouched, lays out the open blocks, and can say where the first visible change is by comparing line identities, which tells the view which band to redraw.</li>
+  </ul>
+</section>
+
+<section aria-labelledby="threads">
+  <h2 id="threads">What runs where</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Thread</th><th>Does</th><th>Never does</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td><span class="pill pill-main">Main</span></td>
+          <td>Buffers appended text; installs a finished layout and tail in one commit; draws tiles when they scroll into view; answers every <code>UITextInput</code> query from the installed layout; lays out synchronously only for the first layout, for a new width or style, when an image loader is set, and when a picture arrives.</td>
+          <td>Parse; lay out or draw the streaming text, apart from those synchronous layouts and one case: when a streaming table row widens a column, the table's part above the bottom strip is redrawn in tiles.</td>
+        </tr>
+        <tr>
+          <td><span class="pill pill-parse">Parse queue</span></td>
+          <td>Runs the incremental parser on what arrived in the last frame and passes each new document straight to the attached views.</td>
+          <td>Touch UIKit or layouts.</td>
+        </tr>
+        <tr>
+          <td><span class="pill pill-layout">Layout queue</span></td>
+          <td>Lays out the newest document at most once per display frame; draws the tail into a surface; merges results that the main thread has not taken yet.</td>
+          <td>Touch UIKit or a layer.</td>
+        </tr>
+        <tr>
+          <td><span class="pill pill-other">Loader task</span></td>
+          <td>Runs the app's <code>imageLoader</code> in a detached task, once per image source, then asks the view to lay out again.</td>
+          <td>Exist unless the app sets a loader.</td>
+        </tr>
+        <tr>
+          <td><span class="pill pill-server">Render server</span></td>
+          <td>Composites tiles, the tail surface and the system's selection overlays.</td>
+          <td>Run any TranscriptKit code.</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">Ordering is kept with sequence numbers and a source counter: a document from a stream the view has since detached from, or older than one already laid out, is dropped. Layouts are immutable, so the main thread reads one while the layout queue builds the next from it.</p>
+</section>
+
+<section aria-labelledby="selection">
+  <h2 id="selection">Selection and the system's text tools</h2>
+  <div class="two">
+    <ul class="plain">
+      <li><strong>One document to the system.</strong> The view adopts <code>UITextInput</code> and adds <code>UITextInteraction(.nonEditable)</code>, so long-press, handles, the loupe, the edit menu and Copy are the system's own.</li>
+      <li><strong>Flat offsets.</strong> Positions are UTF-16 offsets into all blocks joined by "\n", which is what lets one range span a heading, a list and a code block.</li>
+      <li><strong>Stable while streaming.</strong> Every answer comes from the installed layout, which only changes when a new one is installed. Appends keep existing positions valid, so the view does not send <code>textWillChange</code> for them, which would cancel a drag in progress.</li>
+    </ul>
+    <ul class="plain">
+      <li><strong>Copy.</strong> Copied text gets list markers, task boxes, quote prefixes, "---" for rules, tables as Markdown tables, images as their alt text and blank lines between blocks back, so it pastes as readable Markdown.</li>
+      <li><strong>Links.</strong> A tap is a link tap only if a link glyph is under the finger; otherwise it goes to the selection gestures untouched. SwiftUI's <code>openURL</code> handles it.</li>
+      <li><strong>SwiftUI.</strong> <code>TranscriptText</code> sizes to the proposed width; the view reports a new height only when the rounded height changes, a few times a second while streaming rather than per chunk.</li>
+    </ul>
+  </div>
+</section>
+
+<section aria-labelledby="numbers">
+  <h2 id="numbers">Measured on an iPhone 12 mini</h2>
+  <p class="prose">Main-thread CPU while 6,000 characters stream at 300 a second into a conversation with 50 earlier messages, in 4 ms chunks; medians of three runs, every target built with optimisation. Measured on 15 November, before the Markdown additions. WKWebView's own rendering process is not counted, so its row is an undercount.</p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>Renderer</th><th class="num">Main-thread CPU</th><th class="num">All threads</th><th class="num">Dropped frames</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>TranscriptKit stream, morning of 15 Nov (parse and layout on main)</td><td class="num">3.53 s</td><td class="num">4.35 s</td><td class="num">0</td></tr>
+        <tr><td>Parsing and layout off the main thread</td><td class="num">2.81 s</td><td class="num">4.26 s</td><td class="num">0</td></tr>
+        <tr><td>Plus the tail drawn on the layout queue (SwiftUI host)</td><td class="num">1.89 s</td><td class="num">4.59 s</td><td class="num">0</td></tr>
+        <tr><td>Same, hosted in a UIScrollView</td><td class="num">1.64 s</td><td class="num">4.31 s</td><td class="num">0</td></tr>
+        <tr><td>WKWebView, app side only</td><td class="num">2.56 s</td><td class="num">3.40 s</td><td class="num">0</td></tr>
+        <tr><td>Textual (one SwiftUI view per message)</td><td class="num">20.03 s</td><td class="num">20.14 s</td><td class="num">248</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="note">Remeasured on the iPhone 12 mini on 16 November, after the Markdown additions and the parser fixes that followed: the same stream costs 1.86 s of main-thread CPU (1.63 s in a UIScrollView) and 4.58 s in total (4.33 s), against 1.89 s and 4.59 s before the additions, with no dropped frames. A second benchmark text with a tall table, citations defined at the end of each section, task lists, nested quotes, emails, entities and images costs 2.25 s main-thread and 5.51 s in total (2.04 s and 5.32 s in a UIScrollView), about 20% more than the plain text, also with no dropped frames. Details in <code>Benchmark/results-iphone12mini-2026-11-16/NOTES.md</code> and <code>Benchmark/results-iphone12mini-2026-11-16-parser/NOTES.md</code>.</p>
+  <p class="note">On an iPhone 17 Pro the same stream costs 0.91 s of main-thread CPU (0.79 s in a UIScrollView), against 2.46 s for WKWebView's app side, with no dropped frames at 60 or 120 Hz. Full tables, the experiments behind each change and their raw data are in <code>Benchmark/results-iphone12mini/RESULTS.md</code>, <code>Benchmark/results-iphone17pro/RESULTS.md</code> and <code>Benchmark/results/RESULTS.md</code> in the repository.</p>
+</section>
+
+<section aria-labelledby="limits">
+  <h2 id="limits">Not there yet</h2>
+  <ul class="plain">
+    <li>Not parsed: maths, footnotes, raw HTML blocks other than comments, and definitions whose title continues on the next line. HTML tags outside the small set and the app's own show as text.</li>
+    <li>Custom tags are inline only. Decorations are worked out when text is parsed, so a finished document can't be re-themed without parsing it again. Attribute values are passed as written, without decoding entities.</li>
+    <li>Tag shapes, first version: left-to-right text only; a tag at the start of a table cell gets no room on its left (it reaches into the cell's padding); a caret or selection at a padded tag's edge sits inside its padding; padding before a tag goes on the character before it, so if that character is not a space and sits at the very end of a line, opening the tag can move it to the next line. The plain background highlight is still drawn separately from shapes.</li>
+    <li>Reference links differ from CommonMark, and from Apple's own parser, in two ways, both so that text never changes after it is shown: an undefined <code>[text][label]</code> shows "text" rather than the source, and a shortcut reference keeps its brackets ("[1]" rather than "1").</li>
+    <li>A new link definition makes the next layout look at every block once, to find the references it restyles.</li>
+    <li>Each update still copies the open block's style spans, the parser's state for it and its text, so the parser's cost per update grows slightly with the paragraph: 7.9 µs per append on a 15,600-character line on a Mac, against 3.5 µs on ordinary answers. Layout adds about 26 µs per frame for a 3,900-character paragraph.</li>
+    <li>A picture arriving, or setting the image loader, lays the document out again on the main thread, and that layout looks at every block once.</li>
+    <li>A table row that widens a column lays out the whole table again, and the part of it above the bottom strip is redrawn on the main thread on that frame.</li>
+    <li>Text on screen can still change behind the reader in a few cases: a "===" or "---" underline that makes a heading, a table header with no leading "|", a bracket longer than 64 characters that turns out to be a link, and unclosed markup when the stream finishes.</li>
+    <li>Tables, task boxes and image chips have not been checked in dark mode. The checked box is a fixed blue with a white tick.</li>
+    <li>No VoiceOver support yet: the view exposes no accessibility elements.</li>
+    <li>Opening a long conversation and rotating lay out the whole document synchronously on the main thread: about 160 ms for 200 messages on the iPhone 12 mini.</li>
+    <li>Streamed text updates at most 60 times a second, also on 120 Hz screens, where scrolling still runs at the full rate. On an iPhone 17 Pro at 120 Hz, TranscriptKit dropped no frames while streaming or scrolling.</li>
+    <li>The tail costs 6 to 8% more CPU in total and 8 to 13 MB of peak memory while text streams.</li>
+  </ul>
+</section>
+
+</main>
+</body>
+</html>

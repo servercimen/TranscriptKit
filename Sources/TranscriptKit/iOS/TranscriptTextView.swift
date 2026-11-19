@@ -98,7 +98,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         didSet {
             guard tagAnimationTiming != oldValue else { return }
             updateAnimationsEnabled()
-            startWaitingTags()
+            startWaitingTagsSoon()
         }
     }
 
@@ -107,7 +107,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// call. Does nothing unless the timing includes `.whenRequested`.
     public func playTagAnimations() {
         requested.formUnion(waiting)
-        startWaitingTags()
+        startWaitingTagsSoon()
     }
 
     /// Loads the picture for an image in the text, called off the main thread
@@ -172,6 +172,9 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     private var requested: Set<TagKey> = []
     /// No more text is coming to the document on screen.
     private var isFinished = false
+    private var waitingCheckScheduled = false
+    /// The last layout passed over for coming from a replaced source.
+    private var skippedOutput: LayoutEngine.Output?
     private var hiding: TagHiding { TagHiding(playing: playingKeys, waiting: waiting) }
 
     private struct PlayingTag {
@@ -319,7 +322,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     private func updateCanvas(forceRedraw: Bool = false, changed: ClosedRange<CGFloat>? = nil) {
         // Tags waiting to be on screen may be now.
-        if !waiting.isEmpty, tagAnimationTiming.contains(.whenVisible) { startWaitingTags() }
+        if !waiting.isEmpty, tagAnimationTiming.contains(.whenVisible) { startWaitingTagsSoon() }
         let visible = visibleRect
         guard !visible.isNull, visible.height > 0, bounds.width > 0 else {
             if forceRedraw { tiles.values.forEach { $0.setNeedsDisplay() } }
@@ -471,10 +474,27 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     /// Installs what the engine finished, if it still fits the view.
     private func installFromEngine() {
-        guard let output = engine.takeOutput() else { return }
+        guard var output = engine.takeOutput() else { return }
+        // A layout passed over because its source had just been replaced,
+        // which this one builds on: a finished stream's last layout, and its
+        // document's. Installed together, they are still an append.
+        if let skipped = skippedOutput {
+            skippedOutput = nil
+            if output.base === skipped.layout {
+                output = .merging(skipped, output)
+            } else {
+                engine.settleAnimations(skipped.started + skipped.waiting)
+            }
+        }
         guard output.source == source, output.layout.width == bounds.width, output.layout.style == style else {
-            // Made for an earlier source, width or style; a synchronous
-            // relayout has replaced it or is about to.
+            if output.source < source, output.layout.width == bounds.width, output.layout.style == style {
+                // From the source just replaced: kept in case the next
+                // layout, from the new one, builds on it.
+                skippedOutput = output
+                return
+            }
+            // Made for an earlier width or style; a synchronous relayout
+            // has replaced it or is about to.
             engine.settleAnimations(output.started + output.waiting)
             return
         }
@@ -493,6 +513,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// background: no layout on screen yet, or a new width or style.
     private func relayoutNow() {
         guard bounds.width > 0, let result = engine.relayout(width: bounds.width, style: style) else { return }
+        skippedOutput = nil
         guard result.source == source else { return }
         install(result.layout, changedTop: nil, tail: nil, isFinished: result.isFinished)
     }
@@ -571,7 +592,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             }
             for key in started { startAnimation(key, in: layout) }
             waiting.formUnion(newlyWaiting)
-            startWaitingTags()
+            startWaitingTagsSoon()
         } else {
             // Everything was drawn again, at rest.
             removeAllAnimations()
@@ -599,6 +620,23 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         if !enabled {
             finishAllAnimations()
             showWaitingTagsAtRest()
+        }
+    }
+
+    /// Starts waiting tags on the next turn of the run loop. What lets them
+    /// play (the stream finishing, the app's request, a scroll) usually comes
+    /// with other work in the same frame, such as the app showing what goes
+    /// below a finished answer; starting an animation (drawing its glyphs,
+    /// making its layers, redrawing the tiles) is better done in the next one.
+    private func startWaitingTagsSoon() {
+        guard !waiting.isEmpty, !waitingCheckScheduled else { return }
+        waitingCheckScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.waitingCheckScheduled = false
+                self.startWaitingTags()
+            }
         }
     }
 
@@ -669,11 +707,13 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         let sprites = TagAnimationPlayer.sprites(for: tag, animation: animation,
                                                  appearance: .init(text: colors.text, dark: colors.dark, scale: scale))
         let start = CACurrentMediaTime()
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
+        // No transaction of its own: the layers go to the screen in the same
+        // commit as the tiles and the tail that stop drawing the tag. (An
+        // explicit one, outside UIKit's, would commit on its own, and the
+        // glyphs could show twice for a frame.) The layers take no implicit
+        // animations (`TagAnimationPlayer.StillLayer`).
         let layer = TagAnimationPlayer.makeLayer(sprites: sprites, animation: animation, scale: scale, beginTime: start)
         animationLayer.addSublayer(layer)
-        CATransaction.commit()
         let signpost = animationSignposter.beginInterval("Tag animation", id: animationSignposter.makeSignpostID(),
                                                          "\(key.name, privacy: .public)")
         playing[key] = PlayingTag(tag: tag, layer: layer, start: start, signpost: signpost)
@@ -702,10 +742,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         // The tail was drawn without the tag: the tiles take over from it.
         if tailTop < band.upperBound { handTailToTiles() }
         redrawTiles(in: band)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
         play.layer.removeFromSuperlayer()
-        CATransaction.commit()
     }
 
     private func finishAllAnimations() {
@@ -720,13 +757,10 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         requested.removeAll()
         guard !playing.isEmpty else { return }
         engine.settleAnimations(playingKeys)
-        CATransaction.begin()
-        CATransaction.setDisableActions(true)
         for play in playing.values {
             play.layer.removeFromSuperlayer()
             animationSignposter.endInterval("Tag animation", play.signpost)
         }
-        CATransaction.commit()
         playing.removeAll()
         playingKeys.removeAll()
     }

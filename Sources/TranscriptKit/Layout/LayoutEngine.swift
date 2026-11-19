@@ -60,6 +60,17 @@ final class LayoutEngine: @unchecked Sendable {
         var hidden: TagHiding = .none
         /// The request's `isFinished`.
         var isFinished = false
+
+        /// `later`, measured against what `earlier` was measured against:
+        /// for installing `later` when `earlier` was never installed.
+        static func merging(_ earlier: Output, _ later: Output) -> Output {
+            let top: CGFloat? = earlier.changedTop.flatMap { a in later.changedTop.map { min(a, $0) } }
+            return Output(layout: later.layout, source: later.source, base: earlier.base,
+                          isAppend: earlier.isAppend && later.isAppend, changedTop: top,
+                          restyled: earlier.restyled + later.restyled, tail: later.tail,
+                          started: earlier.started + later.started, waiting: earlier.waiting + later.waiting,
+                          hidden: later.hidden, isFinished: later.isFinished)
+        }
     }
 
     let queue = DispatchQueue(label: "TranscriptKit.layout", qos: .userInitiated)
@@ -322,12 +333,7 @@ final class LayoutEngine: @unchecked Sendable {
             // a finished stream replaced by its document does: the view never
             // saw the stream's last layout, and still gets an append.
             if let earlier = mailbox, earlier.source == output.source || output.base === earlier.layout {
-                let top: CGFloat? = earlier.changedTop.flatMap { a in output.changedTop.map { min(a, $0) } }
-                mailbox = Output(layout: output.layout, source: output.source, base: earlier.base,
-                                 isAppend: earlier.isAppend && output.isAppend, changedTop: top,
-                                 restyled: earlier.restyled + output.restyled, tail: output.tail,
-                                 started: earlier.started + output.started, waiting: earlier.waiting + output.waiting,
-                                 hidden: output.hidden, isFinished: output.isFinished)
+                mailbox = Output.merging(earlier, output)
             } else {
                 mailbox = output
             }

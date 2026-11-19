@@ -2,6 +2,7 @@ import CoreGraphics
 import CoreText
 import Foundation
 import IOSurface
+import QuartzCore
 import Testing
 @testable import TranscriptKit
 
@@ -466,4 +467,31 @@ private enum TailRendererProbe {
     #expect(output.isAppend)
     #expect(output.isFinished)
     #expect(output.waiting == [TagKey(block: "s-0", start: 10, name: "hop")])
+}
+
+/// The player's layers need no offscreen passes: no masks, shadows or group
+/// opacity, and the reveal clips each band to its own (rectangular) bounds.
+@Test func animationLayersNeedNoOffscreenPasses() throws {
+    let layout = DocumentLayout(document: document(sample), width: 260)
+    let tag = try #require(layout.animatedTag(TagKey(block: "a-0", start: 21, name: "hop")))
+    let animation = tag.animation.animation(for: tag.fragments)
+    let sprites = TagAnimationPlayer.sprites(for: tag, animation: animation, appearance: .init(text: colors.text, dark: false, scale: 3))
+    let container = TagAnimationPlayer.makeLayer(sprites: sprites, animation: animation, scale: 3, beginTime: 0)
+    let layers = container.sublayers ?? []
+    #expect(layers.count == sprites.count)
+    // Nothing animates implicitly, so the view needs no transaction of its own.
+    #expect(container.action(forKey: "sublayers") is NSNull)
+    #expect(container.action(forKey: kCAOnOrderIn) is NSNull)
+    for layer in layers {
+        #expect(layer.action(forKey: "position") is NSNull && layer.action(forKey: "bounds") is NSNull)
+        #expect(layer.mask == nil)
+        #expect(layer.shadowOpacity == 0)
+        #expect(layer.sublayers?.isEmpty ?? true)
+        #expect(layer.cornerRadius == 0)
+    }
+    // At rest each band layer sits exactly on its sprite's frame.
+    for (layer, sprite) in zip(layers, sprites) {
+        #expect(abs(layer.frame.minX - sprite.frame.minX) < 0.001 && abs(layer.frame.width - sprite.frame.width) < 0.001)
+        #expect(abs(layer.frame.minY - sprite.frame.minY) < 0.001 && abs(layer.frame.height - sprite.frame.height) < 0.001)
+    }
 }

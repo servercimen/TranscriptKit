@@ -190,15 +190,20 @@ func animationStartTiming() throws {
     let text = "Fixed the <hl>login timeouts that support flagged on Monday</hl>, then took the rest."
     let layout = DocumentLayout(document: MarkdownStreamParser.document(from: text, idPrefix: "t", tags: tags), width: 300)
     let tag = try #require(layout.animatedTag(TagKey(block: "t-0", start: 10, name: "hl")))
-    var best = Double.infinity
+    var best = (recipe: Double.infinity, sprites: Double.infinity, layers: Double.infinity)
     var count = 0
     for _ in 0..<20 {
-        let start = DispatchTime.now().uptimeNanoseconds
+        let t0 = DispatchTime.now().uptimeNanoseconds
         let animation = tag.animation.animation(for: tag.fragments)
+        let t1 = DispatchTime.now().uptimeNanoseconds
         let sprites = TagAnimationPlayer.sprites(for: tag, animation: animation,
                                                  appearance: .init(text: CGColor(gray: 0, alpha: 1), dark: false, scale: 3))
-        count = sprites.count
-        best = min(best, Double(DispatchTime.now().uptimeNanoseconds - start) / 1e3)
+        let t2 = DispatchTime.now().uptimeNanoseconds
+        let layer = TagAnimationPlayer.makeLayer(sprites: sprites, animation: animation, scale: 3, beginTime: 0)
+        let t3 = DispatchTime.now().uptimeNanoseconds
+        count = layer.sublayers?.count ?? 0
+        best = (min(best.recipe, Double(t1 - t0) / 1e3), min(best.sprites, Double(t2 - t1) / 1e3), min(best.layers, Double(t3 - t2) / 1e3))
     }
-    print("ANIMATION start, \(count) sprites (45 characters on 2 lines, 3x): \(String(format: "%.0f", best)) µs")
+    print("ANIMATION start, \(count) layers (45 characters on 2 lines, 3x): recipe \(String(format: "%.0f", best.recipe)) µs, " +
+          "images \(String(format: "%.0f", best.sprites)) µs, layers \(String(format: "%.0f", best.layers)) µs")
 }

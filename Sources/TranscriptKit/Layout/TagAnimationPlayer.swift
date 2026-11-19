@@ -66,14 +66,24 @@ enum TagAnimationPlayer {
         return behind + glyphs + over
     }
 
+    /// A layer that never animates on its own: changes to it, adding it and
+    /// removing it take effect at once, in whatever transaction they are
+    /// made, without an explicit transaction that would commit separately.
+    final class StillLayer: CALayer {
+        override func action(forKey event: String) -> (any CAAction)? {
+            NSNull()
+        }
+    }
+
     /// A layer holding `sprites`, with `animation`'s curves on them, its
     /// time 0 at `beginTime` (in `CACurrentMediaTime()`'s clock). Add it to
     /// a layer whose coordinates are the document's.
     static func makeLayer(sprites: [Sprite], animation: TranscriptAnimation, scale: CGFloat, beginTime: CFTimeInterval) -> CALayer {
-        let container = CALayer()
+        let arrays = ArrayCache()
+        let container = StillLayer()
         container.frame = .zero
         for sprite in sprites {
-            let layer = CALayer()
+            let layer = StillLayer()
             layer.contents = sprite.image
             layer.contentsScale = scale
             layer.frame = sprite.frame
@@ -89,29 +99,31 @@ enum TagAnimationPlayer {
                     ("transform.scale.x", glyph.scaleX), ("transform.scale.y", glyph.scaleY), ("transform.rotation.z", glyph.rotation),
                 ]
                 for (keyPath, curve) in curves {
-                    if let curve { add(curve, keyPath: keyPath, to: layer, beginTime: beginTime) }
+                    if let curve { add(curve, keyPath: keyPath, to: layer, beginTime: beginTime, arrays: arrays) }
                 }
             case .path(let index):
                 let path = animation.paths[index]
                 if let reveal = path.reveal {
-                    // A mask that grows from the path's left edge.
-                    let mask = CALayer()
-                    mask.backgroundColor = CGColor(gray: 0, alpha: 1)
-                    mask.anchorPoint = CGPoint(x: 0, y: 0.5)
-                    mask.bounds = CGRect(x: 0, y: 0, width: sprite.frame.width, height: sprite.frame.height)
-                    mask.position = CGPoint(x: 0, y: sprite.frame.height / 2)
+                    // The layer clips its picture to its own bounds, which
+                    // grow from the path's left edge. A mask layer would do
+                    // the same at the cost of an offscreen pass every frame.
+                    layer.contentsGravity = .left
+                    layer.masksToBounds = true
+                    layer.anchorPoint = CGPoint(x: 0, y: 0.5)
+                    layer.position = CGPoint(x: sprite.frame.minX, y: sprite.frame.midY)
                     let ink = path.path.inkBounds
-                    let lead = max(ink.minX + (sprite.anchor.x) - sprite.frame.minX, 0)
+                    let lead = max(ink.minX + sprite.anchor.x - sprite.frame.minX, 0)
                     let width = sprite.frame.width
                     let shown = reveal.map { value -> CGFloat in
-                        value <= 0 ? 0 : value >= 1 ? width : min(lead + value * ink.width, width)
+                        if value <= 0 { return 0 }
+                        if value >= 1 { return width }
+                        return min(lead + value * ink.width, width)
                     }
-                    add(shown, keyPath: "bounds.size.width", to: mask, beginTime: beginTime)
-                    layer.mask = mask
+                    add(shown, keyPath: "bounds.size.width", to: layer, beginTime: beginTime, arrays: arrays)
                 }
                 if let opacity = path.opacity {
                     layer.opacity = Float(opacity.values[opacity.values.count - 1])
-                    add(opacity, keyPath: "opacity", to: layer, beginTime: beginTime)
+                    add(opacity, keyPath: "opacity", to: layer, beginTime: beginTime, arrays: arrays)
                 }
             }
             container.addSublayer(layer)
@@ -119,14 +131,44 @@ enum TagAnimationPlayer {
         return container
     }
 
+    /// The value and key time arrays made so far. Glyphs usually share a
+    /// curve, each starting a little later, so most animations can share
+    /// their arrays: building thousands of numbers is most of what starting
+    /// an animation would otherwise cost.
+    ///
+    /// They are kept as Swift arrays of numbers and assigned as they are:
+    /// a cast to or from `NSArray` on every assignment would convert each
+    /// element again, which costs more than the animations themselves.
+    private final class ArrayCache {
+        var values: [[CGFloat]: [Any]] = [:]
+        var keyTimes: [[Double]: [NSNumber]] = [:]
+
+        func values(_ values: [CGFloat]) -> [Any] {
+            if let array = self.values[values] { return array }
+            let array: [Any] = values.map { NSNumber(value: Double($0)) }
+            self.values[values] = array
+            return array
+        }
+
+        /// Rounded, so that curves that differ only in when they start share them.
+        func keyTimes(_ times: [Double]) -> [NSNumber] {
+            let rounded = times.map { ($0 * 1e9).rounded() / 1e9 }
+            if let array = keyTimes[rounded] { return array }
+            let array = rounded.map { NSNumber(value: $0) }
+            keyTimes[rounded] = array
+            return array
+        }
+    }
+
     /// Plays `curve` on `layer`'s `keyPath`, holding its first value before
     /// it starts and its last one after it ends.
-    private static func add(_ curve: TranscriptCurve, keyPath: String, to layer: CALayer, beginTime: CFTimeInterval) {
+    private static func add(_ curve: TranscriptCurve, keyPath: String, to layer: CALayer, beginTime: CFTimeInterval,
+                            arrays: ArrayCache) {
         let span = curve.endTime - curve.startTime
         guard span > 0, curve.values.count > 1 else { return }
         let animation = CAKeyframeAnimation(keyPath: keyPath)
-        animation.values = curve.values.map { NSNumber(value: Double($0)) }
-        animation.keyTimes = curve.times.map { NSNumber(value: ($0 - curve.startTime) / span) }
+        animation.values = arrays.values(curve.values)
+        animation.keyTimes = arrays.keyTimes(curve.times.map { ($0 - curve.startTime) / span })
         animation.calculationMode = .linear
         animation.duration = span
         animation.beginTime = beginTime + curve.startTime

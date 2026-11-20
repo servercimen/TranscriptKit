@@ -19,6 +19,17 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// The tallest an image is shown; wider ones are scaled to fit the width.
     public var maximumImageHeight: CGFloat = 360
 
+    /// The color of the text. Nil uses the system's label color.
+    public var textColor: TranscriptColor?
+    /// The color of links and their underlines. A custom tag's color wins over it.
+    public var linkColor = TranscriptColor(red: 0, green: 0.478, blue: 1)
+    /// Behind code blocks, table headers and image placeholders. Nil uses the
+    /// system's secondary fill color.
+    public var codeBackgroundColor: TranscriptColor?
+    /// Quote bars, thematic breaks and table lines. Nil uses the system's
+    /// tertiary label color.
+    public var accentColor: TranscriptColor?
+
     public init() {}
 
     struct Insets {
@@ -111,10 +122,8 @@ public struct TranscriptStyle: Equatable, Sendable {
     }
 
     static let fontKey = NSAttributedString.Key(kCTFontAttributeName as String)
-    private static let colorKey = NSAttributedString.Key(kCTForegroundColorAttributeName as String)
     private static let colorFromContextKey = NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String)
     private static let runDelegateKey = NSAttributedString.Key(kCTRunDelegateAttributeName as String)
-    private static let linkColor = CGColor(red: 0, green: 0.478, blue: 1, alpha: 1)
     /// Core Text has no strikethrough, and its underline does not survive
     /// run-by-run drawing, so both are marked and drawn by `DocumentLayout`.
     static let strikethroughKey = NSAttributedString.Key("TranscriptKit.strikethrough")
@@ -199,8 +208,8 @@ public struct TranscriptStyle: Equatable, Sendable {
                 // Drawn in the context's fill color, which `DocumentLayout` sets to it.
                 result.addAttribute(Self.foregroundKey, value: foreground, range: range)
             } else if isLink {
-                result.removeAttribute(Self.colorFromContextKey, range: range)
-                result.addAttribute(Self.colorKey, value: Self.linkColor, range: range)
+                // Resolved for light or dark when drawn, like a tag's color.
+                result.addAttribute(Self.foregroundKey, value: linkColor, range: range)
             }
             if let background { result.addAttribute(Self.backgroundKey, value: background, range: range) }
             if let image, range.length == 1 {

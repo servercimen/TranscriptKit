@@ -183,6 +183,17 @@ In UIKit, set `isSelectable` on `TranscriptTextView`.
 
 `TranscriptStyle` sets the body size, line, block and list spacing, indents, padding and the maximum image height.
 
+It also sets the colors. Each one is a `TranscriptColor`, with a value for light and one for dark appearance, so the
+text can be drawn off the main thread. A color that is nil uses the system color shown here:
+
+```swift
+var style = TranscriptStyle()
+style.textColor = TranscriptColor(UIColor.label)                     // the text
+style.linkColor = TranscriptColor(UIColor.systemIndigo)              // links and their underlines
+style.codeBackgroundColor = TranscriptColor(UIColor.secondarySystemFill)  // code blocks, table headers
+style.accentColor = TranscriptColor(UIColor.tertiaryLabel)           // quote bars, rules, table lines
+```
+
 ### Reading the selection
 
 `onSelectionChange` tells the app when the selection changes. The range is in the document's flat UTF-16 offset

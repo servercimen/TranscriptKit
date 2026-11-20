@@ -121,9 +121,17 @@ public struct TranscriptText: UIViewRepresentable {
     }
 
     public func updateUIView(_ view: TranscriptTextView, context: Context) {
-        view.style = style.scalesWithDynamicType
+        var style = style.scalesWithDynamicType
             ? style.scaled(for: UIContentSizeCategory(context.environment.dynamicTypeSize))
             : style
+        // SwiftUI's `.lineLimit(_:)` and `.multilineTextAlignment(_:)` win over the style's.
+        if let limit = context.environment.lineLimit { style.lineLimit = limit }
+        switch context.environment.multilineTextAlignment {
+        case .center: style.textAlignment = .center
+        case .trailing: style.textAlignment = .trailing
+        case .leading: break
+        }
+        view.style = style
         view.animatesTags = animatesTags
         view.tagAnimationTiming = animationTiming
         view.isSelectable = isSelectable

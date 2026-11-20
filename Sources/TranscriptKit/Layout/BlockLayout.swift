@@ -182,18 +182,19 @@ final class BlockLayout: @unchecked Sendable {
         let gap = fixedHeight == nil ? style.lineSpacing : 0
         func add(_ ctLine: CTLine, range: Range<Int>, indexBase: Int, leading: CGFloat = 0, text: NSAttributedString? = nil) {
             let metrics = fitted(lineMetrics(ctLine, isEmpty: range.isEmpty, font: font), to: fixedHeight)
+            let x = insets.leading + leading + alignmentOffset(block, style: style, width: metrics.width, room: available - leading)
             var decorations: LineDecorations?
             if let decorated, let text {
                 decorations = LineDecorations.make(line: ctLine, range: range, indexBase: indexBase, visibleWidth: metrics.width,
                                                    top: -metrics.ascent, bottom: metrics.height - metrics.ascent,
-                                                   lineX: insets.leading + leading, blockWidth: blockWidth, block: block.id,
+                                                   lineX: x, blockWidth: blockWidth, block: block.id,
                                                    tags: decorated, text: text, textBase: indexBase)
             }
             lines.append(Line(
                 ctLine: ctLine,
                 indexBase: indexBase,
                 range: range,
-                frame: CGRect(x: insets.leading + leading, y: y, width: metrics.width, height: metrics.height),
+                frame: CGRect(x: x, y: y, width: metrics.width, height: metrics.height),
                 baseline: y + metrics.ascent,
                 decorations: decorations
             ))
@@ -230,6 +231,80 @@ final class BlockLayout: @unchecked Sendable {
                                to height: CGFloat?) -> (width: CGFloat, height: CGFloat, ascent: CGFloat) {
         guard let height, height > metrics.height else { return metrics }
         return (metrics.width, height, metrics.ascent + ((height - metrics.height) / 2).rounded())
+    }
+
+    /// How far a line `width` wide moves right in `room` for the style's
+    /// alignment. Only paragraphs and headings outside lists and quotes move.
+    static func alignmentOffset(_ block: TranscriptBlock, style: TranscriptStyle, width: CGFloat, room: CGFloat) -> CGFloat {
+        guard isAligned(block, style: style) else { return 0 }
+        let slack = max(room - width, 0)
+        switch style.textAlignment {
+        case .leading: return 0
+        case .center: return (slack / 2).rounded(.down)
+        case .trailing: return slack
+        }
+    }
+
+    /// Whether the block's lines follow the style's alignment rather than the leading edge.
+    static func isAligned(_ block: TranscriptBlock, style: TranscriptStyle) -> Bool {
+        guard style.textAlignment != .leading, block.containers.isEmpty else { return false }
+        switch block.kind {
+        case .paragraph, .heading: return true
+        case .code, .rule, .table: return false
+        }
+    }
+
+    /// The first `count` lines of `original`, for a line limit. With
+    /// `ellipsis`, the last of them ends in "…": it is typeset again from the
+    /// rest of the block and truncated, or "…" is added when the block ends
+    /// there but more text follows it.
+    init(_ original: BlockLayout, keepingLines count: Int, ellipsis: Bool) {
+        block = original.block
+        width = original.width
+        style = original.style
+        contentLeading = original.contentLeading
+        marker = original.marker
+        table = original.table
+        imageRevision = original.imageRevision
+        definedReferences = original.definedReferences
+        let count = min(max(count, 1), original.lines.count)
+        var kept = original.lines.prefix(count)
+        let insets = style.insets(for: block)
+        if ellipsis, let last = kept.last {
+            _ = kept.removeLast()
+            kept.append(Self.withEllipsis(last, block: block, style: style, insets: insets, width: original.width))
+        }
+        lines = kept
+        let bottom = kept.last.map { $0.frame.maxY } ?? 0
+        height = bottom + insets.vertical
+        length = kept.last?.range.upperBound ?? 0
+        attachments = original.attachments.filter { $0.rect.minY < bottom }
+    }
+
+    private static func withEllipsis(_ line: Line, block: TranscriptBlock, style: TranscriptStyle,
+                                     insets: TranscriptStyle.Insets, width: CGFloat) -> Line {
+        let available = max(width - insets.leading - insets.trailing, 1)
+        let rest = NSMutableAttributedString(attributedString: style.attributedString(for: block, range: line.range.lowerBound..<block.utf16Count))
+        let attributes = rest.length > 0 ? rest.attributes(at: rest.length - 1, effectiveRange: nil) : style.attributes(for: block.kind)
+        // Trailing line breaks would end the line before the ellipsis.
+        while rest.length > 0, (rest.string as NSString).character(at: rest.length - 1) == 0x0A {
+            rest.deleteCharacters(in: NSRange(location: rest.length - 1, length: 1))
+        }
+        if line.range.upperBound >= block.utf16Count {
+            rest.append(NSAttributedString(string: "…", attributes: attributes))
+        }
+        let token = CTLineCreateWithAttributedString(NSAttributedString(string: "…", attributes: attributes))
+        let full = CTLineCreateWithAttributedString(rest)
+        let aligned = isAligned(block, style: style)
+        let start = aligned ? insets.leading : line.frame.minX
+        let room = max(insets.leading + available - start, 1)
+        let ctLine = CTLineCreateTruncatedLine(full, Double(room), .end, token) ?? full
+        let font = style.font(for: block.kind)
+        let metrics = lineMetrics(ctLine, isEmpty: false, font: font)
+        let x = aligned ? insets.leading + alignmentOffset(block, style: style, width: metrics.width, room: available) : start
+        return Line(ctLine: ctLine, indexBase: line.range.lowerBound, range: line.range,
+                    frame: CGRect(x: x, y: line.frame.minY, width: metrics.width, height: line.frame.height),
+                    baseline: line.baseline, decorations: nil)
     }
 
     private static func lineMetrics(_ ctLine: CTLine, isEmpty: Bool, font: CTFont) -> (width: CGFloat, height: CGFloat, ascent: CGFloat) {

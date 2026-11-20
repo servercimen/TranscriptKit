@@ -63,7 +63,10 @@ public final class DocumentLayout: @unchecked Sendable {
         let imageRevision = images?.revision ?? 0
         self.imageRevision = imageRevision
 
-        let previous = previous.flatMap { $0.width == width && $0.style == style ? $0 : nil }
+        // A line-limited layout may hold a block cut short, so it is not reused.
+        let previous = style.lineLimit == nil ? previous.flatMap { $0.width == width && $0.style == style ? $0 : nil } : nil
+        let limit = style.lineLimit.map { max($0, 1) }
+        var shownLines = 0
         var settled = SharedList<Entry>()
         var open: [Entry] = []
         var y: CGFloat = 0
@@ -91,7 +94,8 @@ public final class DocumentLayout: @unchecked Sendable {
             // Blocks keep their position from one update to the next, so the
             // previous layout for index i is the candidate for block i.
             let candidate = previous.flatMap { index < $0.entryCount ? $0.entry(at: index).layout : nil }
-            let layout: BlockLayout
+            if let limit, shownLines >= limit { break }
+            var layout: BlockLayout
             if let candidate, candidate.block == block, candidate.imageRevision == nil || candidate.imageRevision == imageRevision,
                candidate.definedReferences == nil || candidate.definedReferences == BlockLayout.definedReferences(of: block, in: definitions) {
                 layout = candidate
@@ -99,6 +103,15 @@ public final class DocumentLayout: @unchecked Sendable {
             } else {
                 layout = BlockLayout(block: block, width: width, style: style, reusing: candidate, images: images, definitions: definitions)
             }
+            var reachedLimit = false
+            if let limit, layout.table == nil {
+                let remaining = limit - shownLines
+                if layout.lines.count > remaining || (layout.lines.count == remaining && index + 1 < document.count) {
+                    layout = BlockLayout(layout, keepingLines: remaining, ellipsis: true)
+                    reachedLimit = true
+                }
+            }
+            shownLines += layout.lines.count
             if let previousBlock {
                 y += Self.spacing(between: previousBlock, and: block, style: style)
             }
@@ -111,6 +124,7 @@ public final class DocumentLayout: @unchecked Sendable {
             previousBlock = block
             y += layout.height
             start += layout.length + 1
+            if reachedLimit { break }
         }
 
         self.settled = settled

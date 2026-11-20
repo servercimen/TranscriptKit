@@ -15,6 +15,8 @@ struct DecoratedTags {
         let order: Int
 
         var padding: CGFloat { tag.decoration.padding }
+        /// The space before the text: the padding, and the image after it.
+        var leadingRoom: CGFloat { padding + (tag.decoration.image?.room ?? 0) }
     }
 
     /// Outer tags first.
@@ -49,11 +51,11 @@ struct DecoratedTags {
             while textEnd > span.range.lowerBound, text.character(at: textEnd - 1) == 0x0A { textEnd -= 1 }
             let tag = Tag(range: span.range, textEnd: textEnd, tag: custom, order: order)
             tags.append(tag)
-            guard tag.padding > 0 else { continue }
+            guard tag.leadingRoom > 0 else { continue }
             let before = span.range.lowerBound - 1
-            if before >= 0, text.character(at: before) != 0x0A { kerns[before, default: 0] += tag.padding }
-            if textEnd > span.range.lowerBound { kerns[textEnd - 1, default: 0] += tag.padding }
-            startPadding[span.range.lowerBound, default: 0] += tag.padding
+            if before >= 0, text.character(at: before) != 0x0A { kerns[before, default: 0] += tag.leadingRoom }
+            if textEnd > span.range.lowerBound, tag.padding > 0 { kerns[textEnd - 1, default: 0] += tag.padding }
+            startPadding[span.range.lowerBound, default: 0] += tag.leadingRoom
         }
         self.tags = tags
         self.kerns = kerns
@@ -69,7 +71,7 @@ struct DecoratedTags {
     /// The padding a tag's box has at its start: its own and that of the
     /// tags inside it that start with it.
     func startPadding(of tag: Tag) -> CGFloat {
-        tags.reduce(0) { $0 + ($1.range.lowerBound == tag.range.lowerBound && isWithin($1, tag) ? $1.padding : 0) }
+        tags.reduce(0) { $0 + ($1.range.lowerBound == tag.range.lowerBound && isWithin($1, tag) ? $1.leadingRoom : 0) }
     }
 
     /// The same at its end.
@@ -139,9 +141,12 @@ final class LineDecorations: @unchecked Sendable {
     /// Linked tags with padding, by their box: a tap on the padding belongs
     /// to the tag, not to the character the spacing was added to.
     let links: [(rect: CGRect, link: String)]
+    /// Tag images, where they are drawn, and the animated tag each belongs to.
+    let images: [(rect: CGRect, image: TranscriptTagImage, tag: TagKey?)]
 
     private init(behind: [TranscriptPath], over: [TranscriptPath], behindTags: [TagKey?], overTags: [TagKey?],
-                 animated: [AnimatedFragment], inkAbove: CGFloat, inkBelow: CGFloat, links: [(rect: CGRect, link: String)]) {
+                 animated: [AnimatedFragment], inkAbove: CGFloat, inkBelow: CGFloat, links: [(rect: CGRect, link: String)],
+                 images: [(rect: CGRect, image: TranscriptTagImage, tag: TagKey?)]) {
         self.behind = behind
         self.over = over
         self.behindTags = behindTags
@@ -150,6 +155,7 @@ final class LineDecorations: @unchecked Sendable {
         self.inkAbove = inkAbove
         self.inkBelow = inkBelow
         self.links = links
+        self.images = images
     }
 
     /// The text of the tags in `hidden` on this line, in block offsets.
@@ -182,6 +188,7 @@ final class LineDecorations: @unchecked Sendable {
         var keyed: [(over: Bool, index: Int, key: TagKey)] = []
         var animated: [AnimatedFragment] = []
         var links: [(rect: CGRect, link: String)] = []
+        var images: [(rect: CGRect, image: TranscriptTagImage, tag: TagKey?)] = []
         var inkTop = top
         var inkBottom = bottom
         for tag in tags.tags where tag.range.lowerBound < range.upperBound && tag.textEnd > range.lowerBound {
@@ -242,11 +249,20 @@ final class LineDecorations: @unchecked Sendable {
                     if isOver { over.append(path) } else { behind.append(path) }
                 }
             }
-            if let link = tag.tag.decoration.link, tag.padding > 0 {
+            if let link = tag.tag.decoration.link, tag.leadingRoom > 0 {
                 links.append((rect, link))
             }
+            if let image = tag.tag.decoration.image, isStart, showsShapes {
+                // Just before the text, centred on its cap height.
+                let capHeight = CTFontGetCapHeight(font)
+                let imageRect = CGRect(x: minX - image.gap - image.size.width, y: -capHeight / 2 - image.size.height / 2,
+                                       width: image.size.width, height: image.size.height)
+                images.append((imageRect, image, key))
+                inkTop = min(inkTop, imageRect.minY)
+                inkBottom = max(inkBottom, imageRect.maxY)
+            }
         }
-        guard !behind.isEmpty || !over.isEmpty || !links.isEmpty || !animated.isEmpty else { return nil }
+        guard !behind.isEmpty || !over.isEmpty || !links.isEmpty || !animated.isEmpty || !images.isEmpty else { return nil }
         var behindTags: [TagKey?] = []
         var overTags: [TagKey?] = []
         if !keyed.isEmpty {
@@ -257,7 +273,8 @@ final class LineDecorations: @unchecked Sendable {
             }
         }
         return LineDecorations(behind: behind, over: over, behindTags: behindTags, overTags: overTags, animated: animated,
-                               inkAbove: min(max(top - inkTop, 0), cap), inkBelow: min(max(inkBottom - bottom, 0), cap), links: links)
+                               inkAbove: min(max(top - inkTop, 0), cap), inkBelow: min(max(inkBottom - bottom, 0), cap), links: links,
+                               images: images)
     }
 }
 

@@ -103,6 +103,25 @@ let tags = [
 let stream = TranscriptStream(tags: tags)
 ```
 
+A tag can also show a small image before its text, such as an icon in a pill. The image takes room after the tag's
+padding, so the tag's shapes surround it, and it is centred on the text's cap height. A tint fills the shape of a
+template image, such as a symbol:
+
+```swift
+TranscriptTag("chip") { attributes in
+    TranscriptDecoration(
+        padding: 6,
+        shapes: [.pill(fill: TranscriptColor(UIColor.systemGray6))],
+        image: attributes["symbol"].flatMap { name in
+            myIcons.cgImage(named: name).map {
+                TranscriptTagImage($0, size: CGSize(width: 14, height: 14), gap: 4,
+                                   tint: TranscriptColor(UIColor.secondaryLabel))
+            }
+        }
+    )
+}
+```
+
 Tags the app doesn't define show as written. For a shape of your own, implement `TranscriptShapeRecipe`. It returns
 paths for each line the tag's text is on and may draw a little outside the text, up to 12 points to the sides,
 past the view's edges. The chat sample has two such shapes, `Zigzag` and `SoftUnderline`, in

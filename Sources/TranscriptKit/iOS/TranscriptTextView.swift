@@ -281,6 +281,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         updateAnimationsEnabled()
         guard window != nil else {
             handTailToTiles()
+            releaseTiles()
             return
         }
         var ancestor = superview
@@ -299,6 +300,43 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         while let view = ancestor, !(view is UIScrollView) { ancestor = view.superview }
         guard let scrollView = ancestor as? UIScrollView else { return bounds }
         return convert(scrollView.bounds, from: scrollView).intersection(bounds)
+    }
+
+    /// Whether the view is on screen or within half a screen of it. A view
+    /// further away, such as a lazy stack's row that scrolled off, frees its tiles.
+    private var isNearVisibleArea: Bool {
+        guard bounds.width > 0, bounds.height > 0 else { return false }
+        var ancestor = superview
+        while let view = ancestor, !(view is UIScrollView) { ancestor = view.superview }
+        guard let scrollView = ancestor as? UIScrollView else { return window != nil }
+        let area = scrollView.bounds.insetBy(dx: 0, dy: -scrollView.bounds.height / 2)
+        return convert(area, from: scrollView).intersects(bounds)
+    }
+
+    /// Spare tiles kept for reuse beyond this many are removed.
+    private let maximumSpareTiles = 4
+
+    /// Hides a tile and keeps it for reuse. A visible view keeps the spare's
+    /// drawing, so that reusing it does not allocate a new backing store.
+    private func retire(_ tile: CanvasView, freeingDrawing: Bool) {
+        tile.isHidden = true
+        if freeingDrawing { tile.layer.contents = nil }
+        spareTiles.append(tile)
+    }
+
+    /// Frees every tile's drawing, for a view with nothing on screen or near it.
+    private func releaseTiles() {
+        guard !tiles.isEmpty || spareTiles.contains(where: { $0.layer.contents != nil }) else { return }
+        tiles.values.forEach { retire($0, freeingDrawing: true) }
+        tiles.removeAll()
+        spareTiles.forEach { $0.layer.contents = nil }
+        trimSpareTiles()
+    }
+
+    private func trimSpareTiles() {
+        while spareTiles.count > maximumSpareTiles {
+            spareTiles.removeLast().removeFromSuperview()
+        }
     }
 
     /// Adds and removes tiles as the visible area moves, and marks the tiles
@@ -325,7 +363,11 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         if !waiting.isEmpty, tagAnimationTiming.contains(.whenVisible) { startWaitingTagsSoon() }
         let visible = visibleRect
         guard !visible.isNull, visible.height > 0, bounds.width > 0 else {
-            if forceRedraw { tiles.values.forEach { $0.setNeedsDisplay() } }
+            if !isNearVisibleArea {
+                releaseTiles()
+            } else if forceRedraw {
+                tiles.values.forEach { $0.setNeedsDisplay() }
+            }
             return
         }
         // Keep half a screen of drawn content above and below what is visible.
@@ -334,8 +376,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         let last = max(Int(((covered.maxY - 0.5) / tileHeight).rounded(.down)), first)
 
         for (index, tile) in tiles where index < first || index > last {
-            tile.isHidden = true
-            spareTiles.append(tile)
+            retire(tile, freeingDrawing: false)
             tiles[index] = nil
         }
         for index in first...last {
@@ -365,6 +406,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
                 tiles[index] = tile
             }
         }
+        trimSpareTiles()
     }
 
     private func makeTile() -> CanvasView {

@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Package tests on macOS
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show the Xcode version
+        run: xcodebuild -version
+      - name: Run the tests
+        run: swift test
+
+  build-ios:
+    name: iOS builds
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show the Xcode version
+        run: xcodebuild -version
+      - name: Build the package
+        run: >
+          xcodebuild build -scheme TranscriptKit -destination 'generic/platform=iOS'
+          CODE_SIGNING_ALLOWED=NO
+      - name: Build the demo app
+        run: >
+          xcodebuild build -project Demo/TranscriptDemo.xcodeproj -scheme TranscriptDemo
+          -destination 'generic/platform=iOS' -skipMacroValidation CODE_SIGNING_ALLOWED=NO
+      - name: Build the chat sample
+        run: >
+          xcodebuild build -project Examples/ChatSample/ChatSample.xcodeproj -scheme ChatSample
+          -destination 'generic/platform=iOS' -skipMacroValidation CODE_SIGNING_ALLOWED=NO
+      - name: Build the benchmark app
+        run: >
+          xcodebuild build -project Benchmark/TranscriptBench.xcodeproj -scheme TranscriptBench
+          -destination 'generic/platform=iOS' -skipMacroValidation CODE_SIGNING_ALLOWED=NO

@@ -623,6 +623,13 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
                 engine.settleAnimations(skipped.started + skipped.waiting)
             }
         }
+        if bounds.width == 0, unsizedWidth > 0, output.source == source, output.layout.width == unsizedWidth,
+           output.layout.style == style {
+            // Not placed yet: nothing to show, but SwiftUI must hear that the height changed.
+            engine.settleAnimations(output.started + output.waiting)
+            if ceil(output.layout.height) != unsizedHeight { onHeightChangeWhileUnsized?() }
+            return
+        }
         guard output.source == source, output.layout.width == bounds.width, output.layout.style == style else {
             if output.source < source, output.layout.width == bounds.width, output.layout.style == style {
                 // From the source just replaced: kept in case the next
@@ -935,6 +942,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         super.layoutSubviews()
         canvas.frame = bounds
         animationLayer.frame = canvas.bounds
+        if bounds.width > 0 { unsizedWidth = 0 }
         if bounds.width > 0, installed?.width != bounds.width {
             relayoutNow()
             refreshSelectionDisplay()
@@ -942,13 +950,29 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         updateCanvas()
     }
 
+    /// Called when the text's height changes while the view has no width of
+    /// its own, measured at the width of the last `sizeThatFits`. A lazy
+    /// stack measures a row of zero height but does not place it, so the
+    /// view never lays out and `invalidateIntrinsicContentSize` reaches nobody;
+    /// `TranscriptText` asks SwiftUI to measure again instead.
+    var onHeightChangeWhileUnsized: (() -> Void)?
+    /// The width and height of the last `sizeThatFits` while the view had no width.
+    private var unsizedWidth: CGFloat = 0
+    private var unsizedHeight: CGFloat = -1
+
     public override func sizeThatFits(_ size: CGSize) -> CGSize {
         let width = size.width.isFinite && size.width > 0 ? size.width : max(bounds.width, 1)
         if let installed, installed.width == width {
             return CGSize(width: width, height: ceil(installed.height))
         }
         // Kept by the engine, so the relayout when the view takes this width is free.
-        return CGSize(width: width, height: ceil(engine.measure(width: width, style: style)))
+        let height = ceil(engine.measure(width: width, style: style))
+        if bounds.width == 0, onHeightChangeWhileUnsized != nil, size.width.isFinite, size.width > 0 {
+            unsizedWidth = width
+            unsizedHeight = height
+            engine.layOutUntilPlaced(width: width, style: style)
+        }
+        return CGSize(width: width, height: height)
     }
 
     public override var intrinsicContentSize: CGSize {

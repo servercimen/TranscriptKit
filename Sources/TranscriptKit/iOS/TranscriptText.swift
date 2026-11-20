@@ -27,6 +27,10 @@ public struct TranscriptText: UIViewRepresentable {
     private var playTrigger: AnyHashable?
     private var selectionChange: ((Range<Int>?) -> Void)?
     private var selectsAll = false
+    /// Changed when the view's height changes before SwiftUI has placed it,
+    /// so that SwiftUI measures the view again (see
+    /// `TranscriptTextView.onHeightChangeWhileUnsized`).
+    @State private var unsizedRevision = 0
 
     public init(_ document: TranscriptDocument, style: TranscriptStyle = .init()) {
         self.source = .document(document)
@@ -169,6 +173,11 @@ public struct TranscriptText: UIViewRepresentable {
         view.openLink = { openURL($0) }
         view.onSelectionChange = selectionChange
         view.selectsAllWhenShown = selectsAll
+        // SwiftUI updates and measures the view again for a state change
+        // only if the update reads that state.
+        _ = unsizedRevision
+        let revision = $unsizedRevision
+        view.onHeightChangeWhileUnsized = { revision.wrappedValue &+= 1 }
     }
 
     public func sizeThatFits(_ proposal: ProposedViewSize, uiView: TranscriptTextView, context: Context) -> CGSize? {

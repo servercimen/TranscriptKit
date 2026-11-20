@@ -21,6 +21,7 @@ text streaming in at hundreds of characters a second doesn't make scrolling stut
   - fenced and indented code blocks, colored by a highlighter your app provides, and tables;
   - links, bare URLs and email addresses, and reference links;
   - images, drawn by a loader your app provides;
+  - LaTeX math, drawn by a renderer your app provides;
   - HTML entities and a few HTML tags.
 - **Custom tags.** Define tags such as `<mention id="ana">@Ana</mention>` and how they look: font traits, colours, a
   link, padding, and shapes drawn behind or over the text. Pills and underlines (solid, dashed, dotted, wavy,
@@ -204,6 +205,34 @@ TranscriptText(stream: stream)
 
 In UIKit, set `codeHighlighter` on `TranscriptTextView`. Colors are `TranscriptColor`s, so give them a light and a dark
 value when the theme has both.
+
+### Math
+
+LaTeX between `\(` and `\)` is inline math. A line that starts with `\[` or `$$` starts display math, which ends at
+`\]` or `$$`. Display math is a block of its own and can span lines: TranscriptKit keeps its lines as written, even a
+line that starts with `-` or `#`. If a blank line comes before the closer, it is not a formula, and its lines show as
+text. `$$ … $$` inside a line is display math too. A `\[` inside a line is a Markdown escape, so `\[1\]` shows `[1]`.
+A single `$` is text, so prices stay as written. TranscriptKit does not read Markdown inside a formula.
+
+Without a renderer, a formula shows its LaTeX in the code font. A renderer gets the formula and the font size of the
+text around it. It returns an image, the image's size in points, and its baseline: the distance from the bottom edge
+up to the baseline. TranscriptKit calls it off the main thread, once for each formula and font size.
+
+```swift
+TranscriptText(stream: stream)
+    .mathRenderer { math, fontSize in
+        guard let drawn = await myMathRenderer.draw(math.tex, display: math.isDisplay, fontSize: fontSize) else {
+            return nil
+        }
+        return TranscriptMathImage(image: drawn.cgImage, size: drawn.size, baseline: drawn.descent)
+    }
+```
+
+In UIKit, set `mathRenderer` on `TranscriptTextView`. TranscriptKit uses only the alpha of the image, and draws the
+formula in the text color, so it follows light and dark appearance. A formula that is wider than the text column is
+scaled down to fit. A paragraph that holds only display math is centered. While a formula streams in, it shows
+nothing until it closes, so the text on screen only grows. Copy gives the LaTeX with its delimiters, and VoiceOver
+reads the LaTeX.
 
 ### Selection
 

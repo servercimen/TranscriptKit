@@ -650,7 +650,14 @@ public final class DocumentLayout: @unchecked Sendable {
             context.translateBy(x: rect.minX, y: rect.maxY)
             context.scaleBy(x: 1, y: -1)
             context.interpolationQuality = .high
-            context.draw(picture, in: CGRect(origin: .zero, size: rect.size))
+            let box = CGRect(origin: .zero, size: rect.size)
+            if attachment.isMask {
+                context.clip(to: box, mask: picture)
+                context.setFillColor(text)
+                context.fill(box)
+            } else {
+                context.draw(picture, in: box)
+            }
             return
         }
         // No picture: a chip with the alt text.

@@ -4,7 +4,8 @@ import Foundation
 ///
 /// Follows CommonMark's two-level structure: container blocks (block quotes
 /// and list items, nested in any order) hold leaf blocks (paragraphs, ATX and
-/// setext headings, fenced and indented code, GFM tables, thematic breaks).
+/// setext headings, fenced and indented code, GFM tables, thematic breaks,
+/// and display math: a line that starts with `\[` or `$$`).
 /// Each leaf becomes one block that records the containers it sits in.
 /// HTML comment blocks are dropped. Not supported: other raw HTML blocks
 /// (they read as paragraphs) and link reference definitions.
@@ -16,6 +17,9 @@ enum BlockParser {
         case code(language: String?, fence: Character?, fenceLength: Int, indent: Int, closed: Bool)
         case rule
         case table(alignments: [TranscriptTable.Alignment])
+        /// Display math that a line starting with `\[` or `$$` opened, until
+        /// `closer` ends it. Its lines are kept as written.
+        case math(closer: String, closed: Bool)
     }
 
     /// A block's content, kept in the form that is cheapest to extend.
@@ -37,6 +41,8 @@ enum BlockParser {
         /// `lastLine` trimmed, as UTF-16: converted once when the line is
         /// added, not again on every update while it stays the last line.
         private var lastLineUnits: [UInt16] = []
+        /// Display math: its lines as written, from the opener to the closer.
+        private(set) var mathLines: [String] = []
         /// Tables: each row's cells, as source.
         private(set) var rows: [[String]] = []
         /// Tables: the parsed cells of complete rows, filled in as they are parsed.
@@ -69,6 +75,8 @@ enum BlockParser {
                 lineCount += 1
             case .rule:
                 break
+            case .math:
+                mathLines.append(line)
             case .table:
                 rows.append(BlockParser.tableCells(line))
                 lineCount += 1
@@ -79,6 +87,17 @@ enum BlockParser {
                 lastLine = line
                 lastLineUnits = units ?? BlockParser.utf16(BlockParser.trimmingSpaceAndTab(Substring(line)))
                 lineCount += 1
+            }
+        }
+
+        /// Display math that never closed: its lines become a paragraph, as written.
+        mutating func becomeParagraph() {
+            let lines = mathLines
+            kind = .paragraph
+            mathLines = []
+            lineCount = 0
+            for line in lines {
+                addLine(String(BlockParser.trimmingSpaceAndTab(Substring(line))))
             }
         }
 
@@ -171,6 +190,11 @@ enum BlockParser {
             return true
         }
 
+        private var lastBlockIsOpenMath: Bool {
+            guard case .math(_, false)? = blocks.last?.kind else { return false }
+            return true
+        }
+
         private var lastBlockIsOpenIndentedCode: Bool {
             guard case .code(_, nil, _, _, false)? = blocks.last?.kind else { return false }
             return true
@@ -181,6 +205,7 @@ enum BlockParser {
         private mutating func endLastBlock() {
             canContinue = false
             tableOpen = false
+            if lastBlockIsOpenMath { blocks[blocks.count - 1].becomeParagraph() }
             guard let last = blocks.indices.last,
                   case .code(let language, let fence, let length, let indent, false) = blocks[last].kind else { return }
             blocks[last].kind = .code(language: language, fence: fence, fenceLength: length, indent: indent, closed: true)
@@ -252,6 +277,29 @@ enum BlockParser {
                     blocks[blocks.count - 1].kind = .code(language: language, fence: fence, fenceLength: length, indent: indent, closed: true)
                 } else {
                     blocks[blocks.count - 1].addLine(BlockParser.dropIndent(rest, upTo: indent))
+                }
+                return
+            }
+            // An open formula takes its containers' lines as written, up to
+            // the closer. A blank line cannot be inside one: then it was not
+            // a formula, and its lines are text.
+            if lastBlockIsOpenMath, allMatched, case .math(let closer, _) = blocks[blocks.count - 1].kind {
+                let rest = scanner.rest
+                if BlockParser.trimmingSpaceAndTab(rest).isEmpty {
+                    blocks[blocks.count - 1].becomeParagraph()
+                    canContinue = false
+                    return
+                }
+                guard let close = BlockParser.mathCloser(in: rest, closer: closer) else {
+                    blocks[blocks.count - 1].addLine(String(rest))
+                    return
+                }
+                blocks[blocks.count - 1].addLine(String(rest[..<close.upperBound]))
+                blocks[blocks.count - 1].kind = .math(closer: closer, closed: true)
+                let after = BlockParser.trimmingSpaceAndTab(rest[close.upperBound...])
+                if !after.isEmpty {
+                    start(.paragraph, line: String(after))
+                    canContinue = true
                 }
                 return
             }
@@ -389,6 +437,20 @@ enum BlockParser {
                 endLists(from: containers.count)
                 return
             }
+            if let closer = BlockParser.mathOpener(leaf) {
+                let body = leaf.dropFirst(2)
+                if let close = BlockParser.mathCloser(in: body, closer: closer) {
+                    // On one line, and alone on it: a block. With text after it,
+                    // it is part of the paragraph.
+                    if BlockParser.trimmingSpaceAndTab(body[close.upperBound...]).isEmpty {
+                        start(.math(closer: closer, closed: true), line: String(leaf[..<close.upperBound]))
+                        return
+                    }
+                } else {
+                    start(.math(closer: closer, closed: false), line: String(leaf))
+                    return
+                }
+            }
             if let fence = BlockParser.fenceOpener(leaf) {
                 start(.code(language: fence.language, fence: fence.character, fenceLength: fence.length, indent: leafIndent, closed: false))
                 return
@@ -442,6 +504,11 @@ enum BlockParser {
             let stripped = BlockParser.strippingContainerMarkers(partial)
             let trimmed = BlockParser.trimmingSpaceAndTab(stripped.content)
             if trimmed.isEmpty { return true }
+            // A line that starts display math is held until it is complete:
+            // until then, it may be a formula on its own or start a paragraph.
+            if trimmed.hasPrefix("\\") || trimmed.hasPrefix("$") {
+                return trimmed == "\\" || trimmed == "$" || trimmed.hasPrefix("\\[") || trimmed.hasPrefix("$$")
+            }
             // Every rule below needs one of these first; most lines are text
             // and are let through here without looking further. This runs on
             // every update while a line is being written.
@@ -478,7 +545,7 @@ enum BlockParser {
         /// The last block is a possible table header that should not be
         /// shown yet (see `RawBlock.isHiddenWhileOpen`).
         var hidesLastBlock: Bool {
-            canContinue && blocks.last?.isHiddenWhileOpen == true
+            (canContinue && blocks.last?.isHiddenWhileOpen == true) || lastBlockIsOpenMath
         }
     }
 
@@ -772,6 +839,31 @@ enum BlockParser {
             remaining -= 1
         }
         return String(line[index...])
+    }
+
+    /// The closer of the display math that `content` starts, if it does.
+    static func mathOpener(_ content: Substring) -> String? {
+        if content.hasPrefix("\\[") { return "\\]" }
+        if content.hasPrefix("$$") { return "$$" }
+        return nil
+    }
+
+    /// Where `closer` is in `text`. A backslash escapes the character after
+    /// it, so the "\]" in "\\]" (a line break, then "]") does not close.
+    static func mathCloser(in text: Substring, closer: String) -> Range<String.Index>? {
+        var index = text.startIndex
+        while index < text.endIndex {
+            let next = text.index(after: index)
+            guard next < text.endIndex else { return nil }
+            if text[index] == "\\" {
+                if closer == "\\]", text[next] == "]" { return index..<text.index(after: next) }
+                index = text.index(after: next)
+                continue
+            }
+            if closer == "$$", text[index] == "$", text[next] == "$" { return index..<text.index(after: next) }
+            index = next
+        }
+        return nil
     }
 
     static func fenceOpener(_ content: Substring) -> (character: Character, length: Int, language: String?)? {

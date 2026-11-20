@@ -78,6 +78,11 @@ enum InlineParser {
     /// literal "[1]" changes text already shown. A longer one shows as written.
     private static let openBracketReach = 64
 
+    /// While streaming, an open formula hides what follows it for this many
+    /// units, so that the text only grows. A longer one shows as plain text,
+    /// as it does if it never closes.
+    private static let openMathReach = 512
+
     fileprivate struct Tag {
         let name: String
         let traits: InlineSpan.Traits
@@ -114,12 +119,12 @@ enum InlineParser {
         let extras: InlineSpan.Extras?
 
         init(from: Int, to: Int, traits: InlineSpan.Traits, link: String?, image: TranscriptImage? = nil,
-             reference: String? = nil, customTag: InlineSpan.CustomTag? = nil) {
+             reference: String? = nil, customTag: InlineSpan.CustomTag? = nil, math: TranscriptMath? = nil) {
             self.from = from
             self.to = to
             self.traits = traits
             self.link = link
-            self.extras = InlineSpan.Extras.make(image: image, reference: reference, customTag: customTag)
+            self.extras = InlineSpan.Extras.make(image: image, reference: reference, customTag: customTag, math: math)
         }
 
         func span(_ range: Range<Int>) -> InlineSpan {
@@ -208,10 +213,11 @@ enum InlineParser {
     private static let objectReplacement: UInt16 = 0xFFFC
     private static let atSign = UInt16(UInt8(ascii: "@"))
     private static let dot = UInt16(UInt8(ascii: "."))
+    private static let dollar = UInt16(UInt8(ascii: "$"))
 
     private static func isSpecial(_ unit: UInt16) -> Bool {
         switch unit {
-        case backslash, backtick, star, underscore, tilde, bang, openBracket, closeBracket, lessThan, ampersand: return true
+        case backslash, backtick, star, underscore, tilde, bang, openBracket, closeBracket, lessThan, ampersand, dollar: return true
         default: return false
         }
     }
@@ -219,7 +225,7 @@ enum InlineParser {
     private static let escapable = Set("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~".utf16)
     /// Trailing units that are held back in open mode: each could be the
     /// start of markup that the next characters decide.
-    private static let heldBackWhenTrailing = Set("*_~`\\[]!".utf16)
+    private static let heldBackWhenTrailing = Set("*_~`\\[]!$".utf16)
 
     private static var longestEntityName: Int { HTMLEntities.longestName }
 
@@ -389,6 +395,23 @@ enum InlineParser {
 
         switch unit {
         case backslash:
+            // "\(" … "\)" is inline math. "\[" … "\]" is display math only
+            // at the start of a line, where the block parser finds it; in a
+            // line, "\[" is an escaped "[".
+            if i + 1 < count, units[i + 1] == openParen {
+                if let close = mathClose(from: i + 2, in: units, count: count, closer: closeParen) {
+                    guard allowed(close + 1) else { return false }
+                    takeMath(&state, units, opener: i, close: close, display: false)
+                    state.position = close + 2
+                    return true
+                }
+                // Whether it closes later depends on text that may still come.
+                guard allowed(count) else { return false }
+                if open, count - i <= openMathReach {
+                    state.position = count
+                    return true
+                }
+            }
             guard i + 1 < count else {
                 guard allowed(count) else { return false }
                 state.appendText(units[i..<(i + 1)])
@@ -769,6 +792,34 @@ enum InlineParser {
                 state.position = i + 1
             }
 
+        case dollar:
+            // "$$" … "$$" is display math. A single "$", as in a price, is text.
+            guard i + 1 < count else {
+                guard allowed(count) else { return false }
+                state.appendText(units[i..<(i + 1)])
+                state.position = i + 1
+                return true
+            }
+            guard allowed(i + 1) else { return false }
+            guard units[i + 1] == dollar else {
+                state.appendText(units[i..<(i + 1)])
+                state.position = i + 1
+                return true
+            }
+            if let close = mathClose(from: i + 2, in: units, count: count, closer: nil) {
+                guard allowed(close + 1) else { return false }
+                takeMath(&state, units, opener: i, close: close, display: true)
+                state.position = close + 2
+                return true
+            }
+            guard allowed(count) else { return false }
+            if open, count - i <= openMathReach {
+                state.position = count
+            } else {
+                state.appendText(units[i..<(i + 2)])
+                state.position = i + 2
+            }
+
         case ampersand:
             let scan = scanEntity(at: i, in: units, count: count)
             if case .incomplete = scan {
@@ -854,6 +905,37 @@ enum InlineParser {
             state.position = end
         }
         return true
+    }
+
+    // MARK: Math
+
+    /// Where the closing delimiter starts after `start`: `\` then `closer`, or
+    /// "$$" when `closer` is nil. A backslash escapes the unit after it, so
+    /// "\\)" (a LaTeX line break, then ")") does not close.
+    private static func mathClose(from start: Int, in units: [UInt16], count: Int, closer: UInt16?) -> Int? {
+        var k = start
+        while k + 1 < count {
+            if units[k] == backslash {
+                if let closer, units[k + 1] == closer { return k }
+                k += 2
+                continue
+            }
+            if closer == nil, units[k] == dollar, units[k + 1] == dollar { return k }
+            k += 1
+        }
+        return nil
+    }
+
+    /// A formula, kept whole: its LaTeX is not parsed as Markdown. An empty
+    /// one shows as written.
+    private static func takeMath(_ state: inout Checkpoint, _ units: [UInt16], opener: Int, close: Int, display: Bool) {
+        let tex = String(decoding: units[(opener + 2)..<close], as: UTF16.self).trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !tex.isEmpty else {
+            state.appendText(units[opener..<(close + 2)])
+            return
+        }
+        let piece = state.appendSealedPiece(CollectionOfOne(objectReplacement))
+        state.addSpan(from: piece, math: TranscriptMath(tex: tex, isDisplay: display))
     }
 
     // MARK: Custom tags
@@ -1131,9 +1213,9 @@ private extension InlineParser.Checkpoint {
     }
 
     mutating func addSpan(from: Int, traits: InlineSpan.Traits = [], link: String? = nil, image: TranscriptImage? = nil,
-                          reference: String? = nil, customTag: InlineSpan.CustomTag? = nil) {
+                          reference: String? = nil, customTag: InlineSpan.CustomTag? = nil, math: TranscriptMath? = nil) {
         spans.append(InlineParser.PendingSpan(from: from, to: pieces.count, traits: traits, link: link, image: image,
-                                              reference: reference, customTag: customTag))
+                                              reference: reference, customTag: customTag, math: math))
         lastPieceIsOpenText = false
     }
 

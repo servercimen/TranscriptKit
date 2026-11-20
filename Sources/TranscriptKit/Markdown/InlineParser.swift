@@ -128,9 +128,14 @@ enum InlineParser {
     }
 
     /// Whether every parse also rebuilds its whole result and checks that the
-    /// settled part matches. On only when the test framework is loaded: in an
-    /// app's debug build it would double the cost of every parse.
-    static let checksSettledResult = NSClassFromString("XCTestCase") != nil
+    /// settled part matches. On only under a test runner: in an app's debug
+    /// build it would double the cost of every parse. Swift Testing can run
+    /// without loading XCTest, so a loaded `.xctest` bundle also counts.
+    static let checksSettledResult: Bool = {
+        if NSClassFromString("XCTestCase") != nil { return true }
+        if Bundle.allBundles.contains(where: { $0.bundlePath.hasSuffix(".xctest") }) { return true }
+        return ProcessInfo.processInfo.arguments.contains { $0.hasSuffix(".xctest") || $0.contains(".xctest/") }
+    }()
 
     /// Parses a whole string.
     static func parse(_ source: String, open: Bool, tags: [String: TranscriptTag] = [:]) -> Result {

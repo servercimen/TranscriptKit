@@ -402,6 +402,34 @@ public final class DocumentLayout: @unchecked Sendable {
             context.restoreGState()
         }
 
+        /// A line's tag images, clipped like its shapes.
+        func drawTagImages(of line: BlockLayout.Line, in entry: Entry) {
+            guard let decorations = line.decorations, !decorations.images.isEmpty else { return }
+            context.saveGState()
+            let side = TranscriptPath.maximumSideOverhang
+            context.clip(to: CGRect(x: -side, y: entry.y + line.frame.minY - decorations.inkAbove, width: entry.layout.width + 2 * side,
+                                    height: line.frame.height + decorations.inkAbove + decorations.inkBelow))
+            context.translateBy(x: line.frame.minX, y: entry.y + line.baseline)
+            for item in decorations.images {
+                if !hiding.isEmpty, let owner = item.tag, hiding.hidesShapes(of: owner) { continue }
+                context.saveGState()
+                // The context is y-down; CGContext draws images y-up.
+                context.translateBy(x: item.rect.minX, y: item.rect.maxY)
+                context.scaleBy(x: 1, y: -1)
+                let box = CGRect(origin: .zero, size: item.rect.size)
+                context.interpolationQuality = .high
+                if let tint = item.image.tint {
+                    context.clip(to: box, mask: item.image.image)
+                    context.setFillColor(tint.cgColor(dark: dark))
+                    context.fill(box)
+                } else {
+                    context.draw(item.image.image, in: box)
+                }
+                context.restoreGState()
+            }
+            context.restoreGState()
+        }
+
         /// A line's tag shapes on one layer, clipped to what the line may
         /// draw, as invalidation knows it.
         func drawShapes(of line: BlockLayout.Line, in entry: Entry, over: Bool) {
@@ -494,7 +522,10 @@ public final class DocumentLayout: @unchecked Sendable {
 
             // Behind the text: tags' shapes, so that none covers a glyph of
             // the line above; then the text; then shapes over it.
-            for index in visible { drawShapes(of: lines[index], in: entry, over: false) }
+            for index in visible {
+                drawShapes(of: lines[index], in: entry, over: false)
+                drawTagImages(of: lines[index], in: entry)
+            }
 
             switch layout.marker {
             case .text(let line, let origin)?:

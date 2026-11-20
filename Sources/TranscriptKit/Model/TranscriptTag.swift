@@ -102,9 +102,13 @@ public struct TranscriptDecoration: Equatable, Sendable {
     /// `TranscriptAnimationRecipe`. Until then the tag's text shows without
     /// its shapes.
     public var animation: Animation?
+    /// A small image before the text, such as an icon in a pill. It sits in
+    /// the space where the tag starts, after `padding`, so shapes surround it.
+    public var image: TranscriptTagImage?
 
     public init(traits: InlineSpan.Traits = [], foreground: TranscriptColor? = nil, background: TranscriptColor? = nil,
-                link: String? = nil, padding: CGFloat = 0, shapes: [Shape] = [], animation: Animation? = nil) {
+                link: String? = nil, padding: CGFloat = 0, shapes: [Shape] = [], animation: Animation? = nil,
+                image: TranscriptTagImage? = nil) {
         self.traits = traits
         self.foreground = foreground
         self.background = background
@@ -112,10 +116,39 @@ public struct TranscriptDecoration: Equatable, Sendable {
         self.padding = max(padding, 0)
         self.shapes = shapes
         self.animation = animation
+        self.image = image
     }
 
     /// Whether layout has to do anything for it beyond styling the text.
-    var shapesText: Bool { padding > 0 || !shapes.isEmpty || animation != nil }
+    var shapesText: Bool { padding > 0 || !shapes.isEmpty || animation != nil || image != nil }
+}
+
+/// A small image before a custom tag's text; see `TranscriptDecoration.image`.
+/// It is centred on the text's cap height. A tag with an animation shows its
+/// image when it shows its shapes: once the animation has played.
+public struct TranscriptTagImage: Equatable, @unchecked Sendable {
+    public var image: CGImage
+    /// How large it is drawn, in points.
+    public var size: CGSize
+    /// The space between the image and the tag's text.
+    public var gap: CGFloat
+    /// A color to fill the image's shape with, for a template image such as
+    /// a symbol, or nil to draw the image's own colors.
+    public var tint: TranscriptColor?
+
+    public init(_ image: CGImage, size: CGSize, gap: CGFloat = 4, tint: TranscriptColor? = nil) {
+        self.image = image
+        self.size = size
+        self.gap = max(gap, 0)
+        self.tint = tint
+    }
+
+    /// The space the image takes before the text.
+    var room: CGFloat { size.width + gap }
+
+    public static func == (a: TranscriptTagImage, b: TranscriptTagImage) -> Bool {
+        a.image === b.image && a.size == b.size && a.gap == b.gap && a.tint == b.tint
+    }
 }
 
 /// A color for decorations, with a value for light and one for dark

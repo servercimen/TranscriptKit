@@ -11,6 +11,8 @@ public enum TranscriptDiagnostics {
         public var tileDraws = 0
         /// Tails drawn on the layout queue (see `TailRenderer`).
         public var tailFrames = 0
+        /// Text fading in, drawn on the layout queue (see `FadeRenderer`).
+        public var fadeFrames = 0
     }
 
     private static let lock = NSLock()

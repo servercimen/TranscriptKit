@@ -27,6 +27,7 @@ text streaming in at hundreds of characters a second doesn't make scrolling stut
   link, padding, and shapes drawn behind or over the text. Pills and underlines (solid, dashed, dotted, wavy,
   marker) are built in, and you can draw shapes of your own, and animate a tag's letters and shapes when it
   finishes arriving.
+- **Fade-in.** Optionally, text fades in as it streams in. Core Animation plays the fades.
 - **SwiftUI and UIKit.** `TranscriptText` for SwiftUI, `TranscriptTextView` for UIKit.
 
 ## Requirements
@@ -176,6 +177,21 @@ TranscriptText(stream: stream)
 In UIKit, set `tagAnimationTiming` on `TranscriptTextView` and call `playTagAnimations()`. A tag that is still
 waiting when it can no longer play (Reduce Motion turned on, animations turned off, the view leaving its window, a
 new document) is shown as it ends up.
+
+### Fading in text
+
+Text that streams in can fade in. Each update's new text fades in on its own, so the fade follows the text as it
+arrives. It is off by default.
+
+```swift
+TranscriptText(stream: stream)
+    .fadesInText(duration: 0.3)
+```
+
+In UIKit, set `textFadeInDuration` on `TranscriptTextView`. TranscriptKit draws the new text on the layout queue,
+and Core Animation plays each fade, so the main thread does no work for each frame of a fade. Glyphs and their
+underline and strikethrough fade in. Backgrounds, images and formulas show at once. A tag that starts its animation
+ends the fades. The fade is off with Reduce Motion, and with a line limit.
 
 ### Images
 

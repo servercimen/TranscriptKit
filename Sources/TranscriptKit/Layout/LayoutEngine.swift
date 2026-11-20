@@ -58,6 +58,9 @@ final class LayoutEngine: @unchecked Sendable {
         var waiting: [TagKey] = []
         /// How `tail` was drawn: which tags it left out, and how far.
         var hidden: TagHiding = .none
+        /// The text that is fading in, from `hidden.fadingFrom` on, which
+        /// `tail` leaves out.
+        var fade: FadeFrame?
         /// The request's `isFinished`.
         var isFinished = false
 
@@ -69,7 +72,7 @@ final class LayoutEngine: @unchecked Sendable {
                           isAppend: earlier.isAppend && later.isAppend, changedTop: top,
                           restyled: earlier.restyled + later.restyled, tail: later.tail,
                           started: earlier.started + later.started, waiting: earlier.waiting + later.waiting,
-                          hidden: later.hidden, isFinished: later.isFinished)
+                          hidden: later.hidden, fade: later.fade, isFinished: later.isFinished)
         }
     }
 
@@ -100,8 +103,17 @@ final class LayoutEngine: @unchecked Sendable {
     private var animationsEnabled = false
     /// Whether they start as soon as they close, or wait for the view.
     private var startsImmediately = true
-    /// Tags whose animations play, or wait to: the tail is drawn without them.
+    /// Tags whose animations play, or wait to, and text that fades in: the
+    /// tail is drawn without them.
     private var hiding = TagHiding()
+    /// How long appended text takes to fade in, or nil for no fade.
+    private var fadeDuration: CFTimeInterval?
+    /// Appended text from `hiding.fadingFrom` on, oldest first: still fading
+    /// in, or done but on the line the oldest still fades on.
+    private var fades: [Fade] = []
+    private var lastFadeID = 0
+    /// The fades' clock. Tests set their own.
+    var clock: @Sendable () -> CFTimeInterval = { CACurrentMediaTime() }
 
     // Only touched on `queue`.
     private var latestDocument = TranscriptDocument()
@@ -115,6 +127,7 @@ final class LayoutEngine: @unchecked Sendable {
     /// Layouts made in the background, for tests.
     private var backgroundLayouts = 0
     private var tailRenderer: TailRenderer?
+    private let fadeRenderer = FadeRenderer()
     private var tailRendererGeneration = -1
     /// Text is being appended, so each output gets a drawn tail.
     private var tailActive = false
@@ -141,6 +154,23 @@ final class LayoutEngine: @unchecked Sendable {
         lock.withLock {
             animationsEnabled = enabled
             startsImmediately = immediately
+        }
+    }
+
+    /// How long text appended from now on takes to fade in, or nil for no
+    /// fade. Any thread.
+    func setFadeDuration(_ duration: CFTimeInterval?) {
+        lock.withLock { fadeDuration = duration.flatMap { $0 > 0 ? $0 : nil } }
+    }
+
+    /// Ends every fade, for when the view draws the text at rest. Returns
+    /// where the fading text started, if any did. Any thread.
+    func endFades() -> Int? {
+        lock.withLock {
+            let from = hiding.fadingFrom
+            fades.removeAll()
+            hiding.fadingFrom = nil
+            return from
         }
     }
 
@@ -290,16 +320,105 @@ final class LayoutEngine: @unchecked Sendable {
                 }
             }
         }
+        let (fading, moved) = updateFades(layout: layout, appendedTo: isAppend ? previous : nil, tagsStarted: !started.isEmpty)
+        if let moved { restyled.append(insideTail(moved)) }
         let hidden = lock.withLock { hiding }
         let tail = drawTail(of: layout, changedTop: changedTop, restyled: restyled, hiding: hidden)
+        var fade: FadeFrame?
+        if !fading.isEmpty, let from = hidden.fadingFrom, let style = lock.withLock({ tailStyle }) {
+            fade = fadeRenderer.render(layout, from: from, fades: fading, colors: style.colors, scale: style.scale, playing: hidden.playing)
+            TranscriptDiagnostics.count(\.fadeFrames)
+        }
         post(Output(layout: layout, source: request.source, base: previous, isAppend: isAppend, changedTop: changedTop,
-                    restyled: restyled, tail: tail, started: started, waiting: waiting, hidden: hidden,
+                    restyled: restyled, tail: tail, started: started, waiting: waiting, hidden: hidden, fade: fade,
                     isFinished: request.isFinished))
+    }
+
+    /// Starts a fade for the text that `layout` appends to `previous`, and
+    /// moves the frontier to the start of the line that the oldest fade still
+    /// in progress is on: a line is drawn again once, when all of its text is
+    /// done, not once for each fade. The fades done before then stay, at
+    /// full opacity. A tag that starts its animation ends them all, and its
+    /// update does not fade: the animation draws the tag's letters, which a
+    /// fade would draw too.
+    ///
+    /// - Returns: the fades in flight, and the rows to draw again because
+    ///   text there stopped fading.
+    private func updateFades(layout: DocumentLayout, appendedTo previous: DocumentLayout?,
+                             tagsStarted: Bool) -> (fades: [Fade], moved: (rect: CGRect, lineTop: CGFloat)?) {
+        let now = clock()
+        let (old, new, fading): (Int?, Int?, [Fade]) = lock.withLock {
+            let old = hiding.fadingFrom
+            var new: Int?
+            if let duration = fadeDuration, tailStyle != nil, let previous {
+                if tagsStarted {
+                    fades.removeAll()
+                } else if layout.length > previous.length {
+                    lastFadeID += 1
+                    fades.append(Fade(id: lastFadeID, range: previous.length..<layout.length, start: now))
+                }
+                if let oldest = fades.first(where: { $0.start + duration > now })?.range.lowerBound {
+                    let lineStart = layout.lines(from: oldest).first.map { $0.entry.start + $0.line.range.lowerBound } ?? oldest
+                    new = old.map { max($0, min(lineStart, oldest)) } ?? oldest
+                }
+            }
+            if let new {
+                fades.removeAll { $0.range.upperBound <= new }
+            } else {
+                fades.removeAll()
+            }
+            hiding.fadingFrom = new
+            return (old, new, fades)
+        }
+        guard let old, old != new, old < layout.length else { return (fading, nil) }
+        // The lines of the text that stopped fading. In a table they are not
+        // in order of y.
+        let end = new ?? layout.length
+        var band: CGRect?
+        var margin: CGFloat = 0
+        for (entry, line) in layout.lines(from: old) where entry.start + line.range.lowerBound < end {
+            let frame = line.frame.offsetBy(dx: 0, dy: entry.y)
+            band = band.map { $0.union(frame) } ?? frame
+            margin = max(margin, FadeRenderer.margin(of: line).y)
+        }
+        guard let band else { return (fading, nil) }
+        return (fading, (CGRect(x: 0, y: band.minY - margin, width: layout.width, height: band.height + 2 * margin), band.minY))
+    }
+
+    /// The rows to draw again for text that stopped fading. When its lines
+    /// are in the tail, the band starts no higher than the tail, so the tail
+    /// alone draws it, off the main thread; the tiles do not redraw glyphs
+    /// that reach above their line either when text is appended.
+    private func insideTail(_ moved: (rect: CGRect, lineTop: CGFloat)) -> CGRect {
+        guard tailActive, let top = tailRenderer?.top, moved.lineTop >= top, moved.rect.minY < top else { return moved.rect }
+        return CGRect(x: moved.rect.minX, y: top, width: moved.rect.width, height: moved.rect.maxY - top)
+    }
+
+    /// Ends the fades whose time is up and draws their rows again, as an
+    /// update that adds no text, for when updates have stopped. The tail
+    /// stays in use. Any thread; the result comes like any other.
+    func settleFinishedFades() {
+        queue.async { [self] in
+            guard let layout = base, width > 0, layout.width == width else { return }
+            let (fading, band) = updateFades(layout: layout, appendedTo: layout, tagsStarted: false)
+            guard let band else { return }
+            let moved = insideTail(band)
+            let hidden = lock.withLock { hiding }
+            let tail = tailActive ? drawTail(of: layout, changedTop: layout.height, restyled: [moved], hiding: hidden) : nil
+            var fade: FadeFrame?
+            if !fading.isEmpty, let from = hidden.fadingFrom, let style = lock.withLock({ tailStyle }) {
+                fade = fadeRenderer.render(layout, from: from, fades: fading, colors: style.colors, scale: style.scale, playing: hidden.playing)
+                TranscriptDiagnostics.count(\.fadeFrames)
+            }
+            post(Output(layout: layout, source: latestSource, base: layout, isAppend: true, changedTop: layout.height,
+                        restyled: [moved], tail: tail, hidden: hidden, fade: fade, isFinished: latestFinished))
+        }
     }
 
     /// Draws `layout`'s tail if text is being appended. The first append
     /// starts the tail; it stays on for every output until settled.
     private func drawTail(of layout: DocumentLayout, changedTop: CGFloat?, restyled: [CGRect], hiding: TagHiding) -> TailRenderer.Frame? {
+        let fadingTop = hiding.fadingFrom.flatMap { layout.lines(from: $0).first }.map { $0.entry.y + $0.line.inkTop }
         guard let style = lock.withLock({ tailStyle }) else {
             tailActive = false
             return nil
@@ -315,7 +434,7 @@ final class LayoutEngine: @unchecked Sendable {
         }
         if changedTop != nil { tailActive = true }
         guard tailActive, let tailRenderer else { return nil }
-        guard let frame = tailRenderer.render(layout, changedTop: changedTop, restyled: restyled, hiding: hiding) else {
+        guard let frame = tailRenderer.render(layout, changedTop: changedTop, restyled: restyled, hiding: hiding, fadingTop: fadingTop) else {
             // No surface free: the view draws the tail itself until the next append.
             tailActive = false
             tailRenderer.reset()
@@ -359,13 +478,20 @@ final class LayoutEngine: @unchecked Sendable {
 
     /// Lays out the newest document at `width` now and makes it the base for
     /// what follows. Anything waiting in the mailbox is older and dropped.
-    func relayout(width: CGFloat, style: TranscriptStyle) -> (layout: DocumentLayout, source: Int, isFinished: Bool)? {
+    ///
+    /// - Parameter keepingFades: text that fades in goes on fading if it is
+    ///   where it was, as after the image store changed; the result says
+    ///   where it starts. Otherwise the fades end.
+    func relayout(width: CGFloat, style: TranscriptStyle, keepingFades: Bool = false)
+        -> (layout: DocumentLayout, source: Int, isFinished: Bool, fadingFrom: Int?)? {
         queue.sync {
             if let request = takePending() {
                 latestDocument = request.document
                 latestSource = request.source
                 latestFinished = request.isFinished
             }
+            let previous = base
+            let sameGeometry = width == self.width && style == self.style
             self.width = width
             self.style = style
             guard width > 0 else { return nil }
@@ -378,11 +504,19 @@ final class LayoutEngine: @unchecked Sendable {
             // every tag at rest after a relayout.
             tailActive = false
             tailRenderer?.reset()
+            var kept: Int?
+            if keepingFades, sameGeometry, let previous, let from = lock.withLock({ hiding.fadingFrom }),
+               from <= previous.length, layout.document.extends(previous.document),
+               layout.caretRect(at: from) == previous.caretRect(at: from),
+               layout.caretRect(at: previous.length) == previous.caretRect(at: previous.length) {
+                kept = from
+            }
             lock.withLock {
                 mailbox = nil
-                hiding = TagHiding()
+                hiding = TagHiding(fadingFrom: kept)
+                if kept == nil { fades.removeAll() }
             }
-            return (layout, latestSource, latestFinished)
+            return (layout, latestSource, latestFinished, kept)
         }
     }
 

@@ -95,6 +95,19 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             guard style != oldValue else { return }
             relayoutNow()
             updateTailStyle()
+            updateFadeDuration()
+        }
+    }
+
+    /// How long text takes to fade in as it streams in, or nil to show it at
+    /// once (the default). Each update's new text fades in on its own, so the
+    /// fade follows the text as it arrives. Core Animation plays the fades;
+    /// the text is drawn on the layout queue. Off with Reduce Motion and
+    /// with a line limit.
+    public var textFadeInDuration: TimeInterval? {
+        didSet {
+            guard textFadeInDuration != oldValue else { return }
+            updateFadeDuration()
         }
     }
 
@@ -139,7 +152,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         didSet {
             engine.images.setLoader(imageLoader) { [weak self] in
                 DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self?.relayoutNow() }
+                    MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
                 }
             }
             relayoutNow()
@@ -155,7 +168,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         didSet {
             engine.images.setOnChange { [weak self] in
                 DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self?.relayoutNow() }
+                    MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
                 }
             }
             engine.images.setHighlighter(codeHighlighter)
@@ -173,7 +186,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         didSet {
             engine.images.setOnChange { [weak self] in
                 DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self?.relayoutNow() }
+                    MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
                 }
             }
             engine.images.setMathRenderer(mathRenderer)
@@ -252,6 +265,15 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     private let emptyInputView = UIView()
     /// Holds the layers of tags' animations, above the tail layer.
     private let animationLayer = CALayer()
+    /// Holds the text that fades in, above the tail layer.
+    private let fadeLayer = CALayer()
+    /// Each fade's layers, one for each line it is on, by fade.
+    private var fadeLayers: [Int: [CALayer]] = [:]
+    /// Text from this flat offset on fades in, so the tiles leave it out.
+    private var fadingFrom: Int?
+    /// When the newest fade on screen ends.
+    private var fadesEnd: CFTimeInterval = 0
+    private var fadeSettleScheduled = false
     /// Tags whose animations are playing, which the tiles leave out.
     private var playing: [TagKey: PlayingTag] = [:]
     private var playingKeys: Set<TagKey> = []
@@ -265,7 +287,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     private var waitingCheckScheduled = false
     /// The last layout passed over for coming from a replaced source.
     private var skippedOutput: LayoutEngine.Output?
-    private var hiding: TagHiding { TagHiding(playing: playingKeys, waiting: waiting) }
+    private var hiding: TagHiding { TagHiding(playing: playingKeys, waiting: waiting, fadingFrom: fadingFrom) }
 
     private struct PlayingTag {
         let tag: AnimatedTag
@@ -307,6 +329,9 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         tailLayer.zPosition = 1
         tailLayer.actions = ["contents": NSNull(), "position": NSNull(), "bounds": NSNull(), "hidden": NSNull()]
         canvas.layer.addSublayer(tailLayer)
+        fadeLayer.zPosition = 1.5
+        fadeLayer.actions = ["bounds": NSNull(), "position": NSNull(), "sublayers": NSNull()]
+        canvas.layer.addSublayer(fadeLayer)
         animationLayer.zPosition = 2
         animationLayer.actions = ["bounds": NSNull(), "position": NSNull(), "sublayers": NSNull()]
         canvas.layer.addSublayer(animationLayer)
@@ -328,6 +353,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             // starts again, in them too, with the next append. Animations,
             // drawn in the old ones, end.
             view.finishAllAnimations()
+            view.settleFades()
             view.updateTailStyle()
             view.handTailToTiles()
             view.tiles.values.forEach { $0.setNeedsDisplay() }
@@ -369,6 +395,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         scrollObservation = nil
         updateTailStyle()
         updateAnimationsEnabled()
+        updateFadeDuration()
         guard window != nil else {
             handTailToTiles()
             releaseTiles()
@@ -645,7 +672,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         let isAppend = output.isAppend && output.base != nil && output.base === installed
         install(output.layout, changedTop: isAppend ? output.changedTop : nil, tail: output.tail,
                 restyled: isAppend ? output.restyled : [], started: output.started, waiting: output.waiting,
-                isFinished: output.isFinished)
+                fade: isAppend ? output.fade : nil, fadingFrom: output.hidden.fadingFrom, isFinished: output.isFinished)
         // A tail drawn while a tag was in another state than it is now (its
         // animation has started or ended since): the tiles draw that part.
         if output.tail != nil, output.hidden != hiding {
@@ -655,11 +682,16 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     /// Lays out synchronously, for when the view cannot wait for the
     /// background: no layout on screen yet, or a new width or style.
-    private func relayoutNow() {
-        guard bounds.width > 0, let result = engine.relayout(width: bounds.width, style: style) else { return }
+    ///
+    /// - Parameter keepingFades: text that fades in goes on fading if the
+    ///   new layout leaves it where it was: an image arrived, or a code
+    ///   block's colors.
+    private func relayoutNow(keepingFades: Bool = false) {
+        guard bounds.width > 0,
+              let result = engine.relayout(width: bounds.width, style: style, keepingFades: keepingFades) else { return }
         skippedOutput = nil
         guard result.source == source else { return }
-        install(result.layout, changedTop: nil, tail: nil, isFinished: result.isFinished)
+        install(result.layout, changedTop: nil, tail: nil, keptFadingFrom: result.fadingFrom, isFinished: result.isFinished)
     }
 
     private func layOutNowIfNothingIsShown() {
@@ -685,13 +717,25 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// - Parameter waiting: animated tags that closed in this update and
     ///   wait for `tagAnimationTiming` to let them play.
     /// - Parameter isFinished: no more text is coming.
+    /// - Parameter fade: with `changedTop`, the text fading in, from
+    ///   `fadingFrom` on, which the tail and the tiles leave out.
     private func install(_ layout: DocumentLayout, changedTop: CGFloat?, tail: TailRenderer.Frame?, restyled: [CGRect] = [],
-                         started: [TagKey] = [], waiting newlyWaiting: [TagKey] = [], isFinished: Bool = false) {
+                         started: [TagKey] = [], waiting newlyWaiting: [TagKey] = [], fade: FadeFrame? = nil, fadingFrom: Int? = nil,
+                         keptFadingFrom: Int? = nil, isFinished: Bool = false) {
         self.isFinished = isFinished
         TranscriptDiagnostics.count(\.installs)
         let old = installed
         let isAppend = changedTop != nil && old != nil
         if !isAppend { inputDelegate?.textWillChange(self) }
+        if isAppend {
+            self.fadingFrom = fadingFrom
+        } else if let keptFadingFrom {
+            // Laid out again with the fading text where it was: its layers stay.
+            self.fadingFrom = keptFadingFrom
+        } else {
+            if self.fadingFrom != nil || !fadeLayers.isEmpty { _ = engine.endFades() }
+            self.fadingFrom = nil
+        }
         installed = layout
         if let current = selection {
             let length = layout.length
@@ -730,6 +774,12 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         }
 
         if isAppend {
+            showFades(fade)
+        } else if keptFadingFrom == nil {
+            removeFades()
+        }
+
+        if isAppend {
             // A playing tag whose glyphs moved (its line wrapped otherwise)
             // ends where it is.
             for (key, play) in playing where layout.animatedTag(key).map({ !$0.isPlaced(like: play.tag) }) ?? true {
@@ -750,10 +800,123 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         }
     }
 
+    // MARK: Fades
+
+    private func updateFadeDuration() {
+        let enabled = window != nil && !UIAccessibility.isReduceMotionEnabled && style.lineLimit == nil
+        engine.setFadeDuration(enabled ? textFadeInDuration : nil)
+        if !enabled { settleFades() }
+    }
+
+    /// Puts each fade's pieces in its layers, in the same transaction as the
+    /// tail and the tiles that leave the text out. A fade's layers keep the
+    /// animation they started with when their pieces move.
+    private func showFades(_ frame: FadeFrame?) {
+        guard let frame, let duration = textFadeInDuration else {
+            removeFades()
+            return
+        }
+        var pieces: [Int: [FadeFrame.Piece]] = [:]
+        for piece in frame.pieces { pieces[piece.fade, default: []].append(piece) }
+        for (id, layers) in fadeLayers where pieces[id] == nil {
+            layers.forEach { $0.removeFromSuperlayer() }
+            fadeLayers[id] = nil
+        }
+        for (id, fadePieces) in pieces {
+            var layers = fadeLayers[id] ?? []
+            while layers.count > fadePieces.count { layers.removeLast().removeFromSuperlayer() }
+            for (index, piece) in fadePieces.enumerated() {
+                let layer: CALayer
+                if index < layers.count {
+                    layer = layers[index]
+                } else {
+                    layer = TagAnimationPlayer.StillLayer()
+                    let animation = CABasicAnimation(keyPath: "opacity")
+                    animation.fromValue = 0
+                    animation.toValue = 1
+                    animation.beginTime = piece.start
+                    animation.duration = duration
+                    animation.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                    animation.fillMode = .backwards
+                    layer.add(animation, forKey: "fade")
+                    fadeLayer.addSublayer(layer)
+                    layers.append(layer)
+                }
+                // A new image costs Core Animation a copy on this thread; an unchanged one, nothing.
+                if layer.contents.map({ ($0 as AnyObject) !== piece.image }) ?? true { layer.contents = piece.image }
+                if layer.contentsScale != frame.scale { layer.contentsScale = frame.scale }
+                if layer.frame != piece.frame { layer.frame = piece.frame }
+            }
+            fadeLayers[id] = layers
+            fadesEnd = max(fadesEnd, (fadePieces.first?.start ?? 0) + duration)
+        }
+        if !fadeLayers.isEmpty { scheduleFadeSettling() }
+    }
+
+    /// Draws the faded text at rest once the newest fade has ended and no
+    /// newer text has come to fade. The engine draws it into the tail, as
+    /// an update; if that does not come, the tiles draw it.
+    private func scheduleFadeSettling() {
+        guard !fadeSettleScheduled else { return }
+        fadeSettleScheduled = true
+        let delay = max(fadesEnd - CACurrentMediaTime(), 0) + 0.05
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.fadeSettleScheduled = false
+                guard !self.fadeLayers.isEmpty else { return }
+                let late = CACurrentMediaTime() - self.fadesEnd
+                if late < 0 {
+                    self.scheduleFadeSettling()
+                } else if late < Self.fadeSettleGrace {
+                    self.engine.settleFinishedFades()
+                    self.fadeSettleScheduled = true
+                    DispatchQueue.main.asyncAfter(deadline: .now() + Self.fadeSettleGrace) { [weak self] in
+                        MainActor.assumeIsolated {
+                            guard let self else { return }
+                            self.fadeSettleScheduled = false
+                            guard !self.fadeLayers.isEmpty else { return }
+                            if CACurrentMediaTime() >= self.fadesEnd + Self.fadeSettleGrace {
+                                self.settleFades()
+                            } else {
+                                self.scheduleFadeSettling()
+                            }
+                        }
+                    }
+                } else {
+                    self.settleFades()
+                }
+            }
+        }
+    }
+
+    private static let fadeSettleGrace: CFTimeInterval = 0.25
+
+    /// Ends every fade: the tiles draw the text again, in the same
+    /// transaction as the fade layers go.
+    private func settleFades() {
+        let from = engine.endFades() ?? fadingFrom
+        fadingFrom = nil
+        if let from, let layout = installed {
+            let top = layout.caretRect(at: min(from, layout.length)).minY - 8
+            let band = top...max(top, layout.height + TranscriptPath.maximumOverhang)
+            // The tail was drawn without the fading text.
+            if tailTop < band.upperBound { handTailToTiles() }
+            redrawTiles(in: band)
+        }
+        removeFades()
+    }
+
+    private func removeFades() {
+        for layers in fadeLayers.values { layers.forEach { $0.removeFromSuperlayer() } }
+        fadeLayers.removeAll()
+    }
+
     // MARK: Tag animations
 
     @objc private func reduceMotionChanged() {
         updateAnimationsEnabled()
+        updateFadeDuration()
     }
 
     private func updateAnimationsEnabled() {
@@ -942,6 +1105,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         super.layoutSubviews()
         canvas.frame = bounds
         animationLayer.frame = canvas.bounds
+        fadeLayer.frame = canvas.bounds
         if bounds.width > 0 { unsizedWidth = 0 }
         if bounds.width > 0, installed?.width != bounds.width {
             relayoutNow()

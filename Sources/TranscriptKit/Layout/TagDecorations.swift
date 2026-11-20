@@ -94,10 +94,13 @@ struct TagHiding: Equatable, Sendable {
     var playing: Set<TagKey> = []
     /// Waiting to play: shown as text, so their shapes are left out.
     var waiting: Set<TagKey> = []
+    /// Text from this flat offset on is fading in, drawn by the view's fade
+    /// layers: its glyphs are left out.
+    var fadingFrom: Int?
 
     static let none = TagHiding()
 
-    var isEmpty: Bool { playing.isEmpty && waiting.isEmpty }
+    var isEmpty: Bool { playing.isEmpty && waiting.isEmpty && fadingFrom == nil }
 
     func hidesShapes(of key: TagKey) -> Bool {
         playing.contains(key) || waiting.contains(key)

@@ -109,7 +109,11 @@ final class TailRenderer {
     ///   place; the parts of them inside the tail are drawn again.
     /// - Parameter hiding: animated tags playing their animation, which the
     ///   view draws itself; see `DocumentLayout.draw`.
-    func render(_ layout: DocumentLayout, changedTop: CGFloat?, restyled: [CGRect] = [], hiding: TagHiding = .none) -> Frame? {
+    /// - Parameter fadingTop: the top of the text that fades in. A strip that
+    ///   moves down starts no lower, while it can hold the text, so the tail
+    ///   and not the tiles draws that text when it stops fading.
+    func render(_ layout: DocumentLayout, changedTop: CGFloat?, restyled: [CGRect] = [], hiding: TagHiding = .none,
+                fadingTop: CGFloat? = nil) -> Frame? {
         if layout.width != width || context == nil {
             guard makeContext(width: layout.width) else { return nil }
             top = nil
@@ -125,7 +129,12 @@ final class TailRenderer {
             start = changedTop
             for rect in restyled where rect.maxY > top { start = min(start, max(rect.minY, top)) }
         } else {
-            currentTop = Self.lastLineTop(of: layout, scale: scale)
+            var newTop = Self.lastLineTop(of: layout, scale: scale)
+            if let fadingTop {
+                let fits = ((layout.height - Self.height + Self.margin) * scale).rounded(.up) / scale
+                newTop = min(newTop, max((max(fadingTop, 0) * scale).rounded(.down) / scale, fits))
+            }
+            currentTop = newTop
             start = currentTop
             drawnBottom = currentTop + Self.height
             fullCopyFrom = frame + 1

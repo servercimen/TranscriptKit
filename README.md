@@ -183,6 +183,22 @@ In UIKit, set `isSelectable` on `TranscriptTextView`.
 
 `TranscriptStyle` sets the body size, line, block and list spacing, indents, padding and the maximum image height.
 
+### Reading the selection
+
+`onSelectionChange` tells the app when the selection changes. The range is in the document's flat UTF-16 offset
+space, and it is nil when nothing is selected any more. `selectsAllWhenShown()` selects all of the text, with the
+selection handles shown, when the view comes on screen:
+
+```swift
+TranscriptText(document)
+    .selectsAllWhenShown()
+    .onSelectionChange { range in
+        if range == nil { dismiss() }    // the person tapped the selection away
+    }
+```
+
+In UIKit, use `onSelectionChange`, `selectedRange` and `selectsAllWhenShown` on `TranscriptTextView`.
+
 ## In this repository
 
 | Folder | Contents |

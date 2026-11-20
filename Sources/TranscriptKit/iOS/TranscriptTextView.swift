@@ -174,7 +174,44 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// The document on screen, which can be a little behind `document`.
     private var shownDocument: TranscriptDocument { currentLayout.document }
 
-    private var selection: Range<Int>?
+    private var selection: Range<Int>? {
+        didSet {
+            let range = selectedRange
+            guard range != reportedSelection else { return }
+            reportedSelection = range
+            onSelectionChange?(range)
+        }
+    }
+    private var reportedSelection: Range<Int>?
+
+    /// The selected range of the document's flat UTF-16 offset space, or nil
+    /// when nothing is selected. `document.text(in:)` gives its text.
+    public var selectedRange: Range<Int>? {
+        guard let selection, !selection.isEmpty else { return nil }
+        return selection
+    }
+
+    /// Called on the main thread after the selection changes, with the new
+    /// `selectedRange`: nil when nothing is selected any more.
+    public var onSelectionChange: ((Range<Int>?) -> Void)?
+
+    /// Selects all of the text, with the selection handles shown, once the
+    /// view is in a window and has text. Turn it off and on to select again.
+    public var selectsAllWhenShown = false {
+        didSet {
+            guard selectsAllWhenShown != oldValue else { return }
+            didSelectAllWhenShown = false
+            selectAllIfNeeded()
+        }
+    }
+    private var didSelectAllWhenShown = false
+
+    private func selectAllIfNeeded() {
+        guard selectsAllWhenShown, !didSelectAllWhenShown, window != nil, currentLayout.length > 0 else { return }
+        didSelectAllWhenShown = true
+        _ = becomeFirstResponder()
+        selectAll(nil)
+    }
     private let textInteraction = UITextInteraction(for: .nonEditable)
     private let emptyInputView = UIView()
     /// Holds the layers of tags' animations, above the tail layer.
@@ -308,6 +345,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             }
         }
         updateCanvas()
+        selectAllIfNeeded()
     }
 
     /// The part of this view currently on screen, or all of it outside a scroll view.
@@ -571,6 +609,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             selection = min(current.lowerBound, length)..<min(current.upperBound, length)
         }
         reportHeightIfChanged()
+        selectAllIfNeeded()
 
         let moved = showTail(tail)
         if tail != nil {

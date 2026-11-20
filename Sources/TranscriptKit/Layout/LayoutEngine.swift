@@ -386,6 +386,22 @@ final class LayoutEngine: @unchecked Sendable {
         }
     }
 
+    /// Lays out the documents that arrive from now on at `width`, while the
+    /// view has no width of its own: SwiftUI measured it but has not placed
+    /// it, as a lazy stack does with a row of zero height. The width the view
+    /// gets when it is placed replaces this one.
+    func layOutUntilPlaced(width: CGFloat, style: TranscriptStyle) {
+        guard width > 0 else { return }
+        queue.async {
+            guard self.width == 0 else { return }
+            self.width = width
+            self.style = style
+            if let measured = self.measured, measured.width == width, measured.style == style {
+                self.base = measured
+            }
+        }
+    }
+
     /// The height of the newest document at `width`, for sizing. The layout
     /// is kept, so laying out at that width afterwards costs nothing.
     func measure(width: CGFloat, style: TranscriptStyle) -> CGFloat {

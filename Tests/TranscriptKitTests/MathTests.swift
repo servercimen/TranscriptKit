@@ -17,6 +17,7 @@ private func formulas(_ block: TranscriptBlock) -> [TranscriptMath] {
     #expect(formulas(inline) == [TranscriptMath(tex: "e^{i\\pi} + 1 = 0", isDisplay: false)])
     #expect(inline.text == "Euler: \u{FFFC} holds.")
     #expect(formulas(firstBlock("\\[ x^2 \\]")) == [TranscriptMath(tex: "x^2", isDisplay: true)])
+    #expect(firstBlock("\\[ x^2 \\]").text == "\u{FFFC}")
     #expect(formulas(firstBlock("$$a + b$$")) == [TranscriptMath(tex: "a + b", isDisplay: true)])
     // Display math on lines of its own, in one paragraph.
     #expect(formulas(firstBlock("$$\nx = 1\n$$")) == [TranscriptMath(tex: "x = 1", isDisplay: true)])
@@ -99,7 +100,7 @@ private let mathSamples = [
 }
 
 @Test func everySplitPointGivesTheSameMath() {
-    for source in mathSamples {
+    for source in mathSamples + displaySamples {
         let whole = MarkdownStreamParser.document(from: source, idPrefix: "m")
         var mismatches: [Int] = []
         for split in 1..<source.count {
@@ -114,8 +115,73 @@ private let mathSamples = [
 }
 
 @Test func copyingMathGivesItsLatex() {
-    let document = MarkdownStreamParser.document(from: "Area \\(\\pi r^2\\) and \\[E = mc^2\\]")
-    #expect(document.copyText(in: 0..<document.utf16Count) == "Area \\(\\pi r^2\\) and \\[E = mc^2\\]")
+    let inline = MarkdownStreamParser.document(from: "Area \\(\\pi r^2\\) here")
+    #expect(inline.copyText(in: 0..<inline.utf16Count) == "Area \\(\\pi r^2\\) here")
+    let display = MarkdownStreamParser.document(from: "$$\nE = mc^2\n$$")
+    #expect(display.copyText(in: 0..<display.utf16Count) == "\\[E = mc^2\\]")
+}
+
+@Test func escapedBracketsInALineStayText() {
+    let block = firstBlock("See \\[1\\] and \\[2\\].")
+    #expect(formulas(block).isEmpty)
+    #expect(block.text == "See [1] and [2].")
+    #expect(firstBlock("\\[1\\] Smith et al.").text == "[1] Smith et al.")
+}
+
+private func blocks(_ markdown: String) -> [(text: String, tex: [String])] {
+    MarkdownStreamParser.document(from: markdown).blocks.map { ($0.text, formulas($0).map(\.tex)) }
+}
+
+@Test func displayMathIsABlockThatKeepsItsLines() {
+    let list = blocks("\\[\nx = a\n- b\n# c\n\\]")
+    #expect(list.count == 1)
+    #expect(list.first?.tex == ["x = a\n- b\n# c"])
+    let split = blocks("Text\n$$\nx^2\n$$\nmore text")
+    #expect(split.map(\.text) == ["Text", "\u{FFFC}", "more text"])
+    #expect(split[1].tex == ["x^2"])
+    // In a list item and in a quote.
+    #expect(blocks("1. Item\n2. \\[\n   y = 2\n   \\]").last?.tex == ["y = 2"])
+    #expect(blocks("> \\[\n> a \\\\\n> b\n> \\]").first?.tex == ["a \\\\\nb"])
+}
+
+@Test func textAfterTheCloserStartsAParagraph() {
+    let result = blocks("\\[\nx = 1\n\\] Then more.")
+    #expect(result.map(\.text) == ["\u{FFFC}", "Then more."])
+    // On its opening line, text after the closer makes it part of the paragraph.
+    let inline = firstBlock("$$x$$ and more")
+    #expect(inline.text == "\u{FFFC} and more")
+    #expect(formulas(inline) == [TranscriptMath(tex: "x", isDisplay: true)])
+}
+
+@Test func withABlankLineBeforeTheCloserItIsNotAFormula() {
+    let result = blocks("$$\nx = a\n- b\n\nAfter.")
+    #expect(result.map(\.text) == ["$$ x = a - b", "After."])
+    #expect(result.allSatisfy { $0.tex.isEmpty })
+    // Never closed: its lines show as written.
+    #expect(blocks("\\[\nx = a\n- b").map(\.text) == ["[ x = a - b"])
+}
+
+private let displaySamples = [
+    "Roots:\n\\[\nx = \\frac{-b \\pm \\sqrt{b^2 - 4ac}}{2a}\n\\]\nand then\n\n$$\n\\begin{aligned}\na &= b \\\\\n- c &= d\n\\end{aligned}\n$$\n\n- item \\(x\\)\n  \\[\n  y\n  \\] after\n",
+    "$$\nnever closed\n# not a heading\n\nNext paragraph with $5.\n\\[1\\] Smith.\n$$x$$\n",
+]
+
+@Test func streamedDisplayMathOnlyGrowsAndMatchesParsingAtOnce() {
+    for source in displaySamples {
+        var parser = MarkdownStreamParser(idPrefix: "md")
+        var previous = parser.document
+        var shrank: [String] = []
+        for character in source {
+            parser.append(String(character))
+            if !parser.document.extends(previous), shrank.count < 3 {
+                shrank.append("\(previous.blocks.last?.text.debugDescription ?? "-") -> \(parser.document.blocks.last?.text.debugDescription ?? "-")")
+            }
+            previous = parser.document
+        }
+        parser.finish()
+        #expect(shrank.isEmpty, "\(shrank)")
+        #expect(parser.document == MarkdownStreamParser.document(from: source))
+    }
 }
 
 /// A formula image as a renderer makes one: RGBA, transparent, with an

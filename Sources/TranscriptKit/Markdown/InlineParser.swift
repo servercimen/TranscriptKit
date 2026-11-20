@@ -390,12 +390,13 @@ enum InlineParser {
 
         switch unit {
         case backslash:
-            // "\(" … "\)" is inline math, "\[" … "\]" display math.
-            if i + 1 < count, units[i + 1] == openParen || units[i + 1] == openBracket {
-                let display = units[i + 1] == openBracket
-                if let close = mathClose(from: i + 2, in: units, count: count, closer: display ? closeBracket : closeParen) {
+            // "\(" … "\)" is inline math. "\[" … "\]" is display math only
+            // at the start of a line, where the block parser finds it; in a
+            // line, "\[" is an escaped "[".
+            if i + 1 < count, units[i + 1] == openParen {
+                if let close = mathClose(from: i + 2, in: units, count: count, closer: closeParen) {
                     guard allowed(close + 1) else { return false }
-                    takeMath(&state, units, opener: i, close: close, display: display)
+                    takeMath(&state, units, opener: i, close: close, display: false)
                     state.position = close + 2
                     return true
                 }

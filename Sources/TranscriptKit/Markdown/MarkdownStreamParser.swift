@@ -160,6 +160,22 @@ public struct MarkdownStreamParser: Sendable {
             return TranscriptBlock(id: id, kind: .rule, text: "", containers: raw.containers, marker: raw.marker)
         case .table(let alignments):
             return makeTable(&raw, id: id, alignments: alignments, open: open, completeRows: completeRows)
+        case .math(let closer, let closed):
+            let source = raw.mathLines.joined(separator: "\n")
+            let tex = closed ? source.dropFirst(2).dropLast(closer.count).trimmingCharacters(in: .whitespacesAndNewlines) : ""
+            if !tex.isEmpty {
+                return TranscriptBlock(id: id, kind: .paragraph, text: "\u{FFFC}",
+                                       spans: [InlineSpan(range: 0..<1, math: TranscriptMath(tex: tex, isDisplay: true))],
+                                       containers: raw.containers, marker: raw.marker)
+            }
+            // Not a formula: empty, or never closed. Its lines show as written.
+            var paragraph = raw
+            paragraph.becomeParagraph()
+            let text = paragraph.inlineSource()
+            let result = InlineParser.parse(text.units, open: false, stableLength: text.units.count,
+                                            resumingFrom: &paragraph.checkpoint, tags: tags)
+            return TranscriptBlock(id: id, kind: .paragraph, text: result.text, spans: result.spans,
+                                   containers: raw.containers, marker: raw.marker)
         case .heading(let level):
             kind = .heading(level: level)
         case .paragraph:

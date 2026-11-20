@@ -208,8 +208,11 @@ value when the theme has both.
 
 ### Math
 
-LaTeX between `\(` and `\)` is inline math. LaTeX between `\[` and `\]`, or between `$$` and `$$`, is display math. A
-single `$` is text, so prices stay as written. TranscriptKit does not read Markdown inside a formula.
+LaTeX between `\(` and `\)` is inline math. A line that starts with `\[` or `$$` starts display math, which ends at
+`\]` or `$$`. Display math is a block of its own and can span lines: TranscriptKit keeps its lines as written, even a
+line that starts with `-` or `#`. If a blank line comes before the closer, it is not a formula, and its lines show as
+text. `$$ … $$` inside a line is display math too. A `\[` inside a line is a Markdown escape, so `\[1\]` shows `[1]`.
+A single `$` is text, so prices stay as written. TranscriptKit does not read Markdown inside a formula.
 
 Without a renderer, a formula shows its LaTeX in the code font. A renderer gets the formula and the font size of the
 text around it. It returns an image, the image's size in points, and its baseline: the distance from the bottom edge

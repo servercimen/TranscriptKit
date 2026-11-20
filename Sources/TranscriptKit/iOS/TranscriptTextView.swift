@@ -163,8 +163,8 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         }
     }
 
-    /// Draws LaTeX formulas: `\( … \)` inline, `\[ … \]` and `$$ … $$` as
-    /// display math. It is called off the main thread, once for each formula
+    /// Draws LaTeX formulas: `\( … \)` inline, and `\[ … \]` and `$$ … $$`
+    /// as display math. It is called off the main thread, once for each formula
     /// and font size. Only the alpha of the image it returns is used: the
     /// formula is drawn in the text color. A formula shows its LaTeX as
     /// written until it is drawn, or if the renderer returns nil. Not set by

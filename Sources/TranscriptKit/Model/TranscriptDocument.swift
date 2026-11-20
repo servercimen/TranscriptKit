@@ -91,9 +91,9 @@ public struct InlineSpan: Equatable, Sendable {
     }
 }
 
-/// A LaTeX formula in the text: `\( … \)` inline, `\[ … \]` or `$$ … $$` on
-/// its own. It is drawn by the app's renderer; see
-/// `TranscriptTextView.mathRenderer`.
+/// A LaTeX formula in the text: `\( … \)` inline, or display math, which is
+/// `$$ … $$` or a block that starts with `\[` or `$$` at the start of a line.
+/// It is drawn by the app's renderer; see `TranscriptTextView.mathRenderer`.
 public struct TranscriptMath: Equatable, Hashable, Sendable {
     /// The formula's LaTeX, without its delimiters.
     public var tex: String

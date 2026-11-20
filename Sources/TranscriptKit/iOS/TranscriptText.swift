@@ -23,6 +23,8 @@ public struct TranscriptText: UIViewRepresentable {
     private var animationTiming: TranscriptAnimationTiming = .immediately
     private var isSelectable = true
     private var playTrigger: AnyHashable?
+    private var selectionChange: ((Range<Int>?) -> Void)?
+    private var selectsAll = false
 
     public init(_ document: TranscriptDocument, style: TranscriptStyle = .init()) {
         self.source = .document(document)
@@ -83,6 +85,24 @@ public struct TranscriptText: UIViewRepresentable {
         return copy
     }
 
+    /// Called after the selection changes, with the selected range of the
+    /// document's flat UTF-16 offset space, or nil when nothing is selected
+    /// any more. `document.text(in:)` gives the selected text. See
+    /// `TranscriptTextView.onSelectionChange`.
+    public func onSelectionChange(_ action: @escaping (Range<Int>?) -> Void) -> TranscriptText {
+        var copy = self
+        copy.selectionChange = action
+        return copy
+    }
+
+    /// Selects all of the text, with the selection handles shown, when the
+    /// view comes on screen; see `TranscriptTextView.selectsAllWhenShown`.
+    public func selectsAllWhenShown(_ selects: Bool = true) -> TranscriptText {
+        var copy = self
+        copy.selectsAll = selects
+        return copy
+    }
+
     public final class Coordinator {
         var playTrigger: AnyHashable?
     }
@@ -117,6 +137,8 @@ public struct TranscriptText: UIViewRepresentable {
         // with the `.environment(\.openURL, ...)` modifier.
         let openURL = context.environment.openURL
         view.openLink = { openURL($0) }
+        view.onSelectionChange = selectionChange
+        view.selectsAllWhenShown = selectsAll
     }
 
     public func sizeThatFits(_ proposal: ProposedViewSize, uiView: TranscriptTextView, context: Context) -> CGSize? {

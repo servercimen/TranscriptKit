@@ -28,6 +28,23 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// Called when a link is tapped. By default the URL is opened by the system.
     public var openLink: (URL) -> Void = { UIApplication.shared.open($0) }
 
+    /// Whether the text can be selected. On by default. Off, the view has no
+    /// selection gestures or edit menu, and a touch that is not on a link goes
+    /// to the views behind it, for example a card that reacts to taps. Links
+    /// still open.
+    public var isSelectable = true {
+        didSet {
+            guard isSelectable != oldValue else { return }
+            if isSelectable {
+                addInteraction(textInteraction)
+            } else {
+                select(nil)
+                removeInteraction(textInteraction)
+                if isFirstResponder { resignFirstResponder() }
+            }
+        }
+    }
+
     /// The text to show. Setting it while a `stream` is attached detaches the stream.
     public var document: TranscriptDocument {
         get { stream?.document ?? directDocument }
@@ -862,7 +879,13 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     // MARK: Responder
 
-    public override var canBecomeFirstResponder: Bool { true }
+    public override var canBecomeFirstResponder: Bool { isSelectable }
+
+    /// Without selection, only links take touches.
+    public override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        guard super.point(inside: point, with: event) else { return false }
+        return isSelectable || linkURL(at: point) != nil
+    }
 
     /// Read-only: an empty input view keeps the keyboard from appearing.
     public override var inputView: UIView? { emptyInputView }

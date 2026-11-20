@@ -511,7 +511,9 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// its screen's scale, or not at all outside a window.
     private func updateTailStyle() {
         if let window { engine.setFramesPerSecond(Self.framesPerSecond(on: window.screen)) }
-        let enabled = window != nil && TranscriptDiagnostics.drawsTailOffMainThread
+        // With a line limit, the end of a stream is past the last line shown,
+        // and a tail surface would draw it below the view.
+        let enabled = window != nil && TranscriptDiagnostics.drawsTailOffMainThread && style.lineLimit == nil
         engine.setTailStyle(colors: enabled ? resolvedColors() : nil, scale: traitCollection.displayScale)
     }
 

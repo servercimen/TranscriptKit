@@ -179,6 +179,20 @@ TranscriptText(document)
 
 In UIKit, set `isSelectable` on `TranscriptTextView`.
 
+### Line limit and alignment
+
+For short text in cards and list rows, set a line limit and an alignment. When text is left out, the last line shown
+ends in "…", and selection and copying cover only what is shown. `TranscriptText` also takes SwiftUI's modifiers:
+
+```swift
+TranscriptText(document)
+    .lineLimit(2)
+    .multilineTextAlignment(.center)
+```
+
+The same values are `lineLimit` and `textAlignment` on `TranscriptStyle`. The alignment moves paragraphs and headings;
+lists, quotes, code and tables stay at the leading edge. A table is shown whole or not at all.
+
 ### Styling
 
 `TranscriptStyle` sets the body size, line, block and list spacing, indents, padding and the maximum image height.

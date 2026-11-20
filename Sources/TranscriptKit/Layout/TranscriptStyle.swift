@@ -257,6 +257,7 @@ public struct TranscriptStyle: Equatable, Sendable {
             var traits = extraTraits
             var isLink = false
             var image: TranscriptImage?
+            var math: TranscriptMath?
             // Spans are sorted with outer ones first, so an inner tag's colors win.
             var foreground: TranscriptColor?
             var background: TranscriptColor?
@@ -264,6 +265,7 @@ public struct TranscriptStyle: Equatable, Sendable {
                 traits.formUnion(span.traits)
                 if span.link != nil || span.reference.map({ definitions[$0] != nil }) == true { isLink = true }
                 if let spanImage = span.image { image = spanImage }
+                if let spanMath = span.math { math = spanMath }
                 if let decoration = span.customTag?.decoration {
                     if let color = decoration.foreground { foreground = color }
                     if let color = decoration.background { background = color }
@@ -283,9 +285,10 @@ public struct TranscriptStyle: Equatable, Sendable {
                 result.addAttribute(Self.foregroundKey, value: linkColor, range: range)
             }
             if let background { result.addAttribute(Self.backgroundKey, value: background, range: range) }
-            if let image, range.length == 1 {
+            if image != nil || math != nil, range.length == 1 {
                 let font = result.attribute(Self.fontKey, at: lower, effectiveRange: nil).map { $0 as! CTFont } ?? self.font(for: block.kind)
-                let attachment = ImageAttachment(image: image, sizing: images, font: font, style: self)
+                let attachment = math.map { ImageAttachment(math: $0, sizing: images, font: font, style: self) }
+                    ?? ImageAttachment(image: image!, sizing: images, font: font, style: self)
                 result.addAttribute(Self.imageKey, value: attachment, range: range)
                 result.addAttribute(Self.runDelegateKey, value: attachment.makeRunDelegate(), range: range)
             }
@@ -316,9 +319,48 @@ final class ImageAttachment: @unchecked Sendable {
     let size: CGSize
     /// Above the baseline; the rest of `size.height` is below it.
     let ascent: CGFloat
+    /// For a formula: it, and its picture is a mask drawn in the text color.
+    let math: TranscriptMath?
+    var isMask: Bool { math != nil && picture != nil }
+
+    /// A formula, drawn by the store's math renderer, or its LaTeX as written
+    /// until it is (or if it is not).
+    init(math: TranscriptMath, sizing: ImageSizing?, font: CTFont, style: TranscriptStyle) {
+        self.image = TranscriptImage(source: "", alt: math.tex)
+        self.math = math
+        let maximumWidth = max(sizing?.maximumWidth ?? 320, 20)
+        if let formula = sizing?.store?.formula(for: math, fontSize: CTFontGetSize(font)) {
+            let natural = CGSize(width: max(formula.size.width, 1), height: max(formula.size.height, 1))
+            let scale = min(1, maximumWidth / natural.width)
+            self.picture = formula.image
+            self.label = nil
+            self.size = CGSize(width: ceil(natural.width * scale), height: ceil(natural.height * scale))
+            self.ascent = size.height - formula.baseline * scale
+        } else {
+            let size = CTFontGetSize(font) * 0.85
+            let code = style.codeFont?.makeFont(size: size) ?? CTFontCreateUIFontForLanguage(.userFixedPitch, size, nil)!
+            let attributes: [NSAttributedString.Key: Any] = [
+                TranscriptStyle.fontKey: code,
+                NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String): true,
+            ]
+            var line = CTLineCreateWithAttributedString(NSAttributedString(string: math.source, attributes: attributes))
+            let padding: CGFloat = 6
+            let available = maximumWidth - padding * 2
+            if CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil)) > available {
+                let ellipsis = CTLineCreateWithAttributedString(NSAttributedString(string: "…", attributes: attributes))
+                line = CTLineCreateTruncatedLine(line, Double(available), .end, ellipsis) ?? line
+            }
+            self.picture = nil
+            self.label = line
+            let width = ceil(CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))) + padding * 2
+            self.size = CGSize(width: min(width, maximumWidth), height: ceil(CTFontGetAscent(font) + CTFontGetDescent(font)) + 4)
+            self.ascent = ceil(CTFontGetAscent(font)) + 2
+        }
+    }
 
     init(image: TranscriptImage, sizing: ImageSizing?, font: CTFont, style: TranscriptStyle) {
         self.image = image
+        self.math = nil
         let maximumWidth = max(sizing?.maximumWidth ?? 320, 20)
         if let picture = sizing?.store?.picture(for: image) {
             let natural = CGSize(width: max(CGFloat(picture.width), 1), height: max(CGFloat(picture.height), 1))

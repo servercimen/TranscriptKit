@@ -127,6 +127,7 @@ private func characterSteps(_ markdown: String) -> [TranscriptDocument] {
     "- [ ] task one\n- [x] task *two*\n  - nested ~~old~~ new\n\n> quote\n>\n> > deeper &amp; deeper\n\n1. step\n\n   ```\n   code\n   ```\n",
     "A <b>bold</b> and <i>it</i><br>next &#169; &copy; ![pic](https://x.y/p.png) www.example.com.\n",
     "Write to first_last@example.co.uk or <ops+x@example.org>, not @handle.\n\n1. a\n1. b\n\n3) c\n3) d\n",
+    "Euler \\(e^{i\\pi} + 1 = 0\\) costs $5, not $$\\sum_{k=1}^{n} k$$, and\n\\[\n\\frac{a}{b} \\\\ c\n\\]\n\nNot math: \\(x and $$y\n",
     "See [the docs][d] and [d][], as in [1] and [2].\n\n[d]: https://docs.example.com \"Docs\"\n[1]: <https://one.example>\n\nAfter, [a long bracket that is not a link at all, just an aside in the text] and [x](https://x.y).\n",
 ])
 func newElementsOnlyGrowWhileStreaming(markdown: String) {

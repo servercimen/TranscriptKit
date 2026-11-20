@@ -113,6 +113,61 @@ final class TranscriptImageStore: @unchecked Sendable {
         handler?()
     }
 
+    // MARK: Formulas
+
+    private struct FormulaKey: Hashable {
+        let math: TranscriptMath
+        /// The font size, to half a point.
+        let size: Int
+    }
+
+    private var mathRenderer: TranscriptMathRenderer?
+    private var mathGeneration = 0
+    private var formulas: [FormulaKey: TranscriptMathImage] = [:]
+    private var formulasRequested: Set<FormulaKey> = []
+
+    var hasMathRenderer: Bool { lock.withLock { mathRenderer != nil } }
+
+    /// Sets the math renderer. Formulas drawn by an earlier one are dropped,
+    /// and the revision goes up so that they are laid out again.
+    func setMathRenderer(_ renderer: TranscriptMathRenderer?) {
+        lock.withLock {
+            mathRenderer = renderer
+            mathGeneration += 1
+            _revision += 1
+            formulas = [:]
+            formulasRequested = []
+        }
+    }
+
+    /// The drawn formula if it has arrived. Starts drawing it if not.
+    func formula(for math: TranscriptMath, fontSize: CGFloat) -> TranscriptMathImage? {
+        let key = FormulaKey(math: math, size: Int((fontSize * 2).rounded()))
+        let (formula, render, generation): (TranscriptMathImage?, TranscriptMathRenderer?, Int) = lock.withLock {
+            if let formula = formulas[key] { return (formula, nil, mathGeneration) }
+            guard let mathRenderer, !formulasRequested.contains(key) else { return (nil, nil, mathGeneration) }
+            formulasRequested.insert(key)
+            return (nil, mathRenderer, mathGeneration)
+        }
+        if let render {
+            Task.detached { [weak self] in
+                let drawn = await render(math, CGFloat(key.size) / 2)?.withAlphaAsMask()
+                self?.finishFormula(key, drawn, generation: generation)
+            }
+        }
+        return formula
+    }
+
+    private func finishFormula(_ key: FormulaKey, _ formula: TranscriptMathImage?, generation: Int) {
+        let handler: (@Sendable () -> Void)? = lock.withLock {
+            guard generation == mathGeneration, let formula else { return nil }
+            formulas[key] = formula
+            _revision += 1
+            return onChange
+        }
+        handler?()
+    }
+
     /// The picture for `image` if it has arrived. Starts loading it if not.
     func picture(for image: TranscriptImage) -> CGImage? {
         let (picture, load, generation): (CGImage?, Loader?, Int) = lock.withLock {

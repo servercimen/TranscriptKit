@@ -25,7 +25,13 @@ public struct InlineSpan: Equatable, Sendable {
     /// An image, shown in place of the range's single U+FFFC character.
     public var image: TranscriptImage? {
         get { extras?.image }
-        set { extras = Extras.make(image: newValue, reference: reference, customTag: customTag) }
+        set { extras = Extras.make(image: newValue, reference: reference, customTag: customTag, math: math) }
+    }
+
+    /// A formula, shown in place of the range's single U+FFFC character.
+    public var math: TranscriptMath? {
+        get { extras?.math }
+        set { extras = Extras.make(image: image, reference: reference, customTag: customTag, math: newValue) }
     }
 
     /// For a reference link (`[text][label]`, `[label][]` or `[label]`): its
@@ -34,22 +40,22 @@ public struct InlineSpan: Equatable, Sendable {
     /// `TranscriptDocument.destination(of:)`.
     public var reference: String? {
         get { extras?.reference }
-        set { extras = Extras.make(image: image, reference: newValue, customTag: customTag) }
+        set { extras = Extras.make(image: image, reference: newValue, customTag: customTag, math: math) }
     }
 
     /// For text inside a custom tag (see `TranscriptTag`): the tag and its
     /// decoration. Its traits and link are also in `traits` and `link`.
     public var customTag: CustomTag? {
         get { extras?.customTag }
-        set { extras = Extras.make(image: image, reference: reference, customTag: newValue) }
+        set { extras = Extras.make(image: image, reference: reference, customTag: newValue, math: math) }
     }
 
     public init(range: Range<Int>, traits: Traits = [], link: String? = nil, image: TranscriptImage? = nil,
-                reference: String? = nil, customTag: CustomTag? = nil) {
+                reference: String? = nil, customTag: CustomTag? = nil, math: TranscriptMath? = nil) {
         self.range = range
         self.traits = traits
         self.link = link
-        self.extras = Extras.make(image: image, reference: reference, customTag: customTag)
+        self.extras = Extras.make(image: image, reference: reference, customTag: customTag, math: math)
     }
 
     init(range: Range<Int>, traits: Traits, link: String?, extras: Extras?) {
@@ -64,22 +70,43 @@ public struct InlineSpan: Equatable, Sendable {
         let image: TranscriptImage?
         let reference: String?
         let customTag: CustomTag?
+        let math: TranscriptMath?
 
-        private init(image: TranscriptImage?, reference: String?, customTag: CustomTag?) {
+        private init(image: TranscriptImage?, reference: String?, customTag: CustomTag?, math: TranscriptMath?) {
             self.image = image
             self.reference = reference
             self.customTag = customTag
+            self.math = math
         }
 
         /// Nil when there is nothing to keep.
-        static func make(image: TranscriptImage?, reference: String?, customTag: CustomTag?) -> Extras? {
-            image == nil && reference == nil && customTag == nil ? nil : Extras(image: image, reference: reference, customTag: customTag)
+        static func make(image: TranscriptImage?, reference: String?, customTag: CustomTag?, math: TranscriptMath? = nil) -> Extras? {
+            image == nil && reference == nil && customTag == nil && math == nil
+                ? nil : Extras(image: image, reference: reference, customTag: customTag, math: math)
         }
 
         static func == (a: Extras, b: Extras) -> Bool {
-            a === b || (a.image == b.image && a.reference == b.reference && a.customTag == b.customTag)
+            a === b || (a.image == b.image && a.reference == b.reference && a.customTag == b.customTag && a.math == b.math)
         }
     }
+}
+
+/// A LaTeX formula in the text: `\( … \)` inline, `\[ … \]` or `$$ … $$` on
+/// its own. It is drawn by the app's renderer; see
+/// `TranscriptTextView.mathRenderer`.
+public struct TranscriptMath: Equatable, Hashable, Sendable {
+    /// The formula's LaTeX, without its delimiters.
+    public var tex: String
+    /// Display math, set on its own, rather than math in a line of text.
+    public var isDisplay: Bool
+
+    public init(tex: String, isDisplay: Bool) {
+        self.tex = tex
+        self.isDisplay = isDisplay
+    }
+
+    /// The formula as written, with delimiters: what copying gives.
+    public var source: String { isDisplay ? "\\[" + tex + "\\]" : "\\(" + tex + "\\)" }
 }
 
 /// An image in the text, `![alt](source)` in Markdown.
@@ -403,10 +430,11 @@ public struct TranscriptDocument: Equatable, Sendable {
                 guard lower < upper else { continue }
                 let local = NSRange(location: lower - start, length: upper - lower)
                 let text = NSMutableString(string: (block.text as NSString).substring(with: local))
-                // Images by their alt text, last first so offsets stay valid.
-                for span in block.spans.reversed() {
-                    guard let image = span.image, local.contains(span.range.lowerBound) else { continue }
-                    text.replaceCharacters(in: NSRange(location: span.range.lowerBound - local.location, length: 1), with: image.alt)
+                // Images by their alt text and formulas by their LaTeX, last
+                // first so offsets stay valid.
+                for span in block.spans.reversed() where local.contains(span.range.lowerBound) {
+                    guard let replacement = span.image?.alt ?? span.math?.source else { continue }
+                    text.replaceCharacters(in: NSRange(location: span.range.lowerBound - local.location, length: 1), with: replacement)
                 }
                 piece = text as String
             }

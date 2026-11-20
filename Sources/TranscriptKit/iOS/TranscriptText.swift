@@ -20,6 +20,7 @@ public struct TranscriptText: UIViewRepresentable {
     private let style: TranscriptStyle
     private var loader: (@Sendable (TranscriptImage) async -> CGImage?)?
     private var highlighter: TranscriptCodeHighlighter?
+    private var mathRenderer: TranscriptMathRenderer?
     private var animatesTags = true
     private var animationTiming: TranscriptAnimationTiming = .immediately
     private var isSelectable = true
@@ -60,6 +61,14 @@ public struct TranscriptText: UIViewRepresentable {
     public func codeHighlighter(_ highlighter: @escaping TranscriptCodeHighlighter) -> TranscriptText {
         var copy = self
         copy.highlighter = highlighter
+        return copy
+    }
+
+    /// Draws LaTeX formulas; see `TranscriptTextView.mathRenderer`. Read once,
+    /// when the view is created.
+    public func mathRenderer(_ renderer: @escaping TranscriptMathRenderer) -> TranscriptText {
+        var copy = self
+        copy.mathRenderer = renderer
         return copy
     }
 
@@ -127,6 +136,7 @@ public struct TranscriptText: UIViewRepresentable {
         view.setContentHuggingPriority(.required, for: .vertical)
         if let loader { view.imageLoader = loader }
         if let highlighter { view.codeHighlighter = highlighter }
+        if let mathRenderer { view.mathRenderer = mathRenderer }
         return view
     }
 

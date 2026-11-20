@@ -110,7 +110,7 @@ final class BlockLayout: @unchecked Sendable {
 
         let insets = style.insets(for: block)
         let available = max(width - insets.leading - insets.trailing, 1)
-        let hasImages = block.spans.contains { $0.image != nil }
+        let hasImages = block.spans.contains { $0.image != nil || $0.math != nil }
         // Laid out again when the store's pictures or code colors change.
         let usesStore = hasImages || (block.kind.isCode && images?.hasHighlighter == true)
         let revision = usesStore ? (images?.revision ?? 0) : nil
@@ -182,9 +182,13 @@ final class BlockLayout: @unchecked Sendable {
 
         let fixedHeight = style.lineHeight(for: block.kind)
         let gap = fixedHeight == nil ? style.lineSpacing : 0
+        let isDisplayMath = block.spans.count == 1 && block.spans[0].math?.isDisplay == true
+            && block.text.trimmingCharacters(in: .whitespacesAndNewlines) == "\u{FFFC}"
         func add(_ ctLine: CTLine, range: Range<Int>, indexBase: Int, leading: CGFloat = 0, text: NSAttributedString? = nil) {
             let metrics = fitted(lineMetrics(ctLine, isEmpty: range.isEmpty, font: font), to: fixedHeight)
-            let x = insets.leading + leading + alignmentOffset(block, style: style, width: metrics.width, room: available - leading)
+            let x = insets.leading + leading + (isDisplayMath
+                ? max(((available - leading - metrics.width) / 2).rounded(.down), 0)
+                : alignmentOffset(block, style: style, width: metrics.width, room: available - leading))
             var decorations: LineDecorations?
             if let decorated, let text {
                 decorations = LineDecorations.make(line: ctLine, range: range, indexBase: indexBase, visibleWidth: metrics.width,

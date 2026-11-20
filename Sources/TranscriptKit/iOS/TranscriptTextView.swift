@@ -146,6 +146,23 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         }
     }
 
+    /// Colors the code in code blocks, as a syntax highlighter does. It is
+    /// called off the main thread with each code block's text and language,
+    /// at most once at a time for each block, and a block shows its newest
+    /// colors meanwhile. Code is drawn in the text color until its colors
+    /// arrive. Not set by default.
+    public var codeHighlighter: TranscriptCodeHighlighter? {
+        didSet {
+            engine.images.setOnChange { [weak self] in
+                DispatchQueue.main.async {
+                    MainActor.assumeIsolated { self?.relayoutNow() }
+                }
+            }
+            engine.images.setHighlighter(codeHighlighter)
+            relayoutNow()
+        }
+    }
+
     private let engine = LayoutEngine()
 
     /// Holds the tiles, and the tail layer above them, below the system's

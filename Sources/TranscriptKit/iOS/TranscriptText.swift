@@ -19,6 +19,7 @@ public struct TranscriptText: UIViewRepresentable {
     private let source: Source
     private let style: TranscriptStyle
     private var loader: (@Sendable (TranscriptImage) async -> CGImage?)?
+    private var highlighter: TranscriptCodeHighlighter?
     private var animatesTags = true
     private var animationTiming: TranscriptAnimationTiming = .immediately
     private var isSelectable = true
@@ -51,6 +52,14 @@ public struct TranscriptText: UIViewRepresentable {
     public func selectable(_ selectable: Bool) -> TranscriptText {
         var copy = self
         copy.isSelectable = selectable
+        return copy
+    }
+
+    /// Colors the code in code blocks; see `TranscriptTextView.codeHighlighter`.
+    /// Read once, when the view is created.
+    public func codeHighlighter(_ highlighter: @escaping TranscriptCodeHighlighter) -> TranscriptText {
+        var copy = self
+        copy.highlighter = highlighter
         return copy
     }
 
@@ -117,6 +126,7 @@ public struct TranscriptText: UIViewRepresentable {
         let view = TranscriptTextView()
         view.setContentHuggingPriority(.required, for: .vertical)
         if let loader { view.imageLoader = loader }
+        if let highlighter { view.codeHighlighter = highlighter }
         return view
     }
 

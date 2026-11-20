@@ -179,6 +179,12 @@ TranscriptText(document)
 
 In UIKit, set `isSelectable` on `TranscriptTextView`.
 
+### VoiceOver
+
+VoiceOver reads the text block by block. Headings are in the rotor's list of headings, list items start with their
+number or "Checked" or "Unchecked", and each link in a block is an action that opens it. The spoken words "Open %@",
+"Checked", "Unchecked" and "Separator" come from your app's `Localizable.strings`, so you can translate them there.
+
 ### Line limit and alignment
 
 For short text in cards and list rows, set a line limit and an alignment. When text is left out, the last line shown

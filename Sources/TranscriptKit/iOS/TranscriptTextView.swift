@@ -879,6 +879,22 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         return CGSize(width: UIView.noIntrinsicMetric, height: ceil(installed.height))
     }
 
+    // MARK: Accessibility
+
+    /// The elements made for the last layout VoiceOver asked about.
+    var accessibilityCache: AccessibilityCache?
+
+    /// A container: VoiceOver reads its blocks (see `accessibilityElements(for:)`).
+    public override var isAccessibilityElement: Bool {
+        get { false }
+        set {}
+    }
+
+    public override var accessibilityElements: [Any]? {
+        get { accessibilityElements(for: currentLayout) }
+        set {}
+    }
+
     // MARK: Responder
 
     public override var canBecomeFirstResponder: Bool { isSelectable }

@@ -94,6 +94,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         didSet {
             guard style != oldValue else { return }
             relayoutNow()
+            updateTailStyle()
         }
     }
 
@@ -486,11 +487,13 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     }
 
     private func resolvedColors() -> TailRenderer.Colors {
-        TailRenderer.Colors(
-            text: UIColor.label.resolvedColor(with: traitCollection).cgColor,
-            codeBackground: UIColor.secondarySystemFill.resolvedColor(with: traitCollection).cgColor,
-            accent: UIColor.tertiaryLabel.resolvedColor(with: traitCollection).cgColor,
-            dark: traitCollection.userInterfaceStyle == .dark
+        let dark = traitCollection.userInterfaceStyle == .dark
+        return TailRenderer.Colors(
+            text: style.textColor?.cgColor(dark: dark) ?? UIColor.label.resolvedColor(with: traitCollection).cgColor,
+            codeBackground: style.codeBackgroundColor?.cgColor(dark: dark)
+                ?? UIColor.secondarySystemFill.resolvedColor(with: traitCollection).cgColor,
+            accent: style.accentColor?.cgColor(dark: dark) ?? UIColor.tertiaryLabel.resolvedColor(with: traitCollection).cgColor,
+            dark: dark
         )
     }
 

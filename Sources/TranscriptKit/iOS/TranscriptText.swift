@@ -121,7 +121,9 @@ public struct TranscriptText: UIViewRepresentable {
     }
 
     public func updateUIView(_ view: TranscriptTextView, context: Context) {
-        view.style = style
+        view.style = style.scalesWithDynamicType
+            ? style.scaled(for: UIContentSizeCategory(context.environment.dynamicTypeSize))
+            : style
         view.animatesTags = animatesTags
         view.tagAnimationTiming = animationTiming
         view.isSelectable = isSelectable

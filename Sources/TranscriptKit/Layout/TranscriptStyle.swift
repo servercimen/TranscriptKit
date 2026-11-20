@@ -4,6 +4,21 @@ import Foundation
 
 /// Typography and spacing for a transcript.
 public struct TranscriptStyle: Equatable, Sendable {
+    /// The font of paragraphs, list items, quotes and tables. Nil uses the
+    /// system font at `bodySize`.
+    public var bodyFont: TranscriptFont?
+    /// The fonts of headings: the first for level 1, the second for level 2,
+    /// and so on. Levels past the end use the last one. Empty uses the
+    /// emphasized system font at 1.5, 1.3 and 1.15 times `bodySize`.
+    public var headingFonts: [TranscriptFont] = []
+    /// The font of code blocks, and the design of inline code, which is set at
+    /// 0.9 times the size of the text around it. Nil uses the system's
+    /// monospaced font at 0.88 times `bodySize`.
+    public var codeFont: TranscriptFont?
+    /// Whether `TranscriptText` scales the sizes with Dynamic Type; see
+    /// `scaled(for:)`.
+    public var scalesWithDynamicType = false
+
     public var bodySize: CGFloat = 17
     public var lineSpacing: CGFloat = 3
     public var blockSpacing: CGFloat = 14
@@ -67,6 +82,8 @@ public struct TranscriptStyle: Equatable, Sendable {
             var role: Int
             var size: CGFloat
             var traits: Int
+            var font: TranscriptFont?
+            var code: TranscriptFont?
         }
 
         private let lock = NSLock()
@@ -91,26 +108,51 @@ public struct TranscriptStyle: Equatable, Sendable {
         let role: Int
         switch kind {
         case .paragraph, .rule, .table: role = 0
-        case .heading(let level): role = min(max(level, 1), 3)
-        case .code: role = 4
+        case .heading(let level): role = min(max(level, 1), 6)
+        case .code: role = 7
         }
-        let key = FontCache.Key(role: role, size: bodySize, traits: traits.rawValue)
+        let key = FontCache.Key(role: role, size: bodySize, traits: traits.rawValue, font: customFont(for: kind),
+                                code: traits.contains(.code) ? codeFont : nil)
         return Self.fontCache.font(for: key) { makeFont(for: kind, traits: traits) }
     }
 
+    /// The font the app set for this kind of text, if any.
+    func customFont(for kind: TranscriptBlock.Kind) -> TranscriptFont? {
+        switch kind {
+        case .paragraph, .rule, .table: return bodyFont
+        case .heading(let level):
+            guard !headingFonts.isEmpty else { return nil }
+            return headingFonts[min(max(level, 1), headingFonts.count) - 1]
+        case .code: return codeFont
+        }
+    }
+
+    /// The line height the app set for this kind of text, if any.
+    func lineHeight(for kind: TranscriptBlock.Kind) -> CGFloat? {
+        customFont(for: kind)?.lineHeight
+    }
+
+    /// The size of body text: the body font's, or `bodySize`.
+    var effectiveBodySize: CGFloat { bodyFont?.size ?? bodySize }
+
     private func makeFont(for kind: TranscriptBlock.Kind, traits: InlineSpan.Traits) -> CTFont {
         var font: CTFont
-        switch kind {
-        case .paragraph, .rule, .table:
-            font = CTFontCreateUIFontForLanguage(.system, bodySize, nil)!
-        case .heading(let level):
-            let scale: CGFloat = level <= 1 ? 1.5 : (level == 2 ? 1.3 : 1.15)
-            font = CTFontCreateUIFontForLanguage(.emphasizedSystem, bodySize * scale, nil)!
-        case .code:
-            font = CTFontCreateUIFontForLanguage(.userFixedPitch, bodySize * 0.88, nil)!
+        if let custom = customFont(for: kind) {
+            font = custom.makeFont()
+        } else {
+            switch kind {
+            case .paragraph, .rule, .table:
+                font = CTFontCreateUIFontForLanguage(.system, bodySize, nil)!
+            case .heading(let level):
+                let scale: CGFloat = level <= 1 ? 1.5 : (level == 2 ? 1.3 : 1.15)
+                font = CTFontCreateUIFontForLanguage(.emphasizedSystem, bodySize * scale, nil)!
+            case .code:
+                font = CTFontCreateUIFontForLanguage(.userFixedPitch, bodySize * 0.88, nil)!
+            }
         }
         if traits.contains(.code) {
-            font = CTFontCreateUIFontForLanguage(.userFixedPitch, CTFontGetSize(font) * 0.9, nil)!
+            let size = CTFontGetSize(font) * 0.9
+            font = codeFont?.makeFont(size: size) ?? CTFontCreateUIFontForLanguage(.userFixedPitch, size, nil)!
         }
         var symbolic: CTFontSymbolicTraits = []
         if traits.contains(.bold) { symbolic.insert(.traitBold) }
@@ -137,11 +179,13 @@ public struct TranscriptStyle: Equatable, Sendable {
     private static let kernKey = NSAttributedString.Key(kCTKernAttributeName as String)
 
     func attributes(for kind: TranscriptBlock.Kind) -> [NSAttributedString.Key: Any] {
-        [
+        var attributes: [NSAttributedString.Key: Any] = [
             Self.fontKey: font(for: kind),
             // Text takes the context's fill color, so the view controls light/dark.
             Self.colorFromContextKey: true,
         ]
+        if let spacing = customFont(for: kind)?.letterSpacing, spacing != 0 { attributes[Self.kernKey] = spacing }
+        return attributes
     }
 
     /// The styled text of `block` from UTF-16 offset `start` to its end.
@@ -222,7 +266,7 @@ public struct TranscriptStyle: Equatable, Sendable {
         for (offset, kern) in kerns where offset >= start && offset < start + length {
             // On the whole character, so a glyph made of several units keeps it.
             let character = (result.string as NSString).rangeOfComposedCharacterSequence(at: offset - start)
-            result.addAttribute(Self.kernKey, value: kern, range: character)
+            result.addAttribute(Self.kernKey, value: kern + (customFont(for: block.kind)?.letterSpacing ?? 0), range: character)
         }
         return result
     }

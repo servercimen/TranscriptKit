@@ -183,6 +183,27 @@ In UIKit, set `isSelectable` on `TranscriptTextView`.
 
 `TranscriptStyle` sets the body size, line, block and list spacing, indents, padding and the maximum image height.
 
+To match an app's own type scale, give it fonts. Each `TranscriptFont` has a font name (nil for the system font), a
+size, a weight for the system font, letter spacing and a line height. Headings take one font for each level, and
+levels past the end use the last one. Inline code uses the code font's design at 0.9 times the size of the text
+around it:
+
+```swift
+var style = TranscriptStyle()
+style.bodyFont = TranscriptFont(size: 16, weight: 0, letterSpacing: -0.2, lineHeight: 24)
+style.headingFonts = [
+    TranscriptFont(size: 28, weight: 0.4, lineHeight: 34),
+    TranscriptFont(size: 22, weight: 0.3, lineHeight: 28),
+    TranscriptFont(size: 18, weight: 0.3, lineHeight: 24),
+]
+style.codeFont = TranscriptFont(name: "Menlo-Regular", size: 14, lineHeight: 20)
+style.scalesWithDynamicType = true
+```
+
+A line height replaces `lineSpacing` for that kind of text, and a line is never less tall than its font needs. With
+`scalesWithDynamicType`, `TranscriptText` scales every text size and line height as `UIFontMetrics` scales body text.
+With `TranscriptTextView`, set `style.scaled(for: traitCollection.preferredContentSizeCategory)` yourself.
+
 It also sets the colors. Each one is a `TranscriptColor`, with a value for light and one for dark appearance, so the
 text can be drawn off the main thread. A color that is nil uses the system color shown here:
 

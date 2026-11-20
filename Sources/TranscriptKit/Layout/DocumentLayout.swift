@@ -165,6 +165,19 @@ public final class DocumentLayout: @unchecked Sendable {
         lastEntryIndex(where: { CGFloat($0.start) }, isAtMost: CGFloat(offset))
     }
 
+    /// The lines with text at or after `offset`, in order, with their blocks.
+    func lines(from offset: Int) -> [(entry: Entry, line: BlockLayout.Line)] {
+        guard let first = entryIndex(forOffset: offset) else { return [] }
+        var result: [(entry: Entry, line: BlockLayout.Line)] = []
+        for index in first..<entryCount {
+            let entry = entry(at: index)
+            for line in entry.layout.lines where !line.range.isEmpty && entry.start + line.range.upperBound > offset {
+                result.append((entry, line))
+            }
+        }
+        return result
+    }
+
     public func caretRect(at offset: Int) -> CGRect {
         guard let index = entryIndex(forOffset: offset) else {
             return CGRect(x: 0, y: 0, width: 2, height: style.effectiveBodySize * 1.2)
@@ -361,37 +374,8 @@ public final class DocumentLayout: @unchecked Sendable {
         // The glyphs for the characters in `hidden` (the line's string
         // indexes) are left out.
         func drawLine(_ line: CTLine, at origin: CGPoint, hidden: [Range<Int>] = []) {
-            let runs = CTLineGetGlyphRuns(line) as! [CTRun]
-            drawHighlights(runs, at: origin)
-            for run in runs {
-                let attributes = CTRunGetAttributes(run) as NSDictionary
-                if attributes[Self.imageKey] != nil { continue }
-                Self.setGlyphColor(of: attributes, in: context, text: text, dark: dark)
-                context.textPosition = origin
-                if hidden.isEmpty {
-                    CTRunDraw(run, context, CFRange(location: 0, length: 0))
-                } else {
-                    for range in Self.glyphRanges(of: run, leavingOut: hidden) { CTRunDraw(run, context, range) }
-                }
-                let custom = (attributes[Self.foregroundKey] as? TranscriptColor)?.cgColor(dark: dark)
-                let strike = attributes[Self.strikethroughKey] != nil
-                let underline = attributes[Self.underlineKey] != nil
-                guard strike || underline, let font = attributes[kCTFontAttributeName].map({ $0 as! CTFont }) else { continue }
-                var position = CGPoint.zero
-                CTRunGetPositions(run, CFRange(location: 0, length: 1), &position)
-                let runWidth = CGFloat(CTRunGetTypographicBounds(run, CFRange(location: 0, length: 0), nil, nil, nil))
-                let color = custom ?? attributes[kCTForegroundColorAttributeName].map { $0 as! CGColor } ?? text
-                let thickness = max(CTFontGetUnderlineThickness(font), 1)
-                context.setFillColor(color)
-                if strike {
-                    let y = origin.y - CTFontGetXHeight(font) / 2 - thickness / 2
-                    context.fill(CGRect(x: origin.x + position.x, y: y, width: runWidth, height: thickness))
-                }
-                if underline {
-                    let y = origin.y - CTFontGetUnderlinePosition(font)
-                    context.fill(CGRect(x: origin.x + position.x, y: y, width: runWidth, height: thickness))
-                }
-            }
+            drawHighlights(CTLineGetGlyphRuns(line) as! [CTRun], at: origin)
+            Self.drawGlyphs(of: line, at: origin, hidden: hidden, in: context, text: text, dark: dark)
         }
 
         func fill(_ rect: CGRect, radius: CGFloat, color: CGColor) {
@@ -538,7 +522,10 @@ public final class DocumentLayout: @unchecked Sendable {
 
             for index in visible where !lines[index].range.isEmpty {
                 let line = lines[index]
-                let hidden = line.decorations?.hiddenRanges(hiding.playing) ?? []
+                var hidden = line.decorations?.hiddenRanges(hiding.playing) ?? []
+                if let from = hiding.fadingFrom, entry.start + line.range.upperBound > from {
+                    hidden.append(max(from - entry.start, line.range.lowerBound)..<line.range.upperBound)
+                }
                 drawLine(line.ctLine, at: CGPoint(x: line.frame.minX, y: entry.y + line.baseline),
                          hidden: hidden.map { ($0.lowerBound - line.indexBase)..<($0.upperBound - line.indexBase) })
             }
@@ -558,6 +545,45 @@ public final class DocumentLayout: @unchecked Sendable {
     static func setGlyphColor(of attributes: NSDictionary, in context: CGContext, text: CGColor, dark: Bool) {
         let custom = (attributes[foregroundKey] as? TranscriptColor)?.cgColor(dark: dark)
         context.setFillColor(custom ?? text)
+    }
+
+    /// Draws a line's glyphs, and their strikethrough and underline, leaving
+    /// out the characters in `hidden` (line string indexes). Images are left
+    /// to the caller. The context's text matrix must flip glyphs upright.
+    static func drawGlyphs(of line: CTLine, at origin: CGPoint, hidden: [Range<Int>], in context: CGContext, text: CGColor, dark: Bool) {
+        for run in CTLineGetGlyphRuns(line) as! [CTRun] {
+            let attributes = CTRunGetAttributes(run) as NSDictionary
+            if attributes[imageKey] != nil { continue }
+            let ranges = hidden.isEmpty ? [CFRange(location: 0, length: 0)] : glyphRanges(of: run, leavingOut: hidden)
+            guard !ranges.isEmpty else { continue }
+            setGlyphColor(of: attributes, in: context, text: text, dark: dark)
+            context.textPosition = origin
+            for range in ranges { CTRunDraw(run, context, range) }
+            let custom = (attributes[foregroundKey] as? TranscriptColor)?.cgColor(dark: dark)
+            let strike = attributes[strikethroughKey] != nil
+            let underline = attributes[underlineKey] != nil
+            guard strike || underline, let font = attributes[kCTFontAttributeName].map({ $0 as! CTFont }) else { continue }
+            let color = custom ?? attributes[kCTForegroundColorAttributeName].map { $0 as! CGColor } ?? text
+            let thickness = max(CTFontGetUnderlineThickness(font), 1)
+            context.setFillColor(color)
+            // Ends on whole pixels, so that a line drawn in two parts (some
+            // of its text fading in) covers the same pixels as one.
+            func fill(x: CGFloat, y: CGFloat, width: CGFloat) {
+                var device = context.convertToDeviceSpace(CGRect(x: x, y: y, width: width, height: thickness))
+                let minX = device.minX.rounded()
+                device.size.width = device.maxX.rounded() - minX
+                device.origin.x = minX
+                guard device.width > 0 else { return }
+                context.fill(context.convertToUserSpace(device))
+            }
+            for range in ranges {
+                var position = CGPoint.zero
+                CTRunGetPositions(run, CFRange(location: range.location, length: 1), &position)
+                let width = CGFloat(CTRunGetTypographicBounds(run, range, nil, nil, nil))
+                if strike { fill(x: origin.x + position.x, y: origin.y - CTFontGetXHeight(font) / 2 - thickness / 2, width: width) }
+                if underline { fill(x: origin.x + position.x, y: origin.y - CTFontGetUnderlinePosition(font), width: width) }
+            }
+        }
     }
 
     /// The runs of `run`'s glyphs whose characters are not in `hidden`.

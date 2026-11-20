@@ -22,6 +22,7 @@ public struct TranscriptText: UIViewRepresentable {
     private var highlighter: TranscriptCodeHighlighter?
     private var mathRenderer: TranscriptMathRenderer?
     private var animatesTags = true
+    private var textFadeInDuration: TimeInterval?
     private var animationTiming: TranscriptAnimationTiming = .immediately
     private var isSelectable = true
     private var playTrigger: AnyHashable?
@@ -73,6 +74,13 @@ public struct TranscriptText: UIViewRepresentable {
     public func mathRenderer(_ renderer: @escaping TranscriptMathRenderer) -> TranscriptText {
         var copy = self
         copy.mathRenderer = renderer
+        return copy
+    }
+
+    /// Fades in text as it streams in; see `TranscriptTextView.textFadeInDuration`.
+    public func fadesInText(_ fades: Bool = true, duration: TimeInterval = 0.3) -> TranscriptText {
+        var copy = self
+        copy.textFadeInDuration = fades ? duration : nil
         return copy
     }
 
@@ -157,6 +165,7 @@ public struct TranscriptText: UIViewRepresentable {
         }
         view.style = style
         view.animatesTags = animatesTags
+        view.textFadeInDuration = textFadeInDuration
         view.tagAnimationTiming = animationTiming
         view.isSelectable = isSelectable
         if playTrigger != context.coordinator.playTrigger {

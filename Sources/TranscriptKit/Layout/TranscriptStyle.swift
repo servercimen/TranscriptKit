@@ -222,6 +222,18 @@ public struct TranscriptStyle: Equatable, Sendable {
         if !extraTraits.isEmpty { base[Self.fontKey] = font(for: block.kind, traits: extraTraits) }
         let result = NSMutableAttributedString(string: text, attributes: base)
         let length = result.length
+        if case .code(let language) = block.kind, let store = images?.store {
+            // The app's highlighter's colors, drawn like a tag's color.
+            for mark in store.highlights(for: block.id, text: block.text, language: language) {
+                let lower = min(max(mark.range.lowerBound - start, 0), length)
+                let upper = min(max(mark.range.upperBound - start, 0), length)
+                guard lower < upper else { continue }
+                let range = NSRange(location: lower, length: upper - lower)
+                result.addAttribute(Self.foregroundKey, value: mark.color, range: range)
+                let traits = mark.traits.intersection([.bold, .italic])
+                if !traits.isEmpty { result.addAttribute(Self.fontKey, value: font(for: block.kind, traits: traits), range: range) }
+            }
+        }
         // Spans shifted into the substring's coordinates, dropping any outside it.
         let spans = block.spans.compactMap { span -> InlineSpan? in
             let lower = min(max(span.range.lowerBound - start, 0), length)

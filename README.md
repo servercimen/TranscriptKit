@@ -18,7 +18,7 @@ text streaming in at hundreds of characters a second doesn't make scrolling stut
 - **Markdown:**
   - headings, paragraphs, emphasis, strikethrough and inline code;
   - nested lists, task lists and quotes;
-  - fenced and indented code blocks and tables;
+  - fenced and indented code blocks, colored by a highlighter your app provides, and tables;
   - links, bare URLs and email addresses, and reference links;
   - images, drawn by a loader your app provides;
   - HTML entities and a few HTML tags.
@@ -185,6 +185,25 @@ whether to load a URL from a model's answer is up to your app:
 TranscriptText(stream: stream)
     .imageLoader { image in await myImageCache.cgImage(for: image.source) }
 ```
+
+### Code highlighting
+
+Code blocks show in the text color unless you provide a highlighter. It gets each code block's text and the fence's
+language, and returns colored ranges in UTF-16 offsets of the code, with bold or italic if you want them. It is
+called off the main thread, at most once at a time for each block, so a slow or async highlighter is fine: while
+code streams in, a block keeps its newest colors on the text they were made for.
+
+```swift
+TranscriptText(stream: stream)
+    .codeHighlighter { code, language in
+        await myHighlighter.tokens(in: code, language: language).map { token in
+            TranscriptCodeHighlight(range: token.range, color: TranscriptColor(token.color))
+        }
+    }
+```
+
+In UIKit, set `codeHighlighter` on `TranscriptTextView`. Colors are `TranscriptColor`s, so give them a light and a dark
+value when the theme has both.
 
 ### Selection
 

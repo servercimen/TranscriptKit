@@ -111,7 +111,9 @@ final class BlockLayout: @unchecked Sendable {
         let insets = style.insets(for: block)
         let available = max(width - insets.leading - insets.trailing, 1)
         let hasImages = block.spans.contains { $0.image != nil }
-        let revision = hasImages ? (images?.revision ?? 0) : nil
+        // Laid out again when the store's pictures or code colors change.
+        let usesStore = hasImages || (block.kind.isCode && images?.hasHighlighter == true)
+        let revision = usesStore ? (images?.revision ?? 0) : nil
         let contentLeading = style.contentLeading(for: block.containers)
         let defined = Self.definedReferences(of: block, in: definitions)
         self.definedReferences = defined

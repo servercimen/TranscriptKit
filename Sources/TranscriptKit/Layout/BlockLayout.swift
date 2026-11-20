@@ -178,8 +178,10 @@ final class BlockLayout: @unchecked Sendable {
         // Only the tags on the lines laid out again; the others' lines are kept.
         let decorated = hasDecorations ? DecoratedTags(block, from: restart) : nil
 
+        let fixedHeight = style.lineHeight(for: block.kind)
+        let gap = fixedHeight == nil ? style.lineSpacing : 0
         func add(_ ctLine: CTLine, range: Range<Int>, indexBase: Int, leading: CGFloat = 0, text: NSAttributedString? = nil) {
-            let metrics = lineMetrics(ctLine, isEmpty: range.isEmpty, font: font)
+            let metrics = fitted(lineMetrics(ctLine, isEmpty: range.isEmpty, font: font), to: fixedHeight)
             var decorations: LineDecorations?
             if let decorated, let text {
                 decorations = LineDecorations.make(line: ctLine, range: range, indexBase: indexBase, visibleWidth: metrics.width,
@@ -195,7 +197,7 @@ final class BlockLayout: @unchecked Sendable {
                 baseline: y + metrics.ascent,
                 decorations: decorations
             ))
-            y += metrics.height + style.lineSpacing
+            y += metrics.height + gap
         }
 
         if restart < length {
@@ -219,7 +221,15 @@ final class BlockLayout: @unchecked Sendable {
             let empty = CTLineCreateWithAttributedString(NSAttributedString(string: "", attributes: style.attributes(for: block.kind)))
             add(empty, range: length..<length, indexBase: length)
         }
-        return (lines, y - style.lineSpacing + insets.vertical)
+        return (lines, y - gap + insets.vertical)
+    }
+
+    /// Line metrics made `height` tall, with the text centred, when the app
+    /// set a line height. A line is never less tall than its text needs.
+    private static func fitted(_ metrics: (width: CGFloat, height: CGFloat, ascent: CGFloat),
+                               to height: CGFloat?) -> (width: CGFloat, height: CGFloat, ascent: CGFloat) {
+        guard let height, height > metrics.height else { return metrics }
+        return (metrics.width, height, metrics.ascent + ((height - metrics.height) / 2).rounded())
     }
 
     private static func lineMetrics(_ ctLine: CTLine, isEmpty: Bool, font: CTFont) -> (width: CGFloat, height: CGFloat, ascent: CGFloat) {
@@ -256,9 +266,11 @@ final class BlockLayout: @unchecked Sendable {
         let padding = style.tableCellPadding
         let verticalPadding = (padding * 0.75).rounded()
         let font = style.font(for: block.kind)
+        let fixedHeight = style.lineHeight(for: block.kind)
+        let gap = fixedHeight == nil ? style.lineSpacing : 0
         let decorated = DecoratedTags(block)
         let sizing = ImageSizing(store: images, maximumWidth: max(available / CGFloat(columns) - padding * 2, 20))
-        let minimumWidth = padding * 2 + style.bodySize
+        let minimumWidth = padding * 2 + style.effectiveBodySize
 
         // Leading rows that are complete in the previous layout and unchanged.
         var kept = 0
@@ -371,7 +383,7 @@ final class BlockLayout: @unchecked Sendable {
                 let textWidth = max(widths[column] - padding * 2, 1)
                 var y = top + verticalPadding
                 func add(_ ctLine: CTLine, range: Range<Int>) {
-                    let metrics = lineMetrics(ctLine, isEmpty: range.isEmpty, font: font)
+                    let metrics = fitted(lineMetrics(ctLine, isEmpty: range.isEmpty, font: font), to: fixedHeight)
                     let slack = max(textWidth - metrics.width, 0)
                     let offset: CGFloat
                     switch column < model.alignments.count ? model.alignments[column] : .leading {
@@ -396,7 +408,7 @@ final class BlockLayout: @unchecked Sendable {
                         baseline: y + metrics.ascent,
                         decorations: decorations
                     ))
-                    y += metrics.height + style.lineSpacing
+                    y += metrics.height + gap
                 }
                 var start = 0
                 while start < cell.text.length {
@@ -410,7 +422,7 @@ final class BlockLayout: @unchecked Sendable {
                     let empty = CTLineCreateWithAttributedString(NSAttributedString(string: "", attributes: style.attributes(for: block.kind)))
                     add(empty, range: cell.range.lowerBound..<cell.range.lowerBound)
                 }
-                bottom = max(bottom, y - style.lineSpacing + verticalPadding)
+                bottom = max(bottom, y - gap + verticalPadding)
                 rowLines.append(first..<lines.count)
             }
             rowY.append(ceil(bottom))
@@ -429,7 +441,7 @@ final class BlockLayout: @unchecked Sendable {
         let font = style.font(for: .paragraph)
         switch kind {
         case .task(let checked):
-            let side = (style.bodySize * 0.82).rounded()
+            let side = (style.effectiveBodySize * 0.82).rounded()
             let middle = firstLine.baseline - CTFontGetCapHeight(font) / 2
             return .checkbox(CGRect(x: gutterEnd - side - 6, y: (middle - side / 2).rounded(), width: side, height: side), checked: checked)
         case .bullet, .number:

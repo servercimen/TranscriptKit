@@ -153,7 +153,7 @@ public final class DocumentLayout: @unchecked Sendable {
 
     public func caretRect(at offset: Int) -> CGRect {
         guard let index = entryIndex(forOffset: offset) else {
-            return CGRect(x: 0, y: 0, width: 2, height: style.bodySize * 1.2)
+            return CGRect(x: 0, y: 0, width: 2, height: style.effectiveBodySize * 1.2)
         }
         let entry = entry(at: index)
         let local = min(max(offset - entry.start, 0), entry.layout.length)

@@ -167,6 +167,18 @@ TranscriptText(stream: stream)
     .imageLoader { image in await myImageCache.cgImage(for: image.source) }
 ```
 
+### Selection
+
+The text is selectable by default. Turn selection off for text inside a view that reacts to taps, such as a card or a
+list row. A tap that is not on a link then goes to that view, and links still open:
+
+```swift
+TranscriptText(document)
+    .selectable(false)
+```
+
+In UIKit, set `isSelectable` on `TranscriptTextView`.
+
 ### Styling
 
 `TranscriptStyle` sets the body size, line, block and list spacing, indents, padding and the maximum image height.

@@ -21,6 +21,7 @@ public struct TranscriptText: UIViewRepresentable {
     private var loader: (@Sendable (TranscriptImage) async -> CGImage?)?
     private var animatesTags = true
     private var animationTiming: TranscriptAnimationTiming = .immediately
+    private var isSelectable = true
     private var playTrigger: AnyHashable?
 
     public init(_ document: TranscriptDocument, style: TranscriptStyle = .init()) {
@@ -39,6 +40,15 @@ public struct TranscriptText: UIViewRepresentable {
     public func imageLoader(_ loader: @escaping @Sendable (TranscriptImage) async -> CGImage?) -> TranscriptText {
         var copy = self
         copy.loader = loader
+        return copy
+    }
+
+    /// Whether the text can be selected; see `TranscriptTextView.isSelectable`.
+    /// On by default. Turn it off for text inside a view that reacts to taps,
+    /// such as a card or a list row: taps that are not on a link then reach it.
+    public func selectable(_ selectable: Bool) -> TranscriptText {
+        var copy = self
+        copy.isSelectable = selectable
         return copy
     }
 
@@ -94,6 +104,7 @@ public struct TranscriptText: UIViewRepresentable {
         view.style = style
         view.animatesTags = animatesTags
         view.tagAnimationTiming = animationTiming
+        view.isSelectable = isSelectable
         if playTrigger != context.coordinator.playTrigger {
             context.coordinator.playTrigger = playTrigger
             view.playTagAnimations()

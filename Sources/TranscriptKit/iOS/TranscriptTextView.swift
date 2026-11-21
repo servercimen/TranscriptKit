@@ -307,6 +307,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     private var spareTiles: [CanvasView] = []
     private let tileHeight: CGFloat = 256
     private var scrollObservation: NSKeyValueObservation?
+    private var canvasCheckScheduled = false
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -414,9 +415,30 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             scrollObservation = scrollView.observe(\.contentOffset) { [weak self] _, _ in
                 MainActor.assumeIsolated { self?.updateCanvas() }
             }
+            // A lazy stack moves a row when it measures the rows above it,
+            // which changes the content size. The row's own frame and the
+            // scroll offset stay the same, so nothing else tells the view.
+            ContentSizeWatcher.watcher(for: scrollView).add(self)
         }
         updateCanvas()
         selectAllIfNeeded()
+    }
+
+    /// Updates the tiles on the next turn of the run loop, once the stack has
+    /// placed its rows. One check is pending at a time. Only a view with some
+    /// of its tiles is checked: one whose tiles cover all of it, as a short
+    /// text's one tile does, is right wherever it moves, and one with none is
+    /// far from the screen and updates when it is scrolled or laid out.
+    fileprivate func updateCanvasSoon() {
+        guard !canvasCheckScheduled, !tilesReleased, !tiles.isEmpty, !tilesCoverView else { return }
+        canvasCheckScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.canvasCheckScheduled = false
+                self.updateCanvas()
+            }
+        }
     }
 
     private weak var cachedScrollView: UIScrollView?
@@ -473,6 +495,12 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     /// No tile holds a drawing, so releasing them again does nothing.
     private var tilesReleased = true
+
+    private var tilesCoverView: Bool {
+        guard !tilesReleased, bounds.height > 0 else { return false }
+        let count = Int((bounds.height / tileHeight).rounded(.up))
+        return tiles.count >= count && (0..<count).allSatisfy { tiles[$0] != nil }
+    }
 
     private func trimSpareTiles() {
         while spareTiles.count > maximumSpareTiles {
@@ -1454,5 +1482,35 @@ final class TranscriptSelectionRect: UITextSelectionRect {
     override var containsStart: Bool { storedContainsStart }
     override var containsEnd: Bool { storedContainsEnd }
     override var isVertical: Bool { false }
+}
+
+/// Watches a scroll view's content size for the text views in it, with one
+/// observation for all of them: a list can hold many.
+@MainActor
+private final class ContentSizeWatcher {
+    private static var key: UInt8 = 0
+    private var observation: NSKeyValueObservation?
+    private let views = NSHashTable<TranscriptTextView>.weakObjects()
+
+    /// The scroll view's watcher, which the scroll view keeps.
+    static func watcher(for scrollView: UIScrollView) -> ContentSizeWatcher {
+        if let watcher = objc_getAssociatedObject(scrollView, &key) as? ContentSizeWatcher { return watcher }
+        let watcher = ContentSizeWatcher()
+        watcher.observation = scrollView.observe(\.contentSize) { [weak watcher] _, _ in
+            MainActor.assumeIsolated { watcher?.contentSizeChanged() }
+        }
+        objc_setAssociatedObject(scrollView, &key, watcher, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        return watcher
+    }
+
+    func add(_ view: TranscriptTextView) {
+        views.add(view)
+    }
+
+    private func contentSizeChanged() {
+        for view in views.allObjects where view.window != nil {
+            view.updateCanvasSoon()
+        }
+    }
 }
 #endif

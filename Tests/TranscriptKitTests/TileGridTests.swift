@@ -36,3 +36,26 @@ import Testing
     }
     #expect(heights == [32, 64, 128, 256])
 }
+
+@Test func aShortTextsTileCoversGlyphsThatDrawBelowIt() {
+    #expect(TileGrid.tileHeight(at: 0, viewHeight: 21, glyphBottom: 20) == 32)
+    #expect(TileGrid.tileHeight(at: 0, viewHeight: 21, glyphBottom: 35) == 64)
+    #expect(TileGrid.tileHeight(at: 0, viewHeight: 21, glyphBottom: 300) == TileGrid.height)
+}
+
+@Test func stackedMarksDrawBelowTheLayout() {
+    let marks = String(repeating: "\u{323}", count: 5)
+    let stacked = DocumentLayout(document: TranscriptDocument(blocks: [TranscriptBlock(id: "a", text: "a\(marks) b")]), width: 300)
+    #expect(stacked.glyphBottom > stacked.height + TranscriptPath.maximumOverhang)
+
+    let plain = DocumentLayout(document: TranscriptDocument(blocks: [TranscriptBlock(id: "a", text: "Descenders: gjpqy")]), width: 300)
+    #expect(plain.glyphBottom > 0)
+    #expect(plain.glyphBottom <= plain.height)
+}
+
+@Test func aTallLayoutDoesNotMeasureItsGlyphs() {
+    let text = String(repeating: "A paragraph that fills more than one tile. ", count: 60)
+    let layout = DocumentLayout(document: TranscriptDocument(blocks: [TranscriptBlock(id: "a", text: text)]), width: 300)
+    #expect(layout.height >= TileGrid.height)
+    #expect(layout.glyphBottom == layout.height)
+}

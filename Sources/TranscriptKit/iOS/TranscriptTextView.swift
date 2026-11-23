@@ -565,7 +565,8 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             // Wider than the view: tags' shapes may draw past the text column.
             let side = TranscriptPath.maximumSideOverhang
             let frame = CGRect(x: -side, y: CGFloat(index) * tileHeight, width: bounds.width + 2 * side,
-                               height: TileGrid.tileHeight(at: index, viewHeight: bounds.height))
+                               height: TileGrid.tileHeight(at: index, viewHeight: bounds.height,
+                                                          glyphBottom: currentLayout.glyphBottom))
             if let tile = tiles[index] {
                 if tile.frame != frame {
                     tile.frame = frame

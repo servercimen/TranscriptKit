@@ -27,6 +27,11 @@ public final class DocumentLayout: @unchecked Sendable {
     public let length: Int
     /// How many block layouts were carried over from the previous layout.
     public let reusedBlockCount: Int
+    /// The lowest point that the glyphs of the text draw. It can be below
+    /// `height`: marks stacked under a letter draw past the line's descent.
+    /// It is measured only for a layout shorter than one tile (see
+    /// `TileGrid`). For a taller layout, it is `height`.
+    let glyphBottom: CGFloat
 
     /// One entry per settled block of `document`. Their positions never
     /// change, so successive layouts share this list and only append to it.
@@ -132,6 +137,20 @@ public final class DocumentLayout: @unchecked Sendable {
         self.height = y
         self.length = max(start - 1, 0)
         self.reusedBlockCount = reused
+        self.glyphBottom = y < TileGrid.height ? Self.glyphBottom(of: Array(settled) + open) : y
+    }
+
+    private static func glyphBottom(of entries: [Entry]) -> CGFloat {
+        var bottom: CGFloat = 0
+        for entry in entries {
+            for line in entry.layout.lines {
+                let glyphs = CTLineGetBoundsWithOptions(line.ctLine, .useGlyphPathBounds)
+                guard !glyphs.isNull, !glyphs.isEmpty else { continue }
+                // Core Text measures up from the baseline.
+                bottom = max(bottom, entry.y + line.baseline - glyphs.minY)
+            }
+        }
+        return bottom
     }
 
     /// The next item of a list sits closer to the list content above it than

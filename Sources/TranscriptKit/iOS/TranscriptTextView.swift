@@ -300,12 +300,12 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         let signpost: OSSignpostIntervalState
     }
 
-    /// The drawn text, in fixed-height tiles that exist only near the visible
-    /// area. Memory stays flat however long the document is, and an update
-    /// redraws only the tiles it touches.
+    /// The drawn text, in tiles that exist only near the visible area (see
+    /// `TileGrid`). Memory stays flat however long the document is, and an
+    /// update redraws only the tiles it touches.
     private var tiles: [Int: CanvasView] = [:]
     private var spareTiles: [CanvasView] = []
-    private let tileHeight: CGFloat = 256
+    private let tileHeight = TileGrid.height
     private var scrollObservation: NSKeyValueObservation?
     private var canvasCheckScheduled = false
 
@@ -341,6 +341,8 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         canvas.layer.addSublayer(animationLayer)
         NotificationCenter.default.addObserver(self, selector: #selector(reduceMotionChanged),
                                                name: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(otherViewBecameFirstResponder(_:)),
+                                               name: Self.didBecomeFirstResponder, object: nil)
         engine.setOutputHandler { [weak self] in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.installFromEngine() }
@@ -396,6 +398,16 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         super.didMoveToSuperview()
         cachedScrollView = nil
         hasNoScrollView = false
+    }
+
+    public override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        // A selectable `UITextView` can raise "UIPreviewTarget requires that
+        // the container view is in a window" when its edit menu or drag
+        // preview outlives its window. A cleared selection has neither.
+        guard newWindow == nil else { return }
+        if selection != nil { select(nil) }
+        if isFirstResponder { resignFirstResponder() }
     }
 
     public override func didMoveToWindow() {
@@ -520,7 +532,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         for (index, tile) in tiles {
             let minY = CGFloat(index) * tileHeight
             let top = max(range.lowerBound - minY - 2, 0)
-            let bottom = min(range.upperBound - minY + 2, tileHeight)
+            let bottom = min(range.upperBound - minY + 2, tile.bounds.height)
             if top < bottom {
                 tile.setNeedsDisplay(CGRect(x: 0, y: top, width: tile.bounds.width, height: bottom - top))
             }
@@ -552,7 +564,9 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         for index in first...last {
             // Wider than the view: tags' shapes may draw past the text column.
             let side = TranscriptPath.maximumSideOverhang
-            let frame = CGRect(x: -side, y: CGFloat(index) * tileHeight, width: bounds.width + 2 * side, height: tileHeight)
+            let frame = CGRect(x: -side, y: CGFloat(index) * tileHeight, width: bounds.width + 2 * side,
+                               height: TileGrid.tileHeight(at: index, viewHeight: bounds.height,
+                                                          glyphBottom: currentLayout.glyphBottom))
             if let tile = tiles[index] {
                 if tile.frame != frame {
                     tile.frame = frame
@@ -560,7 +574,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
                 } else if forceRedraw {
                     if let changed {
                         let top = max(changed.lowerBound - frame.minY - 2, 0)
-                        let bottom = min(changed.upperBound - frame.minY + 2, tileHeight)
+                        let bottom = min(changed.upperBound - frame.minY + 2, frame.height)
                         if top < bottom {
                             tile.setNeedsDisplay(CGRect(x: 0, y: top, width: frame.width, height: bottom - top))
                         }
@@ -1216,6 +1230,24 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     public override var canBecomeFirstResponder: Bool { isSelectable }
 
+    private static let didBecomeFirstResponder = Notification.Name("TranscriptTextViewDidBecomeFirstResponder")
+
+    /// Ends the selection of the other views in the window. This is not done
+    /// in `resignFirstResponder()`: Share and Translate in the edit menu make
+    /// the view resign, and the selection must stay for them.
+    @discardableResult
+    public override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { NotificationCenter.default.post(name: Self.didBecomeFirstResponder, object: self) }
+        return became
+    }
+
+    @objc private func otherViewBecameFirstResponder(_ notification: Notification) {
+        guard let other = notification.object as? TranscriptTextView, other !== self,
+              other.window === window, selection != nil else { return }
+        select(nil)
+    }
+
     /// Without selection, only links take touches.
     public override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         guard super.point(inside: point, with: event) else { return false }
@@ -1235,6 +1267,16 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     /// Read-only: an empty input view keeps the keyboard from appearing.
     public override var inputView: UIView? { emptyInputView }
+
+    /// Whether the edit menu offers Writing Tools for the selected text, on
+    /// devices that have them. On by default, as in a `UITextView`.
+    public var showsWritingTools = true
+
+    @available(iOS 18.0, *)
+    public var writingToolsBehavior: UIWritingToolsBehavior {
+        get { showsWritingTools ? .default : .none }
+        set { showsWritingTools = newValue != .none }
+    }
 
     public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         switch action {

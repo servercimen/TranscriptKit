@@ -262,6 +262,9 @@ TranscriptText(document)
 
 In UIKit, set `isSelectable` on `TranscriptTextView`.
 
+On devices that have Writing Tools, the edit menu can offer them for the selected text, as in a `UITextView`. Turn
+them off with `.showsWritingTools(false)`, or with `showsWritingTools` on `TranscriptTextView`.
+
 ### VoiceOver
 
 VoiceOver reads the text block by block. Headings are in the rotor's list of headings, list items start with their
@@ -331,6 +334,9 @@ TranscriptText(document)
         if range == nil { dismiss() }    // the person tapped the selection away
     }
 ```
+
+One view in a window has a selection at a time. When the person selects text in another view, the first view's
+selection ends, and its range is nil. The selection stays when the person opens Share or Translate from the edit menu.
 
 In UIKit, use `onSelectionChange`, `selectedRange` and `selectsAllWhenShown` on `TranscriptTextView`.
 

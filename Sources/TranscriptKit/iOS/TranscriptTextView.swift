@@ -398,6 +398,16 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         hasNoScrollView = false
     }
 
+    public override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        // A selectable `UITextView` can raise "UIPreviewTarget requires that
+        // the container view is in a window" when its edit menu or drag
+        // preview outlives its window. A cleared selection has neither.
+        guard newWindow == nil else { return }
+        if selection != nil { select(nil) }
+        if isFirstResponder { resignFirstResponder() }
+    }
+
     public override func didMoveToWindow() {
         super.didMoveToWindow()
         scrollObservation = nil

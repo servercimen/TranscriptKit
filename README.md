@@ -77,6 +77,12 @@ struct AnswerView: View {
 the background and goes straight to the view, without a SwiftUI update. SwiftUI is involved only when the text's
 height changes. `finish()` shows any text that was held back in case it turned into markup.
 
+In a `LazyVStack`, make `TranscriptText(stream:)` in the `ForEach` closure or in the view that holds the stack, not in
+the `body` of a row view of its own. A lazy stack can add a row without placing it, and it can then ignore changes
+inside that row. When the streamed text grows in a row that the stack has not placed, `TranscriptText` makes the view
+that made it update, and SwiftUI then measures and places the row. In a row view of its own, that update stays inside
+the row, and the row can stay empty.
+
 For text that is already complete, parse it once and pass the document:
 
 ```swift

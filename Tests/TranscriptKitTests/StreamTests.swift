@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 import Testing
 @testable import TranscriptKit
 
@@ -240,4 +241,27 @@ private func content(_ document: TranscriptDocument) -> [String] {
     let frames = Int((elapsed + 0.05) * 60) + 3
     #expect(engine.backgroundLayoutCount <= frames, "\(engine.backgroundLayoutCount) layouts in \(elapsed) s")
     #expect(engine.backgroundLayoutCount < submissions / 2)
+}
+
+private final class Flag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var raised = false
+    var isRaised: Bool { lock.withLock { raised } }
+    func raise() { lock.withLock { raised = true } }
+}
+
+/// `TranscriptText(stream:)` reads the revision where it is made, so the view
+/// that makes it must hear when the revision changes.
+@MainActor
+@Test func theUnplacedHeightRevisionIsObservable() {
+    let stream = TranscriptStream()
+    let changed = Flag()
+    let before = withObservationTracking {
+        stream.unplacedHeight.revision
+    } onChange: {
+        changed.raise()
+    }
+    stream.unplacedHeight.revision &+= 1
+    #expect(changed.isRaised)
+    #expect(stream.unplacedHeight.revision == before &+ 1)
 }

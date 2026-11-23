@@ -341,6 +341,8 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         canvas.layer.addSublayer(animationLayer)
         NotificationCenter.default.addObserver(self, selector: #selector(reduceMotionChanged),
                                                name: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(otherViewBecameFirstResponder(_:)),
+                                               name: Self.didBecomeFirstResponder, object: nil)
         engine.setOutputHandler { [weak self] in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.installFromEngine() }
@@ -1226,6 +1228,24 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     // MARK: Responder
 
     public override var canBecomeFirstResponder: Bool { isSelectable }
+
+    private static let didBecomeFirstResponder = Notification.Name("TranscriptTextViewDidBecomeFirstResponder")
+
+    /// Ends the selection of the other views in the window. This is not done
+    /// in `resignFirstResponder()`: Share and Translate in the edit menu make
+    /// the view resign, and the selection must stay for them.
+    @discardableResult
+    public override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { NotificationCenter.default.post(name: Self.didBecomeFirstResponder, object: self) }
+        return became
+    }
+
+    @objc private func otherViewBecameFirstResponder(_ notification: Notification) {
+        guard let other = notification.object as? TranscriptTextView, other !== self,
+              other.window === window, selection != nil else { return }
+        select(nil)
+    }
 
     /// Without selection, only links take touches.
     public override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {

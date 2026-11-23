@@ -335,6 +335,9 @@ TranscriptText(document)
     }
 ```
 
+One view in a window has a selection at a time. When the person selects text in another view, the first view's
+selection ends, and its range is nil. The selection stays when the person opens Share or Translate from the edit menu.
+
 In UIKit, use `onSelectionChange`, `selectedRange` and `selectsAllWhenShown` on `TranscriptTextView`.
 
 ## In this repository

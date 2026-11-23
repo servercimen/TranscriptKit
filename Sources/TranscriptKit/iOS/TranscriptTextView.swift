@@ -300,12 +300,12 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         let signpost: OSSignpostIntervalState
     }
 
-    /// The drawn text, in fixed-height tiles that exist only near the visible
-    /// area. Memory stays flat however long the document is, and an update
-    /// redraws only the tiles it touches.
+    /// The drawn text, in tiles that exist only near the visible area (see
+    /// `TileGrid`). Memory stays flat however long the document is, and an
+    /// update redraws only the tiles it touches.
     private var tiles: [Int: CanvasView] = [:]
     private var spareTiles: [CanvasView] = []
-    private let tileHeight: CGFloat = 256
+    private let tileHeight = TileGrid.height
     private var scrollObservation: NSKeyValueObservation?
     private var canvasCheckScheduled = false
 
@@ -530,7 +530,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         for (index, tile) in tiles {
             let minY = CGFloat(index) * tileHeight
             let top = max(range.lowerBound - minY - 2, 0)
-            let bottom = min(range.upperBound - minY + 2, tileHeight)
+            let bottom = min(range.upperBound - minY + 2, tile.bounds.height)
             if top < bottom {
                 tile.setNeedsDisplay(CGRect(x: 0, y: top, width: tile.bounds.width, height: bottom - top))
             }
@@ -562,7 +562,8 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         for index in first...last {
             // Wider than the view: tags' shapes may draw past the text column.
             let side = TranscriptPath.maximumSideOverhang
-            let frame = CGRect(x: -side, y: CGFloat(index) * tileHeight, width: bounds.width + 2 * side, height: tileHeight)
+            let frame = CGRect(x: -side, y: CGFloat(index) * tileHeight, width: bounds.width + 2 * side,
+                               height: TileGrid.tileHeight(at: index, viewHeight: bounds.height))
             if let tile = tiles[index] {
                 if tile.frame != frame {
                     tile.frame = frame
@@ -570,7 +571,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
                 } else if forceRedraw {
                     if let changed {
                         let top = max(changed.lowerBound - frame.minY - 2, 0)
-                        let bottom = min(changed.upperBound - frame.minY + 2, tileHeight)
+                        let bottom = min(changed.upperBound - frame.minY + 2, frame.height)
                         if top < bottom {
                             tile.setNeedsDisplay(CGRect(x: 0, y: top, width: frame.width, height: bottom - top))
                         }

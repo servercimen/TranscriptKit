@@ -28,6 +28,7 @@ public struct TranscriptText: UIViewRepresentable {
     private var playTrigger: AnyHashable?
     private var selectionChange: ((Range<Int>?) -> Void)?
     private var selectsAll = false
+    private var showsWritingTools = true
     /// Changed when the view's height changes before SwiftUI has placed it,
     /// so that SwiftUI measures the view again (see
     /// `TranscriptTextView.onHeightChangeWhileUnsized`).
@@ -133,6 +134,14 @@ public struct TranscriptText: UIViewRepresentable {
         return copy
     }
 
+    /// Whether the edit menu offers Writing Tools; see
+    /// `TranscriptTextView.showsWritingTools`. On by default.
+    public func showsWritingTools(_ shows: Bool) -> TranscriptText {
+        var copy = self
+        copy.showsWritingTools = shows
+        return copy
+    }
+
     public final class Coordinator {
         var playTrigger: AnyHashable?
     }
@@ -168,6 +177,7 @@ public struct TranscriptText: UIViewRepresentable {
         view.textFadeInDuration = textFadeInDuration
         view.tagAnimationTiming = animationTiming
         view.isSelectable = isSelectable
+        view.showsWritingTools = showsWritingTools
         if playTrigger != context.coordinator.playTrigger {
             context.coordinator.playTrigger = playTrigger
             view.playTagAnimations()

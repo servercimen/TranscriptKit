@@ -34,14 +34,13 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// still open.
     public var isSelectable = true {
         didSet {
-            guard isSelectable != oldValue else { return }
-            if isSelectable {
-                addInteraction(textInteraction)
-            } else {
-                select(nil)
+            guard isSelectable != oldValue, !isSelectable else { return }
+            select(nil)
+            if let textInteraction {
                 removeInteraction(textInteraction)
-                if isFirstResponder { resignFirstResponder() }
+                self.textInteraction = nil
             }
+            if isFirstResponder { resignFirstResponder() }
         }
     }
 
@@ -261,7 +260,11 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         _ = becomeFirstResponder()
         selectAll(nil)
     }
-    private let textInteraction = UITextInteraction(for: .nonEditable)
+    /// The system's selection gestures and edit menu. Setting them up costs
+    /// more than laying out a short text, and most views in a scrolling list
+    /// are never touched, so they are added when a touch first reaches the
+    /// view (see `point(inside:with:)`) or the app selects text.
+    private var textInteraction: UITextInteraction?
     private let emptyInputView = UIView()
     /// Holds the layers of tags' animations, above the tail layer.
     private let animationLayer = CALayer()
@@ -297,13 +300,14 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         let signpost: OSSignpostIntervalState
     }
 
-    /// The drawn text, in fixed-height tiles that exist only near the visible
-    /// area. Memory stays flat however long the document is, and an update
-    /// redraws only the tiles it touches.
+    /// The drawn text, in tiles that exist only near the visible area (see
+    /// `TileGrid`). Memory stays flat however long the document is, and an
+    /// update redraws only the tiles it touches.
     private var tiles: [Int: CanvasView] = [:]
     private var spareTiles: [CanvasView] = []
-    private let tileHeight: CGFloat = 256
+    private let tileHeight = TileGrid.height
     private var scrollObservation: NSKeyValueObservation?
+    private var canvasCheckScheduled = false
 
     public override init(frame: CGRect) {
         super.init(frame: frame)
@@ -337,13 +341,13 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         canvas.layer.addSublayer(animationLayer)
         NotificationCenter.default.addObserver(self, selector: #selector(reduceMotionChanged),
                                                name: UIAccessibility.reduceMotionStatusDidChangeNotification, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(otherViewBecameFirstResponder(_:)),
+                                               name: Self.didBecomeFirstResponder, object: nil)
         engine.setOutputHandler { [weak self] in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { self?.installFromEngine() }
             }
         }
-        textInteraction.textInput = self
-        addInteraction(textInteraction)
         let linkTap = UITapGestureRecognizer(target: self, action: #selector(handleLinkTap(_:)))
         linkTap.delegate = self
         addGestureRecognizer(linkTap)
@@ -390,9 +394,27 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     // MARK: Viewport drawing
 
+    public override func didMoveToSuperview() {
+        super.didMoveToSuperview()
+        cachedScrollView = nil
+        hasNoScrollView = false
+    }
+
+    public override func willMove(toWindow newWindow: UIWindow?) {
+        super.willMove(toWindow: newWindow)
+        // A selectable `UITextView` can raise "UIPreviewTarget requires that
+        // the container view is in a window" when its edit menu or drag
+        // preview outlives its window. A cleared selection has neither.
+        guard newWindow == nil else { return }
+        if selection != nil { select(nil) }
+        if isFirstResponder { resignFirstResponder() }
+    }
+
     public override func didMoveToWindow() {
         super.didMoveToWindow()
         scrollObservation = nil
+        cachedScrollView = nil
+        hasNoScrollView = false
         updateTailStyle()
         updateAnimationsEnabled()
         updateFadeDuration()
@@ -401,22 +423,55 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             releaseTiles()
             return
         }
-        var ancestor = superview
-        while let view = ancestor, !(view is UIScrollView) { ancestor = view.superview }
-        if let scrollView = ancestor as? UIScrollView {
+        if let scrollView = enclosingScrollView {
             scrollObservation = scrollView.observe(\.contentOffset) { [weak self] _, _ in
                 MainActor.assumeIsolated { self?.updateCanvas() }
             }
+            // A lazy stack moves a row when it measures the rows above it,
+            // which changes the content size. The row's own frame and the
+            // scroll offset stay the same, so nothing else tells the view.
+            ContentSizeWatcher.watcher(for: scrollView).add(self)
         }
         updateCanvas()
         selectAllIfNeeded()
     }
 
-    /// The part of this view currently on screen, or all of it outside a scroll view.
-    private var visibleRect: CGRect {
+    /// Updates the tiles on the next turn of the run loop, once the stack has
+    /// placed its rows. One check is pending at a time. Only a view with some
+    /// of its tiles is checked: one whose tiles cover all of it, as a short
+    /// text's one tile does, is right wherever it moves, and one with none is
+    /// far from the screen and updates when it is scrolled or laid out.
+    fileprivate func updateCanvasSoon() {
+        guard !canvasCheckScheduled, !tilesReleased, !tiles.isEmpty, !tilesCoverView else { return }
+        canvasCheckScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.canvasCheckScheduled = false
+                self.updateCanvas()
+            }
+        }
+    }
+
+    private weak var cachedScrollView: UIScrollView?
+    /// The lookup found no scroll view above this view.
+    private var hasNoScrollView = false
+
+    /// The nearest scroll view above this view. Looked up once while the
+    /// view stays where it is: it is needed for every frame of a scroll.
+    private var enclosingScrollView: UIScrollView? {
+        if let cachedScrollView { return cachedScrollView }
+        if hasNoScrollView { return nil }
         var ancestor = superview
         while let view = ancestor, !(view is UIScrollView) { ancestor = view.superview }
-        guard let scrollView = ancestor as? UIScrollView else { return bounds }
+        cachedScrollView = ancestor as? UIScrollView
+        hasNoScrollView = cachedScrollView == nil && window != nil
+        return cachedScrollView
+    }
+
+    /// The part of this view currently on screen, or all of it outside a scroll view.
+    private var visibleRect: CGRect {
+        guard let scrollView = enclosingScrollView else { return bounds }
         return convert(scrollView.bounds, from: scrollView).intersection(bounds)
     }
 
@@ -424,9 +479,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// further away, such as a lazy stack's row that scrolled off, frees its tiles.
     private var isNearVisibleArea: Bool {
         guard bounds.width > 0, bounds.height > 0 else { return false }
-        var ancestor = superview
-        while let view = ancestor, !(view is UIScrollView) { ancestor = view.superview }
-        guard let scrollView = ancestor as? UIScrollView else { return window != nil }
+        guard let scrollView = enclosingScrollView else { return window != nil }
         let area = scrollView.bounds.insetBy(dx: 0, dy: -scrollView.bounds.height / 2)
         return convert(area, from: scrollView).intersects(bounds)
     }
@@ -444,11 +497,21 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     /// Frees every tile's drawing, for a view with nothing on screen or near it.
     private func releaseTiles() {
-        guard !tiles.isEmpty || spareTiles.contains(where: { $0.layer.contents != nil }) else { return }
+        guard !tilesReleased else { return }
+        tilesReleased = true
         tiles.values.forEach { retire($0, freeingDrawing: true) }
         tiles.removeAll()
         spareTiles.forEach { $0.layer.contents = nil }
         trimSpareTiles()
+    }
+
+    /// No tile holds a drawing, so releasing them again does nothing.
+    private var tilesReleased = true
+
+    private var tilesCoverView: Bool {
+        guard !tilesReleased, bounds.height > 0 else { return false }
+        let count = Int((bounds.height / tileHeight).rounded(.up))
+        return tiles.count >= count && (0..<count).allSatisfy { tiles[$0] != nil }
     }
 
     private func trimSpareTiles() {
@@ -469,7 +532,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         for (index, tile) in tiles {
             let minY = CGFloat(index) * tileHeight
             let top = max(range.lowerBound - minY - 2, 0)
-            let bottom = min(range.upperBound - minY + 2, tileHeight)
+            let bottom = min(range.upperBound - minY + 2, tile.bounds.height)
             if top < bottom {
                 tile.setNeedsDisplay(CGRect(x: 0, y: top, width: tile.bounds.width, height: bottom - top))
             }
@@ -488,6 +551,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             }
             return
         }
+        tilesReleased = false
         // Keep half a screen of drawn content above and below what is visible.
         let covered = visible.insetBy(dx: 0, dy: -visible.height / 2).intersection(bounds)
         let first = Int((covered.minY / tileHeight).rounded(.down))
@@ -500,7 +564,9 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         for index in first...last {
             // Wider than the view: tags' shapes may draw past the text column.
             let side = TranscriptPath.maximumSideOverhang
-            let frame = CGRect(x: -side, y: CGFloat(index) * tileHeight, width: bounds.width + 2 * side, height: tileHeight)
+            let frame = CGRect(x: -side, y: CGFloat(index) * tileHeight, width: bounds.width + 2 * side,
+                               height: TileGrid.tileHeight(at: index, viewHeight: bounds.height,
+                                                          glyphBottom: currentLayout.glyphBottom))
             if let tile = tiles[index] {
                 if tile.frame != frame {
                     tile.frame = frame
@@ -508,7 +574,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
                 } else if forceRedraw {
                     if let changed {
                         let top = max(changed.lowerBound - frame.minY - 2, 0)
-                        let bottom = min(changed.upperBound - frame.minY + 2, tileHeight)
+                        let bottom = min(changed.upperBound - frame.minY + 2, frame.height)
                         if top < bottom {
                             tile.setNeedsDisplay(CGRect(x: 0, y: top, width: frame.width, height: bottom - top))
                         }
@@ -1164,14 +1230,53 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     public override var canBecomeFirstResponder: Bool { isSelectable }
 
+    private static let didBecomeFirstResponder = Notification.Name("TranscriptTextViewDidBecomeFirstResponder")
+
+    /// Ends the selection of the other views in the window. This is not done
+    /// in `resignFirstResponder()`: Share and Translate in the edit menu make
+    /// the view resign, and the selection must stay for them.
+    @discardableResult
+    public override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { NotificationCenter.default.post(name: Self.didBecomeFirstResponder, object: self) }
+        return became
+    }
+
+    @objc private func otherViewBecameFirstResponder(_ notification: Notification) {
+        guard let other = notification.object as? TranscriptTextView, other !== self,
+              other.window === window, selection != nil else { return }
+        select(nil)
+    }
+
     /// Without selection, only links take touches.
     public override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
         guard super.point(inside: point, with: event) else { return false }
+        // Hit testing comes before the touch begins, and the touch's gesture
+        // recognizers are gathered after it, so ones added now see it.
+        if isSelectable { addTextInteractionIfNeeded() }
         return isSelectable || linkURL(at: point) != nil
+    }
+
+    private func addTextInteractionIfNeeded() {
+        guard isSelectable, textInteraction == nil else { return }
+        let interaction = UITextInteraction(for: .nonEditable)
+        interaction.textInput = self
+        addInteraction(interaction)
+        textInteraction = interaction
     }
 
     /// Read-only: an empty input view keeps the keyboard from appearing.
     public override var inputView: UIView? { emptyInputView }
+
+    /// Whether the edit menu offers Writing Tools for the selected text, on
+    /// devices that have them. On by default, as in a `UITextView`.
+    public var showsWritingTools = true
+
+    @available(iOS 18.0, *)
+    public var writingToolsBehavior: UIWritingToolsBehavior {
+        get { showsWritingTools ? .default : .none }
+        set { showsWritingTools = newValue != .none }
+    }
 
     public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         switch action {
@@ -1198,6 +1303,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// Selects a range of the document's flat UTF-16 offset space, or clears
     /// the selection when `range` is nil.
     public func select(_ range: Range<Int>?) {
+        if range != nil { addTextInteractionIfNeeded() }
         inputDelegate?.selectionWillChange(self)
         selection = range.map { clamp($0.lowerBound)..<clamp($0.upperBound) }
         inputDelegate?.selectionDidChange(self)
@@ -1418,5 +1524,35 @@ final class TranscriptSelectionRect: UITextSelectionRect {
     override var containsStart: Bool { storedContainsStart }
     override var containsEnd: Bool { storedContainsEnd }
     override var isVertical: Bool { false }
+}
+
+/// Watches a scroll view's content size for the text views in it, with one
+/// observation for all of them: a list can hold many.
+@MainActor
+private final class ContentSizeWatcher {
+    private static var key: UInt8 = 0
+    private var observation: NSKeyValueObservation?
+    private let views = NSHashTable<TranscriptTextView>.weakObjects()
+
+    /// The scroll view's watcher, which the scroll view keeps.
+    static func watcher(for scrollView: UIScrollView) -> ContentSizeWatcher {
+        if let watcher = objc_getAssociatedObject(scrollView, &key) as? ContentSizeWatcher { return watcher }
+        let watcher = ContentSizeWatcher()
+        watcher.observation = scrollView.observe(\.contentSize) { [weak watcher] _, _ in
+            MainActor.assumeIsolated { watcher?.contentSizeChanged() }
+        }
+        objc_setAssociatedObject(scrollView, &key, watcher, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+        return watcher
+    }
+
+    func add(_ view: TranscriptTextView) {
+        views.add(view)
+    }
+
+    private func contentSizeChanged() {
+        for view in views.allObjects where view.window != nil {
+            view.updateCanvasSoon()
+        }
+    }
 }
 #endif

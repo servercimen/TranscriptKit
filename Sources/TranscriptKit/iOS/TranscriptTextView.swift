@@ -1247,6 +1247,16 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// Read-only: an empty input view keeps the keyboard from appearing.
     public override var inputView: UIView? { emptyInputView }
 
+    /// Whether the edit menu offers Writing Tools for the selected text, on
+    /// devices that have them. On by default, as in a `UITextView`.
+    public var showsWritingTools = true
+
+    @available(iOS 18.0, *)
+    public var writingToolsBehavior: UIWritingToolsBehavior {
+        get { showsWritingTools ? .default : .none }
+        set { showsWritingTools = newValue != .none }
+    }
+
     public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
         switch action {
         case #selector(copy(_:)):

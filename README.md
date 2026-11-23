@@ -262,6 +262,9 @@ TranscriptText(document)
 
 In UIKit, set `isSelectable` on `TranscriptTextView`.
 
+On devices that have Writing Tools, the edit menu can offer them for the selected text, as in a `UITextView`. Turn
+them off with `.showsWritingTools(false)`, or with `showsWritingTools` on `TranscriptTextView`.
+
 ### VoiceOver
 
 VoiceOver reads the text block by block. Headings are in the rotor's list of headings, list items start with their

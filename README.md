@@ -33,7 +33,7 @@ text streaming in at hundreds of characters a second doesn't make scrolling stut
 ## Requirements
 
 iOS 17 or later, Swift 6 (Xcode 16 or later). The parser and document model also build on macOS 14, which is where
-the tests run.
+most of the tests run.
 
 ## Installation
 
@@ -376,6 +376,7 @@ waited for, so turn off `textFadeInDuration` and `animatesTags` to compare pixel
 | --- | --- |
 | `Sources/TranscriptKit` | The library |
 | `Tests/TranscriptKitTests` | Unit, layout and pixel tests: `swift test` |
+| `Tests/TranscriptKitViewTests` | Tests of `TranscriptTextView` and `TranscriptText` on iOS: `xcodebuild test -scheme TranscriptKit -destination 'platform=iOS Simulator,name=<an iPhone>' -only-testing:TranscriptKitViewTests` |
 | [`Examples/ChatSample`](Examples/ChatSample) | A chat app that mixes streamed TranscriptKit text with native SwiftUI views (cards, charts, photos), custom tags and text beside other views |
 | `Demo` | A small app for trying selection and streaming |
 | `Benchmark` | A benchmark app and script that compare TranscriptKit with other renderers on the simulator and on phones, with results and notes |

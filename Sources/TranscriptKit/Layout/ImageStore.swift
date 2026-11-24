@@ -10,6 +10,8 @@ import Foundation
 final class TranscriptImageStore: @unchecked Sendable {
     typealias Loader = @Sendable (TranscriptImage) async -> CGImage?
 
+    /// Counts the loads, formulas and highlights in flight.
+    let work: PendingWork
     private let lock = NSLock()
     private var pictures: [String: CGImage] = [:]
     private var requested: Set<String> = []
@@ -26,6 +28,10 @@ final class TranscriptImageStore: @unchecked Sendable {
     private var highlights: [String: (text: String, language: String?, marks: [TranscriptCodeHighlight])] = [:]
     private var highlighting: Set<String> = []
     private var waitingCode: [String: (text: String, language: String?)] = [:]
+
+    init(work: PendingWork = PendingWork()) {
+        self.work = work
+    }
 
     /// Goes up each time a picture arrives; layouts made at an older
     /// revision may show placeholders where pictures now are.
@@ -46,6 +52,7 @@ final class TranscriptImageStore: @unchecked Sendable {
     }
 
     /// Sets what to call (on any thread) when a picture or colors arrive.
+    /// Work that the call starts must begin on `work` before it returns.
     func setOnChange(_ onChange: (@Sendable () -> Void)?) {
         lock.withLock { self.onChange = onChange }
     }
@@ -90,9 +97,12 @@ final class TranscriptImageStore: @unchecked Sendable {
 
     private func highlight(_ block: String, text: String, language: String?, with highlighter: @escaping TranscriptCodeHighlighter,
                            generation: Int) {
+        let work = work
+        work.begin()
         Task.detached { [weak self] in
             let marks = await highlighter(text, language)
             self?.finishHighlight(block, text: text, language: language, marks: marks, generation: generation)
+            work.end()
         }
     }
 
@@ -150,9 +160,12 @@ final class TranscriptImageStore: @unchecked Sendable {
             return (nil, mathRenderer, mathGeneration)
         }
         if let render {
+            let work = work
+            work.begin()
             Task.detached { [weak self] in
                 let drawn = await render(math, CGFloat(key.size) / 2)?.withAlphaAsMask()
                 self?.finishFormula(key, drawn, generation: generation)
+                work.end()
             }
         }
         return formula
@@ -177,9 +190,12 @@ final class TranscriptImageStore: @unchecked Sendable {
             return (nil, loader, self.generation)
         }
         if let load {
+            let work = work
+            work.begin()
             Task.detached { [weak self] in
                 let box = PictureBox(picture: await load(image))
                 self?.finish(image.source, box, generation: generation)
+                work.end()
             }
         }
         return picture

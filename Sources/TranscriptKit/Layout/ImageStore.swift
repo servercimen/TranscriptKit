@@ -15,6 +15,10 @@ final class TranscriptImageStore: @unchecked Sendable {
     private var requested: Set<String> = []
     private var loader: Loader?
     private var onChange: (@Sendable () -> Void)?
+    /// Runs `onChange`: on the main queue, unless a test gives its own.
+    private let deliver: @Sendable (@escaping @Sendable () -> Void) -> Void
+    /// `onChange` is waiting to run, and changes until then need no call of their own.
+    private var changeScheduled = false
     private var generation = 0
     private var _revision = 0
 
@@ -31,8 +35,18 @@ final class TranscriptImageStore: @unchecked Sendable {
     /// revision may show placeholders where pictures now are.
     var revision: Int { lock.withLock { _revision } }
 
-    /// Sets the loader and what to call (on any thread) when a picture has
-    /// arrived. Pictures loaded with an earlier loader are dropped, and the
+    /// - Parameters:
+    ///   - mathCache: where drawn formulas are kept. A store has a cache of
+    ///     its own unless it is given one that views share.
+    ///   - deliver: runs `onChange`.
+    init(mathCache: TranscriptMathCache = TranscriptMathCache(),
+         deliver: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }) {
+        self.mathCache = mathCache
+        self.deliver = deliver
+    }
+
+    /// Sets the loader and what to call when a picture has arrived; see
+    /// `setOnChange`. Pictures loaded with an earlier loader are dropped, and the
     /// revision goes up so that images already laid out are asked for again.
     func setLoader(_ loader: Loader?, onChange: (@Sendable () -> Void)?) {
         lock.withLock {
@@ -45,7 +59,9 @@ final class TranscriptImageStore: @unchecked Sendable {
         }
     }
 
-    /// Sets what to call (on any thread) when a picture or colors arrive.
+    /// Sets what to call on the main queue when pictures, colors or formulas
+    /// arrive. Those that arrive before it runs share one call, so that the
+    /// view lays out once for them.
     func setOnChange(_ onChange: (@Sendable () -> Void)?) {
         lock.withLock { self.onChange = onChange }
     }
@@ -97,20 +113,20 @@ final class TranscriptImageStore: @unchecked Sendable {
     }
 
     private func finishHighlight(_ block: String, text: String, language: String?, marks: [TranscriptCodeHighlight], generation: Int) {
-        let (handler, next): ((@Sendable () -> Void)?, (TranscriptCodeHighlighter, String, String?)?) = lock.withLock {
-            guard generation == highlightGeneration else { return (nil, nil) }
+        let (changed, next): (Bool, (TranscriptCodeHighlighter, String, String?)?) = lock.withLock {
+            guard generation == highlightGeneration else { return (false, nil) }
             highlights[block] = (text, language, marks)
             _revision += 1
             if let waiting = waitingCode.removeValue(forKey: block), let highlighter, waiting.text != text || waiting.language != language {
-                return (onChange, (highlighter, waiting.text, waiting.language))
+                return (true, (highlighter, waiting.text, waiting.language))
             }
             highlighting.remove(block)
-            return (onChange, nil)
+            return (true, nil)
         }
         if let (highlighter, text, language) = next {
             highlight(block, text: text, language: language, with: highlighter, generation: generation)
         }
-        handler?()
+        if changed { notifyChange() }
     }
 
     // MARK: Formulas
@@ -141,12 +157,6 @@ final class TranscriptImageStore: @unchecked Sendable {
     private var shownFormulas: [MathSlot: TranscriptMathCache.Key] = [:]
     private var drawingFormulas: [MathSlot: TranscriptMathCache.Key] = [:]
     private var waitingFormulas: [MathSlot: TranscriptMathCache.Key] = [:]
-
-    /// - Parameter mathCache: where drawn formulas are kept. A store has a
-    ///   cache of its own unless it is given one that views share.
-    init(mathCache: TranscriptMathCache = TranscriptMathCache()) {
-        self.mathCache = mathCache
-    }
 
     var hasMathRenderer: Bool { lock.withLock { mathRenderer != nil } }
 
@@ -230,21 +240,21 @@ final class TranscriptImageStore: @unchecked Sendable {
 
     private func finishFormula(_ key: TranscriptMathCache.Key, in slot: MathSlot, _ result: TranscriptMathCache.Result,
                                generation: Int) {
-        let (handler, next): ((@Sendable () -> Void)?, (TranscriptMathCache.Key, TranscriptMathRenderer, TranscriptMathCache)?) = lock.withLock {
-            guard generation == mathGeneration else { return (nil, nil) }
+        let (changed, next): (Bool, (TranscriptMathCache.Key, TranscriptMathRenderer, TranscriptMathCache)?) = lock.withLock {
+            guard generation == mathGeneration else { return (false, nil) }
             if case .drawn = result { shownFormulas[slot] = key }
             _revision += 1
             if let waiting = waitingFormulas.removeValue(forKey: slot), waiting != key, let mathRenderer {
                 drawingFormulas[slot] = waiting
-                return (onChange, (waiting, mathRenderer, mathCache))
+                return (true, (waiting, mathRenderer, mathCache))
             }
             drawingFormulas[slot] = nil
-            return (onChange, nil)
+            return (true, nil)
         }
         if let (waiting, renderer, cache) = next {
             draw(waiting, in: slot, with: renderer, cache: cache, generation: generation)
         }
-        handler?()
+        if changed { notifyChange() }
     }
 
     /// The picture for `image` if it has arrived. Starts loading it if not.
@@ -265,13 +275,32 @@ final class TranscriptImageStore: @unchecked Sendable {
     }
 
     private func finish(_ source: String, _ box: PictureBox, generation: Int) {
-        let handler: (@Sendable () -> Void)? = lock.withLock {
-            guard generation == self.generation, let picture = box.picture else { return nil }
+        let changed: Bool = lock.withLock {
+            guard generation == self.generation, let picture = box.picture else { return false }
             pictures[source] = picture
             _revision += 1
-            return onChange
+            return true
         }
-        handler?()
+        if changed { notifyChange() }
+    }
+
+    /// Calls `onChange` with `deliver`, once for all the changes that come
+    /// before it runs.
+    private func notifyChange() {
+        let schedule: Bool = lock.withLock {
+            guard onChange != nil, !changeScheduled else { return false }
+            changeScheduled = true
+            return true
+        }
+        guard schedule else { return }
+        deliver { [weak self] in
+            guard let self else { return }
+            let handler = lock.withLock {
+                changeScheduled = false
+                return onChange
+            }
+            handler?()
+        }
     }
 }
 

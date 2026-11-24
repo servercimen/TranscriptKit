@@ -150,9 +150,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     public var imageLoader: (@Sendable (TranscriptImage) async -> CGImage?)? {
         didSet {
             engine.images.setLoader(imageLoader) { [weak self] in
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
-                }
+                MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
             }
             relayoutNow()
         }
@@ -166,9 +164,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     public var codeHighlighter: TranscriptCodeHighlighter? {
         didSet {
             engine.images.setOnChange { [weak self] in
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
-                }
+                MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
             }
             engine.images.setHighlighter(codeHighlighter)
             relayoutNow()
@@ -184,9 +180,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     public var mathRenderer: TranscriptMathRenderer? {
         didSet {
             engine.images.setOnChange { [weak self] in
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
-                }
+                MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
             }
             engine.images.setMathRenderer(mathRenderer)
             relayoutNow()

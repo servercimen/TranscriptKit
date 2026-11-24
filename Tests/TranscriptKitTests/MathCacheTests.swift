@@ -176,3 +176,40 @@ final class RenderCalls: @unchecked Sendable {
     #expect(slots.map(\.index) == [0, 1, 2])
     #expect(Set(slots.map(\.block)) == [block.id])
 }
+
+/// Keeps what the store gives to run on the main queue, until the test runs it.
+private final class Deliveries: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiting: [@Sendable () -> Void] = []
+    private var calls = 0
+    func add(_ work: @escaping @Sendable () -> Void) { lock.withLock { waiting.append(work) } }
+    var count: Int { lock.withLock { waiting.count } }
+    func runAll() {
+        let work = lock.withLock {
+            defer { waiting = [] }
+            return waiting
+        }
+        work.forEach { $0() }
+    }
+    func called() { lock.withLock { calls += 1 } }
+    var callCount: Int { lock.withLock { calls } }
+}
+
+@Test func formulasThatArriveTogetherCallOnChangeOnce() async {
+    let deliveries = Deliveries()
+    let store = TranscriptImageStore(deliver: { deliveries.add($0) })
+    store.setOnChange { deliveries.called() }
+    store.setMathRenderer { _, _ in solidFormula(width: 10, height: 10) }
+    let revision = store.revision
+    for index in 0..<5 { _ = store.drawnImage(TranscriptMath(tex: "x_\(index)", isDisplay: false)) }
+    await waitFor { store.revision == revision + 5 }
+    #expect(store.revision == revision + 5)
+    #expect(deliveries.count == 1)
+    deliveries.runAll()
+    #expect(deliveries.callCount == 1)
+    // A formula that arrives after the call gets a call of its own.
+    _ = store.drawnImage(TranscriptMath(tex: "y", isDisplay: false))
+    await waitFor { deliveries.count == 1 }
+    deliveries.runAll()
+    #expect(deliveries.callCount == 2)
+}

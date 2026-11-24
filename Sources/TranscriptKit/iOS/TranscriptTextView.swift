@@ -181,7 +181,32 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         }
     }
 
+    /// Waits until the view shows its final content: no layout, stream
+    /// parse, image load, formula or code colors are pending, the last
+    /// layout is on screen, and its tiles are drawn. Use it before a
+    /// snapshot, or in a test.
+    ///
+    /// Work that keeps arriving, such as a stream that has not finished,
+    /// does not hold it back: it returns at the first moment when nothing
+    /// is pending. A cancelled task returns at once. An image that the
+    /// loader returns nil for, and a formula that the renderer returns nil
+    /// for, count as done. Fades and tag animations that play are not
+    /// waited for: to compare pixels, turn off `textFadeInDuration` and
+    /// `animatesTags`.
+    public func contentSettled() async {
+        await settledWaiters.wait()
+    }
+
     private let engine = LayoutEngine()
+    private lazy var settledWaiters = makeSettledWaiters()
+
+    private func makeSettledWaiters() -> ContentSettledWaiters {
+        let waiters = ContentSettledWaiters(work: engine.work)
+        waiters.stream = { [weak self] in self?.stream }
+        waiters.layOut = { [weak self] in self?.layoutIfNeeded() }
+        waiters.draw = { [weak self] in self?.drawTilesNow() }
+        return waiters
+    }
 
     /// Lays out again on main when a picture, a formula or code colors
     /// arrive. Any thread.
@@ -592,6 +617,14 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             }
         }
         trimSpareTiles()
+    }
+
+    /// Draws now the tiles that wait for the next commit. They take back
+    /// the tail first, so that they hold all of the text.
+    private func drawTilesNow() {
+        handTailToTiles()
+        if canvasCheckScheduled { updateCanvas() }
+        for tile in tiles.values { tile.layer.displayIfNeeded() }
     }
 
     private func makeTile() -> CanvasView {

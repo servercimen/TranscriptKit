@@ -346,6 +346,25 @@ selection ends, and its range is nil. The selection stays when the person opens 
 
 In UIKit, use `onSelectionChange`, `selectedRange` and `selectsAllWhenShown` on `TranscriptTextView`.
 
+### Waiting for the final content
+
+Plain text is laid out at once, but layouts of later updates, images, formulas and code colors come back on later
+turns of the main run loop. A snapshot or a test that does not wait for them shows the text without them.
+`contentSettled()` on `TranscriptTextView` returns when the view shows its final content. Then no layout, stream
+parse, image load, formula or code colors are pending, the last layout is on screen, and its tiles are drawn:
+
+```swift
+let view = TranscriptTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 600))
+view.mathRenderer = myMathRenderer
+view.document = document
+await view.contentSettled()
+let image = UIGraphicsImageRenderer(bounds: view.bounds).image { view.layer.render(in: $0.cgContext) }
+```
+
+While a stream that has not finished goes on, `contentSettled()` returns at the first moment when nothing is pending.
+A cancelled task returns at once. An image or a formula that comes back as nil counts as done. Fades and tag
+animations that play are not waited for, so turn off `textFadeInDuration` and `animatesTags` to compare pixels.
+
 ## In this repository
 
 | Folder | Contents |

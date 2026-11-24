@@ -146,3 +146,173 @@ private let image = TranscriptImage(source: "https://x.y/c.png", alt: "a chart")
     #expect(!store.highlights(for: "b", text: "let a", language: nil).isEmpty)
     #expect(store.work.isIdle)
 }
+
+// MARK: Waiting for the content to settle
+
+/// A layout engine wired as `TranscriptTextView` wires it, without UIKit:
+/// results install on main, and a picture's arrival lays out again on main.
+@MainActor
+private final class Host {
+    let engine = LayoutEngine()
+    let waiters: ContentSettledWaiters
+    private(set) var stream: TranscriptStream?
+    private(set) var installed: DocumentLayout?
+    private(set) var draws = 0
+
+    init() {
+        waiters = ContentSettledWaiters(work: engine.work)
+        engine.setOutputHandler { [weak self] in
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.install() }
+            }
+        }
+        waiters.stream = { [weak self] in self?.stream }
+        waiters.draw = { [weak self] in self?.draws += 1 }
+        relayout()
+    }
+
+    var text: String {
+        guard let installed else { return "" }
+        return installed.document.text(in: 0..<installed.length)
+    }
+
+    private func install() {
+        if let output = engine.takeOutput() { installed = output.layout }
+    }
+
+    private func relayout() {
+        installed = engine.relayout(width: 300, style: TranscriptStyle())?.layout
+    }
+
+    func setLoader(_ loader: @escaping @Sendable (TranscriptImage) async -> CGImage?) {
+        let work = engine.work
+        engine.images.setLoader(loader) { [weak self] in
+            work.begin()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.relayout() }
+                work.end()
+            }
+        }
+    }
+
+    func show(_ stream: TranscriptStream) {
+        self.stream = stream
+        let engine = engine
+        let attachment = stream.attachSink { update in
+            engine.submit(.init(document: update.document, source: 1, sequence: update.sequence, isFinished: update.isFinished))
+        }
+        engine.submit(.init(document: attachment.latest.document, source: 1, sequence: attachment.latest.sequence,
+                            isFinished: attachment.latest.isFinished))
+    }
+}
+
+/// Waits on main until `condition` holds, for at most two seconds.
+@MainActor
+private func waitOnMain(_ condition: () -> Bool) async {
+    for _ in 0..<200 where !condition() {
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+}
+
+private func picture() -> CGImage? {
+    CGContext(data: nil, width: 40, height: 20, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)?.makeImage()
+}
+
+@MainActor
+@Test(.timeLimit(.minutes(1))) func contentWithNothingPendingSettlesAtOnce() async {
+    let host = Host()
+    await host.waiters.wait()
+    #expect(host.draws == 1)
+    #expect(host.waiters.count == 0)
+}
+
+@MainActor
+@Test(.timeLimit(.minutes(1))) func contentSettlesOnceTheStreamAndThePicturesAreIn() async throws {
+    let host = Host()
+    let gate = Gate()
+    host.setLoader { _ in
+        await gate.wait()
+        return picture()
+    }
+    let stream = TranscriptStream()
+    host.show(stream)
+    stream.append("see ![a chart](https://x.y/c.png) here")
+    stream.finish()
+
+    var settled = false
+    let waiting = Task { @MainActor in
+        await host.waiters.wait()
+        settled = true
+    }
+    await waitOnMain { host.text.hasPrefix("see") }
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(!settled)
+    #expect(host.draws == 0)
+    #expect(try #require(host.installed).entry(at: 0).layout.attachments.first?.attachment.picture == nil)
+
+    gate.open()
+    await waiting.value
+    #expect(settled)
+    #expect(host.draws == 1)
+    #expect(host.engine.work.isIdle)
+    #expect(stream.isIdle)
+    #expect(try #require(host.installed).entry(at: 0).layout.attachments.first?.attachment.picture != nil)
+}
+
+@MainActor
+@Test(.timeLimit(.minutes(1))) func anUnfinishedStreamSettlesBetweenItsChunks() async {
+    let host = Host()
+    let stream = TranscriptStream()
+    host.show(stream)
+    stream.append("One two")
+    await host.waiters.wait()
+    #expect(host.text == "One two")
+
+    stream.append(" three")
+    await host.waiters.wait()
+    #expect(host.text == "One two three")
+
+    // Text that the parser holds back makes no new version, and still settles.
+    stream.append("\n\n#")
+    await host.waiters.wait()
+    #expect(stream.isIdle)
+    #expect(host.text == "One two three")
+}
+
+@MainActor
+@Test(.timeLimit(.minutes(1))) func aCancelledWaitReturnsAtOnce() async {
+    let host = Host()
+    let gate = Gate()
+    host.setLoader { _ in
+        await gate.wait()
+        return nil
+    }
+    let stream = TranscriptStream()
+    host.show(stream)
+    stream.append("see ![a chart](https://x.y/c.png) here")
+    stream.flush()
+    await waitOnMain { host.text.hasPrefix("see") }
+
+    let first = Task { @MainActor in await host.waiters.wait() }
+    let second = Task { @MainActor in await host.waiters.wait() }
+    await waitOnMain { host.waiters.count == 2 }
+    first.cancel()
+    await first.value
+    #expect(host.waiters.count == 1)
+    #expect(host.draws == 0)
+
+    // Already cancelled: it does not wait at all.
+    let third = Task { @MainActor in
+        withUnsafeCurrentTask { $0?.cancel() }
+        await host.waiters.wait()
+    }
+    await third.value
+    #expect(host.waiters.count == 1)
+
+    // The image loads nothing, and that counts as done.
+    gate.open()
+    await second.value
+    #expect(host.waiters.count == 0)
+    #expect(host.draws == 1)
+}

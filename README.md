@@ -196,8 +196,9 @@ TranscriptText(stream: stream)
 ```
 
 In UIKit, set `tagAnimationTiming` on `TranscriptTextView` and call `playTagAnimations()`. A tag that is still
-waiting when it can no longer play (Reduce Motion turned on, animations turned off, the view leaving its window, a
-new document) is shown as it ends up.
+waiting when it can no longer play (Reduce Motion turned on, animations turned off, a new document) is shown as it
+ends up. A view that leaves its window does the same, unless the timing has `.whenVisible` or `.whenRequested`: its
+tags then go on waiting until the view is back in a window.
 
 Tags that wait often start at the same moment, for example when the stream finishes. To stagger them, also
 implement `animation(for:in:)` in the recipe. The group gives the tag's place among the tags that start together,

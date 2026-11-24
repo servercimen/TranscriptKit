@@ -308,8 +308,11 @@ public struct TranscriptCurve: Sendable, Equatable {
 /// ```
 ///
 /// A tag that is still waiting when animations can no longer play (Reduce
-/// Motion turned on, `animatesTags` turned off, the view leaving its window,
-/// or a new document) is shown as it ends up, shapes and all.
+/// Motion turned on, `animatesTags` turned off, or a new document) is shown
+/// as it ends up, shapes and all. A view that leaves its window does the
+/// same, unless the timing has `.whenVisible` or `.whenRequested`: its tags
+/// then go on waiting, and tags that close meanwhile wait too. A view out of
+/// its window plays no animation.
 public struct TranscriptAnimationTiming: OptionSet, Hashable, Sendable {
     public let rawValue: Int
     public init(rawValue: Int) { self.rawValue = rawValue }

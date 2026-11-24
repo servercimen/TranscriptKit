@@ -538,3 +538,60 @@ private enum TailRendererProbe {
         #expect(abs(layer.frame.minY - sprite.frame.minY) < 0.001 && abs(layer.frame.height - sprite.frame.height) < 0.001)
     }
 }
+
+// MARK: Which waiting tags play
+
+private let shown = WaitingTags.Viewer(isInWindow: true, visibleRect: CGRect(x: 0, y: 0, width: 300, height: 400), isFinished: true)
+
+private func waitingList(_ keys: [TagKey]) -> WaitingTags {
+    var list = WaitingTags()
+    list.add(keys)
+    return list
+}
+
+private let first = TagKey(block: "w-0", start: 0, name: "hop")
+private let second = TagKey(block: "w-1", start: 4, name: "hop")
+
+@Test func waitingTagsPlayWhenTheirTimingAllows() {
+    let bands = [first: CGFloat(10)...30, second: CGFloat(500)...520]
+    var list = waitingList([first, second])
+    #expect(Set(list.takeReady(timing: .immediately, viewer: shown) { bands[$0] }) == [first, second])
+    #expect(list.isEmpty)
+
+    list = waitingList([first, second])
+    #expect(list.takeReady(timing: .whenVisible, viewer: shown) { bands[$0] } == [first])
+    #expect(list.keys == [second])
+
+    list = waitingList([first, second])
+    var streaming = shown
+    streaming.isFinished = false
+    #expect(list.takeReady(timing: .afterStreamFinishes, viewer: streaming) { bands[$0] }.isEmpty)
+
+    // Requested: only the tags waiting when the app asked.
+    list = waitingList([first])
+    list.request()
+    list.add([second])
+    #expect(list.takeReady(timing: .whenRequested, viewer: shown) { bands[$0] } == [first])
+    #expect(list.keys == [second] && list.requested.isEmpty)
+}
+
+/// Out of its window, a view plays nothing, and tags that wait to be seen
+/// or for the app keep waiting until it comes back.
+@Test func waitingTagsWaitForTheViewToBeInAWindow() {
+    var away = shown
+    away.isInWindow = false
+    let band: (TagKey) -> ClosedRange<CGFloat>? = { _ in 10...30 }
+    for timing: TranscriptAnimationTiming in [.immediately, .whenVisible, .whenRequested, .afterStreamFinishes] {
+        var list = waitingList([first])
+        list.request()
+        #expect(list.takeReady(timing: timing, viewer: away, band: band).isEmpty)
+        #expect(list.keys == [first])
+        // Back in the window, they play.
+        #expect(list.takeReady(timing: timing, viewer: shown, band: band) == [first])
+    }
+    #expect(WaitingTags.keepWaitingOutsideWindow(.whenVisible))
+    #expect(WaitingTags.keepWaitingOutsideWindow(.whenRequested))
+    #expect(WaitingTags.keepWaitingOutsideWindow([.whenVisible, .afterStreamFinishes]))
+    #expect(!WaitingTags.keepWaitingOutsideWindow(.immediately))
+    #expect(!WaitingTags.keepWaitingOutsideWindow(.afterStreamFinishes))
+}

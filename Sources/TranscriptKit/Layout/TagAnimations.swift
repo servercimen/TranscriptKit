@@ -104,3 +104,81 @@ extension DocumentLayout {
         return AnimatedTag(key: key, animation: animation, parts: parts, band: top...bottom)
     }
 }
+
+/// The animated tags of a view that have closed and wait for the view's
+/// `TranscriptAnimationTiming` to let them play, and which of them may play.
+struct WaitingTags: Sendable {
+    private(set) var keys: Set<TagKey> = []
+    /// Waiting tags the app has asked to play (`playTagAnimations()`).
+    private(set) var requested: Set<TagKey> = []
+
+    /// Where the view is and what it shows, for `takeReady`.
+    struct Viewer {
+        var isInWindow: Bool
+        /// The part of the view on screen, in its coordinates.
+        var visibleRect: CGRect
+        /// No more text is coming.
+        var isFinished: Bool
+    }
+
+    var isEmpty: Bool { keys.isEmpty }
+
+    mutating func add(_ keys: some Sequence<TagKey>) {
+        self.keys.formUnion(keys)
+    }
+
+    /// Lets every tag waiting now play once the rest of the timing allows.
+    mutating func request() {
+        requested.formUnion(keys)
+    }
+
+    /// Empties the list, and returns the tags that waited.
+    mutating func removeAll() -> Set<TagKey> {
+        defer {
+            keys.removeAll()
+            requested.removeAll()
+        }
+        return keys
+    }
+
+    /// Takes the waiting tags that `timing` lets play now out of the list.
+    /// A view that is not in a window plays none: nothing would show them.
+    ///
+    /// - Parameter band: the rows of the document a tag takes up, or nil
+    ///   if the view's layout does not hold it.
+    mutating func takeReady(timing: TranscriptAnimationTiming, viewer: Viewer,
+                            band: (TagKey) -> ClosedRange<CGFloat>?) -> [TagKey] {
+        guard !keys.isEmpty, viewer.isInWindow else { return [] }
+        if timing.contains(.afterStreamFinishes), !viewer.isFinished { return [] }
+        var ready: [TagKey] = []
+        for key in keys {
+            if timing.contains(.whenRequested), !requested.contains(key) { continue }
+            if timing.contains(.whenVisible) {
+                guard let band = band(key), Self.isOnScreen(band, in: viewer.visibleRect) else { continue }
+            }
+            ready.append(key)
+        }
+        for key in ready {
+            keys.remove(key)
+            requested.remove(key)
+        }
+        return ready
+    }
+
+    /// Whether waiting tags keep waiting while the view is out of its
+    /// window: they wait to be seen, or for the app, and neither has
+    /// happened yet.
+    static func keepWaitingOutsideWindow(_ timing: TranscriptAnimationTiming) -> Bool {
+        !timing.isDisjoint(with: [.whenVisible, .whenRequested])
+    }
+
+    /// Whether a tag's rows count as on screen: all of them, or for a tag
+    /// taller than what is visible, some of them.
+    static func isOnScreen(_ band: ClosedRange<CGFloat>, in visible: CGRect) -> Bool {
+        guard !visible.isNull, visible.height > 0 else { return false }
+        if band.upperBound - band.lowerBound > visible.height {
+            return band.upperBound > visible.minY && band.lowerBound < visible.maxY
+        }
+        return band.lowerBound >= visible.minY && band.upperBound <= visible.maxY
+    }
+}

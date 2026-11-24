@@ -18,7 +18,8 @@ text streaming in at hundreds of characters a second doesn't make scrolling stut
 - **Markdown:**
   - headings, paragraphs, emphasis, strikethrough and inline code;
   - nested lists, task lists and quotes;
-  - fenced and indented code blocks, colored by a highlighter your app provides, and tables;
+  - fenced and indented code blocks, colored by a highlighter your app provides, which wrap or scroll sideways, and
+    tables;
   - links, bare URLs and email addresses, and reference links;
   - images, drawn by a loader your app provides;
   - LaTeX math, drawn by a renderer your app provides;
@@ -228,6 +229,22 @@ TranscriptText(stream: stream)
 In UIKit, set `codeHighlighter` on `TranscriptTextView`. Colors are `TranscriptColor`s, so give them a light and a dark
 value when the theme has both.
 
+### Code that does not wrap
+
+By default, a line of code wraps at the width of the text column. Set `codeWraps` to false to keep each line of code
+on one line. A code block with a line that is wider than the column then scrolls sideways in the view:
+
+```swift
+var style = TranscriptStyle()
+style.codeWraps = false
+TranscriptText(stream: stream, style: style)
+```
+
+The block keeps the width of the column, and only its text moves. A sideways drag that starts in the block scrolls
+the block. A drag up or down still scrolls the scroll view around the text. After the drag, the block slows down as a
+scroll view does. Selection, links, copy and the selection handles follow the scrolled text. A block that grows while
+it streams keeps its offset. A new document starts with all blocks at their leading edge.
+
 ### Math
 
 LaTeX between `\(` and `\)` is inline math. A line that starts with `\[` or `$$` starts display math, which ends at
@@ -256,10 +273,22 @@ scaled down to fit. A paragraph that holds only display math is centered. While 
 nothing until it closes, so the text on screen only grows. Copy gives the LaTeX with its delimiters, and VoiceOver
 reads the LaTeX.
 
+Two style options change display math. `displayMathAlignment` puts the formula at the leading edge, the center (the
+default) or the trailing edge. With `displayMathScrolls`, a display formula that is wider than the column keeps its
+size and scrolls sideways, as code that does not wrap does. Its LaTeX, shown until the renderer draws it, is then
+shown whole instead of cut with "…". Inline formulas are always scaled down to fit.
+
+```swift
+var style = TranscriptStyle()
+style.displayMathAlignment = .leading
+style.displayMathScrolls = true
+```
+
 ### Selection
 
 The text is selectable by default. Turn selection off for text inside a view that reacts to taps, such as a card or a
-list row. A tap that is not on a link then goes to that view, and links still open:
+list row. A tap that is not on a link then goes to that view, and links still open. A block that scrolls sideways
+still takes the touches in it:
 
 ```swift
 TranscriptText(document)

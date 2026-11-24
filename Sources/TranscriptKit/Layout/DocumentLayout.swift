@@ -165,6 +165,27 @@ public final class DocumentLayout: @unchecked Sendable {
         a.containers.count > index && b.containers.count > index && a.containers[...index] == b.containers[...index]
     }
 
+    /// The quote bars drawn beside the block at `index`, one for each quote
+    /// it is in: on the left, or on the right of right-to-left text. A bar
+    /// runs on through the gap from the block above when that block is in
+    /// the same quote.
+    func quoteBars(at index: Int) -> [CGRect] {
+        let entry = entry(at: index)
+        let layout = entry.layout
+        let above = index > 0 ? self.entry(at: index - 1) : nil
+        var bars: [CGRect] = []
+        var x: CGFloat = 0
+        for (depth, container) in layout.block.containers.enumerated() {
+            if container == .quote {
+                var top = entry.y
+                if let above, Self.shareQuote(above.layout.block, layout.block, at: depth) { top = above.frame.maxY }
+                bars.append(CGRect(x: layout.isRightToLeft ? layout.width - x - 3 : x, y: top, width: 3, height: entry.frame.maxY - top))
+            }
+            x += style.width(of: container)
+        }
+        return bars
+    }
+
     // MARK: Offsets and geometry
 
     /// The last entry whose `key` is at most `value`, by binary search;
@@ -296,6 +317,8 @@ public final class DocumentLayout: @unchecked Sendable {
                 index += 1
                 continue
             }
+            // The marker and the quote bars, which reach into the gap, moved to the other side.
+            if new.layout.isRightToLeft != old.layout.isRightToLeft { return min(gapAbove(index, in: self), gapAbove(index, in: earlier)) }
             if new.layout.table != nil || old.layout.table != nil {
                 return new.y + Self.firstChangedY(in: new.layout, since: old.layout)
             }
@@ -471,19 +494,8 @@ public final class DocumentLayout: @unchecked Sendable {
             let layout = entry.layout
             let block = layout.block
 
-            // Quote bars, run on through the gap from the block above when it
-            // is in the same quote.
-            let above = index > 0 ? self.entry(at: index - 1) : nil
-            var x: CGFloat = 0
-            for (depth, container) in block.containers.enumerated() {
-                if container == .quote {
-                    var top = frame.minY
-                    if let above, Self.shareQuote(above.layout.block, block, at: depth) { top = above.frame.maxY }
-                    // Square ends, so that segments of one bar meet cleanly.
-                    fill(CGRect(x: x, y: top, width: 3, height: frame.maxY - top), radius: 0, color: accent)
-                }
-                x += style.width(of: container)
-            }
+            // Square ends, so that segments of one bar meet cleanly.
+            for bar in quoteBars(at: index) { fill(bar, radius: 0, color: accent) }
             if frame.minY - overhang > dirtyRect.maxY { break }
 
             let box = CGRect(x: layout.contentLeading, y: frame.minY, width: max(frame.width - layout.contentLeading, 0), height: frame.height)

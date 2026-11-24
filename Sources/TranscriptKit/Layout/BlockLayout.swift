@@ -22,6 +22,11 @@ final class BlockLayout: @unchecked Sendable {
 
         /// The top of what is drawn for the line, its tags' shapes included.
         var inkTop: CGFloat { frame.minY - (decorations?.inkAbove ?? 0) }
+
+        /// Whether Core Text drew some of the line's text right to left.
+        var hasRightToLeftRuns: Bool {
+            (CTLineGetGlyphRuns(ctLine) as! [CTRun]).contains { CTRunGetStatus($0).contains(.rightToLeft) }
+        }
     }
 
     /// What marks a list item, drawn in the gutter of its first line.
@@ -659,6 +664,11 @@ final class BlockLayout: @unchecked Sendable {
         guard let line = lines.first(where: { $0.frame.minY <= point.y && point.y < $0.frame.maxY
                                                && point.x >= $0.frame.minX && point.x < $0.frame.maxX }),
               !line.range.isEmpty else { return nil }
+        if line.hasRightToLeftRuns {
+            let x = point.x - line.frame.minX
+            guard let glyph = glyphs(of: line).first(where: { $0.minX <= x && x < $0.maxX }) else { return nil }
+            return line.range.contains(glyph.character) ? glyph.character : nil
+        }
         let localBoundary = CTLineGetStringIndexForPosition(line.ctLine, CGPoint(x: point.x - line.frame.minX, y: 0))
         guard localBoundary != kCFNotFound else { return nil }
         let boundary = localBoundary + line.indexBase
@@ -679,21 +689,120 @@ final class BlockLayout: @unchecked Sendable {
         return nil
     }
 
-    /// One rect per line touched by `range`. Left-to-right only for now.
+    /// A part of a selection on one line: the glyphs of one or more runs
+    /// next to each other that go the same way.
+    struct SelectionSegment: Equatable {
+        var rect: CGRect
+        var isRightToLeft: Bool
+        /// The first and the last of its selected characters, in block offsets.
+        var characters: ClosedRange<Int>
+        /// Whether it holds the first selected character, where the start
+        /// handle goes, and the last one, where the end handle goes.
+        var containsStart = false
+        var containsEnd = false
+    }
+
+    /// One rect per line touched by `range`, in lines that are all left to
+    /// right. A line with right-to-left text gets one rect for each stretch
+    /// of glyphs that go the same way, from left to right, so a selection in
+    /// text of mixed direction can have several rects on a line.
     func selectionRects(for range: Range<Int>) -> [CGRect] {
+        selectionSegments(for: range).map(\.rect)
+    }
+
+    func selectionSegments(for range: Range<Int>) -> [SelectionSegment] {
         guard !range.isEmpty else { return [] }
-        var rects: [CGRect] = []
+        var segments: [SelectionSegment] = []
         let first = lineIndex(forOffset: range.lowerBound)
         for index in first..<lines.count {
             let line = lines[index]
             if line.range.lowerBound >= range.upperBound { break }
-            let startX = x(forOffset: max(range.lowerBound, line.range.lowerBound), in: line)
             let continuesPastLine = range.upperBound >= line.range.upperBound && index < lines.count - 1
+            let lower = max(range.lowerBound, line.range.lowerBound)
+            if isRightToLeft || line.hasRightToLeftRuns {
+                segments += runSegments(of: line, selecting: range, continuesPastLine: continuesPastLine)
+                continue
+            }
+            let startX = x(forOffset: lower, in: line)
             let endX = continuesPastLine ? max(line.frame.maxX, startX) : x(forOffset: range.upperBound, in: line)
             if endX > startX || continuesPastLine {
-                rects.append(CGRect(x: startX, y: line.frame.minY, width: max(endX - startX, 4), height: line.frame.height))
+                let last = max(min(range.upperBound, line.range.upperBound) - 1, lower)
+                segments.append(SelectionSegment(
+                    rect: CGRect(x: startX, y: line.frame.minY, width: max(endX - startX, 4), height: line.frame.height),
+                    isRightToLeft: false, characters: lower...last))
             }
         }
-        return rects
+        if let start = segments.indices.min(by: { segments[$0].characters.lowerBound < segments[$1].characters.lowerBound }) {
+            segments[start].containsStart = true
+        }
+        if let last = segments.map(\.characters.upperBound).max(),
+           let end = segments.indices.last(where: { segments[$0].characters.upperBound == last }) {
+            segments[end].containsEnd = true
+        }
+        return segments
+    }
+
+    /// The selected glyphs of a line, as rects of the runs they are in.
+    /// Whitespace at the end of a line, which Core Text puts outside the
+    /// line box, is left out.
+    private func runSegments(of line: Line, selecting range: Range<Int>, continuesPastLine: Bool) -> [SelectionSegment] {
+        var segments: [SelectionSegment] = []
+        var current: (run: Int, minX: CGFloat, maxX: CGFloat, characters: ClosedRange<Int>, rightToLeft: Bool)?
+        func flush() {
+            guard let part = current else { return }
+            current = nil
+            let rect = CGRect(x: line.frame.minX + part.minX, y: line.frame.minY, width: part.maxX - part.minX, height: line.frame.height)
+            if let last = segments.last, last.isRightToLeft == part.rightToLeft, abs(last.rect.maxX - rect.minX) < 0.5 {
+                segments[segments.count - 1].rect = last.rect.union(rect)
+                segments[segments.count - 1].characters = min(last.characters.lowerBound, part.characters.lowerBound)
+                    ... max(last.characters.upperBound, part.characters.upperBound)
+            } else {
+                segments.append(SelectionSegment(rect: rect, isRightToLeft: part.rightToLeft, characters: part.characters))
+            }
+        }
+        for glyph in glyphs(of: line) where range.contains(glyph.character) && line.range.contains(glyph.character) {
+            let minX = max(glyph.minX, 0)
+            let maxX = min(glyph.maxX, line.frame.width)
+            guard maxX > minX else { continue }
+            if let part = current, part.run == glyph.run {
+                current = (part.run, min(part.minX, minX), max(part.maxX, maxX),
+                           min(part.characters.lowerBound, glyph.character)...max(part.characters.upperBound, glyph.character),
+                           part.rightToLeft)
+            } else {
+                flush()
+                current = (glyph.run, minX, maxX, glyph.character...glyph.character, glyph.rightToLeft)
+            }
+        }
+        flush()
+        if segments.isEmpty, continuesPastLine {
+            // Only a line break or spaces: a sliver at the caret shows that they are selected.
+            let lower = max(range.lowerBound, line.range.lowerBound)
+            let x = x(forOffset: lower, in: line)
+            segments.append(SelectionSegment(rect: CGRect(x: isRightToLeft ? x - 4 : x, y: line.frame.minY, width: 4, height: line.frame.height),
+                                             isRightToLeft: isRightToLeft, characters: lower...lower))
+        }
+        return segments
+    }
+
+    /// The glyphs of a line from left to right, with the character each
+    /// stands for (a block offset) and its left and right edges in the line.
+    private func glyphs(of line: Line) -> [(character: Int, minX: CGFloat, maxX: CGFloat, rightToLeft: Bool, run: Int)] {
+        var result: [(character: Int, minX: CGFloat, maxX: CGFloat, rightToLeft: Bool, run: Int)] = []
+        for (runIndex, run) in (CTLineGetGlyphRuns(line.ctLine) as! [CTRun]).enumerated() {
+            let count = CTRunGetGlyphCount(run)
+            guard count > 0 else { continue }
+            var indices = [CFIndex](repeating: 0, count: count)
+            var positions = [CGPoint](repeating: .zero, count: count)
+            var advances = [CGSize](repeating: .zero, count: count)
+            CTRunGetStringIndices(run, CFRange(location: 0, length: 0), &indices)
+            CTRunGetPositions(run, CFRange(location: 0, length: 0), &positions)
+            CTRunGetAdvances(run, CFRange(location: 0, length: 0), &advances)
+            let rightToLeft = CTRunGetStatus(run).contains(.rightToLeft)
+            for glyph in 0..<count {
+                result.append((indices[glyph] + line.indexBase, positions[glyph].x, positions[glyph].x + advances[glyph].width,
+                               rightToLeft, runIndex))
+            }
+        }
+        return result
     }
 }

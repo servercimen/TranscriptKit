@@ -255,21 +255,46 @@ public final class DocumentLayout: @unchecked Sendable {
             .first
     }
 
-    /// One rect per line covered by `range`, across as many blocks as it spans.
+    /// One rect per line covered by `range`, across as many blocks as it
+    /// spans. A line with right-to-left text can have several: one for each
+    /// stretch of glyphs that go the same way.
     public func selectionRects(for range: Range<Int>) -> [CGRect] {
+        selectionSegments(for: range).map(\.rect)
+    }
+
+    /// The parts of the selection of `range`, line by line, with their
+    /// direction. One holds the start of the range, and one the end.
+    func selectionSegments(for range: Range<Int>) -> [BlockLayout.SelectionSegment] {
         guard !range.isEmpty, let first = entryIndex(forOffset: range.lowerBound) else { return [] }
-        var rects: [CGRect] = []
+        var segments: [BlockLayout.SelectionSegment] = []
+        var start: Int?
+        var end: Int?
         for index in first..<entryCount {
             let entry = entry(at: index)
             if entry.start >= range.upperBound { break }
             let lower = max(range.lowerBound - entry.start, 0)
             let upper = min(range.upperBound - entry.start, entry.layout.length)
             guard lower < upper else { continue }
-            for rect in entry.layout.selectionRects(for: lower..<upper) {
-                rects.append(rect.offsetBy(dx: 0, dy: entry.y))
+            for var segment in entry.layout.selectionSegments(for: lower..<upper) {
+                segment.rect = segment.rect.offsetBy(dx: 0, dy: entry.y)
+                segment.characters = (segment.characters.lowerBound + entry.start)...(segment.characters.upperBound + entry.start)
+                if segment.containsStart, start == nil { start = segments.count }
+                if segment.containsEnd { end = segments.count }
+                segment.containsStart = false
+                segment.containsEnd = false
+                segments.append(segment)
             }
         }
-        return rects
+        if let start { segments[start].containsStart = true }
+        if let end { segments[end].containsEnd = true }
+        return segments
+    }
+
+    /// Whether the text at `offset` is in a right-to-left paragraph.
+    /// `backward` asks about the character before `offset`.
+    func isRightToLeft(at offset: Int, backward: Bool = false) -> Bool {
+        guard let index = entryIndex(forOffset: backward ? max(offset - 1, 0) : offset) else { return false }
+        return entry(at: index).layout.isRightToLeft
     }
 
     /// The top of the first line that differs between `earlier` and this

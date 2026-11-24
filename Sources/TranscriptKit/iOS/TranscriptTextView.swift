@@ -851,7 +851,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             for (key, play) in playing where layout.animatedTag(key).map({ !$0.isPlaced(like: play.tag) }) ?? true {
                 finishAnimation(key)
             }
-            for key in started { startAnimation(key, in: layout) }
+            startAnimations(started, in: layout)
             waiting.formUnion(newlyWaiting)
             startWaitingTagsSoon()
         } else {
@@ -1029,12 +1029,12 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             ready.append(key)
         }
         guard !ready.isEmpty else { return }
-        for key in ready.sorted(by: { ($0.block, $0.start) < ($1.block, $1.start) }) {
+        for key in ready {
             waiting.remove(key)
             requested.remove(key)
-            engine.playAnimations([key])
-            startAnimation(key, in: layout, wasWaiting: true)
         }
+        engine.playAnimations(ready)
+        startAnimations(ready, in: layout, wereWaiting: true)
     }
 
     /// Whether a tag's rows count as on screen: all of them, or for a tag
@@ -1064,18 +1064,28 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         }
     }
 
-    /// Plays `key`'s animation over the text, which from now on leaves it out.
+    /// Plays the animations of `keys`, which start together, over the text,
+    /// which from now on leaves them out.
     ///
-    /// - Parameter wasWaiting: it waited for its timing, and the tail, drawn
-    ///   when it was waiting, still shows its glyphs.
-    private func startAnimation(_ key: TagKey, in layout: DocumentLayout, wasWaiting: Bool = false) {
-        if playing[key] != nil { finishAnimation(key) }
-        guard let tag = layout.animatedTag(key) else {
-            engine.settleAnimations([key])
-            return
+    /// - Parameter wereWaiting: they waited for their timing, and the tail,
+    ///   drawn when they were waiting, still shows their glyphs.
+    private func startAnimations(_ keys: [TagKey], in layout: DocumentLayout, wereWaiting: Bool = false) {
+        guard !keys.isEmpty else { return }
+        let batch = layout.tagsStartingTogether(keys)
+        if batch.count < keys.count {
+            let found = Set(batch.map(\.tag.key))
+            engine.settleAnimations(keys.filter { !found.contains($0) })
         }
+        for (tag, group) in batch {
+            startAnimation(tag, in: group, wasWaiting: wereWaiting)
+        }
+    }
+
+    private func startAnimation(_ tag: AnimatedTag, in group: TranscriptAnimationGroup, wasWaiting: Bool) {
+        let key = tag.key
+        if playing[key] != nil { finishAnimation(key) }
         if wasWaiting, tailTop < band(of: tag).upperBound { handTailToTiles() }
-        let animation = tag.animation.animation(for: tag.fragments)
+        let animation = tag.animation.animation(for: tag.fragments, in: group)
         let colors = resolvedColors()
         let scale = traitCollection.displayScale
         let sprites = TagAnimationPlayer.sprites(for: tag, animation: animation,

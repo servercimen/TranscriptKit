@@ -62,12 +62,30 @@ extension DocumentLayout {
         return found
     }
 
+    /// The tags of `keys` that are in this layout and have closed, in text
+    /// order, each with its place among them: for tags whose animations
+    /// start together.
+    func tagsStartingTogether(_ keys: some Collection<TagKey>) -> [(tag: AnimatedTag, group: TranscriptAnimationGroup)] {
+        var found: [(tag: AnimatedTag, block: Int)] = []
+        for key in keys {
+            guard let index = entryIndex(ofBlock: key.block), let tag = animatedTag(key) else { continue }
+            found.append((tag, index))
+        }
+        found.sort { ($0.block, $0.tag.key.start, $0.tag.key.name) < ($1.block, $1.tag.key.start, $1.tag.key.name) }
+        return found.enumerated().map { ($1.tag, TranscriptAnimationGroup(index: $0, count: found.count)) }
+    }
+
+    /// Where the block with id `id` is, looked for from the end.
+    private func entryIndex(ofBlock id: String) -> Int? {
+        var index = entryCount - 1
+        while index >= 0, entry(at: index).layout.block.id != id { index -= 1 }
+        return index >= 0 ? index : nil
+    }
+
     /// The tag `key` names, if it is in this layout and has closed.
     func animatedTag(_ key: TagKey) -> AnimatedTag? {
         // Animated tags are almost always in the last blocks.
-        var index = entryCount - 1
-        while index >= 0, entry(at: index).layout.block.id != key.block { index -= 1 }
-        guard index >= 0 else { return nil }
+        guard let index = entryIndex(ofBlock: key.block) else { return nil }
         let entry = entry(at: index)
         var parts: [(fragment: AnimatedFragment, origin: CGPoint)] = []
         var animation: TranscriptDecoration.Animation?

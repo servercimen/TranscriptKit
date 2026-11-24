@@ -40,6 +40,10 @@ import Foundation
 /// - A recipe is a value: two that are equal must make the same animation.
 /// - `animation(for:)` runs on the main thread when the animation starts.
 ///   Keep it quick: a few curves per glyph is fine.
+/// - Several tags can start at the same moment, for example when the
+///   stream finishes or when they come on screen. To stagger them,
+///   implement `animation(for:in:)` too, and delay each tag by its
+///   `TranscriptAnimationGroup.index`.
 /// - Glyphs and paths are drawn above the view's text, not cut off at its
 ///   edges, so they may move further than shapes may reach
 ///   (`TranscriptPath.maximumOverhang`); keep them near the text, or they
@@ -48,6 +52,44 @@ public protocol TranscriptAnimationRecipe: Hashable, Sendable {
     /// The animation for one tag, from its fragments: one per line its text
     /// is on, in order, each with its glyphs (`TranscriptFragment.glyphs`).
     func animation(for fragments: [TranscriptFragment]) -> TranscriptAnimation
+
+    /// The animation for one tag of `group`, the tags whose animations start
+    /// at the same moment in the same view. By default, `animation(for:)`.
+    func animation(for fragments: [TranscriptFragment], in group: TranscriptAnimationGroup) -> TranscriptAnimation
+}
+
+extension TranscriptAnimationRecipe {
+    public func animation(for fragments: [TranscriptFragment], in group: TranscriptAnimationGroup) -> TranscriptAnimation {
+        animation(for: fragments)
+    }
+}
+
+/// The tags whose animations start at the same moment in one view, and the
+/// place of one of them, for a `TranscriptAnimationRecipe` that staggers them.
+///
+/// ```swift
+/// func animation(for fragments: [TranscriptFragment], in group: TranscriptAnimationGroup) -> TranscriptAnimation {
+///     var staggered = animation(for: fragments)
+///     let delay = Double(group.index) * 0.15
+///     for index in staggered.glyphs.indices {
+///         staggered.glyphs[index].offsetY = staggered.glyphs[index].offsetY?.delayed(by: delay)
+///     }
+///     return staggered
+/// }
+/// ```
+public struct TranscriptAnimationGroup: Sendable, Hashable {
+    /// The tag's place among them, in text order, from 0.
+    public var index: Int
+    /// How many tags start together, 1 or more.
+    public var count: Int
+
+    public init(index: Int, count: Int) {
+        self.index = max(index, 0)
+        self.count = max(count, self.index + 1)
+    }
+
+    /// A tag that starts alone.
+    public static let single = TranscriptAnimationGroup(index: 0, count: 1)
 }
 
 /// What a `TranscriptAnimationRecipe` plays: how each glyph moves and which
@@ -323,8 +365,8 @@ extension TranscriptDecoration {
             AnyHashable(recipe).hash(into: &hasher)
         }
 
-        func animation(for fragments: [TranscriptFragment]) -> TranscriptAnimation {
-            recipe.animation(for: fragments)
+        func animation(for fragments: [TranscriptFragment], in group: TranscriptAnimationGroup = .single) -> TranscriptAnimation {
+            recipe.animation(for: fragments, in: group)
         }
     }
 }

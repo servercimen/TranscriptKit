@@ -359,6 +359,49 @@ func textAfterATagKeepsItsAnimationGoing(next: String) throws {
     #expect(before.isPlaced(like: after))
 }
 
+// MARK: Tags that start together
+
+/// Delays each tag by its place among the tags that start with it.
+private struct Stagger: TranscriptAnimationRecipe {
+    func animation(for fragments: [TranscriptFragment]) -> TranscriptAnimation {
+        animation(for: fragments, in: .single)
+    }
+
+    func animation(for fragments: [TranscriptFragment], in group: TranscriptAnimationGroup) -> TranscriptAnimation {
+        var animation = TranscriptAnimation()
+        let start = Double(group.index) * 0.1
+        for (line, fragment) in fragments.enumerated() {
+            for index in fragment.glyphs.indices {
+                animation.glyphs.append(.init(fragment: line, glyph: index, offsetY: .ramp(from: -2, to: 0, start: start, duration: 0.2)))
+            }
+        }
+        return animation
+    }
+}
+
+@Test func tagsThatStartTogetherAreNumberedInTextOrder() throws {
+    let staggered = [TranscriptTag("lift", TranscriptDecoration(animation: .custom(Stagger())))]
+    // Twelve paragraphs: block ids "s-2" and "s-10" sort the other way as text.
+    let paragraphs = (0..<12).map { $0 == 2 || $0 == 10 ? "Para <lift>\($0)</lift> here" : "Para \($0)" }
+    let layout = DocumentLayout(document: MarkdownStreamParser.document(from: paragraphs.joined(separator: "\n\n"), idPrefix: "s",
+                                                                       tags: staggered), width: 300)
+    let late = TagKey(block: "s-10", start: 5, name: "lift")
+    let early = TagKey(block: "s-2", start: 5, name: "lift")
+    let missing = TagKey(block: "s-3", start: 0, name: "lift")
+    let batch = layout.tagsStartingTogether([late, missing, early])
+    #expect(batch.map(\.tag.key) == [early, late])
+    #expect(batch.map(\.group) == [TranscriptAnimationGroup(index: 0, count: 2), TranscriptAnimationGroup(index: 1, count: 2)])
+    let starts = batch.map { item in
+        item.tag.animation.animation(for: item.tag.fragments, in: item.group).glyphs.compactMap { $0.offsetY?.startTime }.min()
+    }
+    #expect(starts == [0, 0.1])
+
+    // A recipe that ignores the group plays the same for every tag.
+    let hop = try #require(DocumentLayout(document: document(sample), width: 260).animatedTag(TagKey(block: "a-0", start: 21, name: "hop")))
+    #expect(hop.animation.animation(for: hop.fragments, in: TranscriptAnimationGroup(index: 3, count: 4)).duration
+        == hop.animation.animation(for: hop.fragments).duration)
+}
+
 // MARK: Timing
 
 @Test func aStreamSaysWhenItHasFinished() throws {

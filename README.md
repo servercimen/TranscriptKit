@@ -194,6 +194,21 @@ In UIKit, set `tagAnimationTiming` on `TranscriptTextView` and call `playTagAnim
 waiting when it can no longer play (Reduce Motion turned on, animations turned off, the view leaving its window, a
 new document) is shown as it ends up.
 
+Tags that wait often start at the same moment, for example when the stream finishes. To stagger them, also
+implement `animation(for:in:)` in the recipe. The group gives the tag's place among the tags that start together,
+in text order, and how many they are:
+
+```swift
+func animation(for fragments: [TranscriptFragment], in group: TranscriptAnimationGroup) -> TranscriptAnimation {
+    var staggered = animation(for: fragments)
+    let delay = Double(group.index) * 0.15
+    for index in staggered.glyphs.indices {
+        staggered.glyphs[index].offsetY = staggered.glyphs[index].offsetY?.delayed(by: delay)
+    }
+    return staggered
+}
+```
+
 ### Fading in text
 
 Text that streams in can fade in. Each update's new text fades in on its own, so the fade follows the text as it

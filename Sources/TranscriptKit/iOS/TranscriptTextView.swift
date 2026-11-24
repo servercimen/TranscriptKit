@@ -866,6 +866,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             inputDelegate?.textDidChange(self)
             refreshSelectionDisplay()
         }
+        postAccessibilityLayoutChangeIfNeeded(for: layout, isAppend: isAppend)
     }
 
     // MARK: Fades
@@ -1214,7 +1215,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     // MARK: Accessibility
 
-    /// The elements made for the last layout VoiceOver asked about.
+    /// The elements, made when an assistive technology first asks for them.
     var accessibilityCache: AccessibilityCache?
 
     /// A container: VoiceOver reads its blocks (see `accessibilityElements(for:)`).

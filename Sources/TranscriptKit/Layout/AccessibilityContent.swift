@@ -9,6 +9,10 @@ struct AccessibilityItem: Equatable {
         let url: URL
     }
 
+    /// The block's id, made unique in the document: an element keeps it
+    /// from one layout to the next, so VoiceOver focus stays on the block
+    /// while text streams in.
+    let key: String
     let frame: CGRect
     /// What VoiceOver says: the list marker, then the text.
     let label: String
@@ -26,13 +30,17 @@ extension DocumentLayout {
     func accessibilityItems() -> [AccessibilityItem] {
         var items: [AccessibilityItem] = []
         let definitions = document.linkDefinitions
+        var uses: [String: Int] = [:]
         for index in 0..<entryCount {
             let entry = entry(at: index)
             let block = entry.layout.block
             let all = 0..<block.utf16Count
             let text = AccessibilityText.readable(block, in: all)
             if text.isEmpty, block.kind != .rule { continue }
-            items.append(AccessibilityItem(frame: entry.frame, label: AccessibilityText.spoken(text, of: block),
+            let use = uses[block.id, default: 0]
+            uses[block.id] = use + 1
+            items.append(AccessibilityItem(key: use == 0 ? block.id : "\(block.id)#\(use)", frame: entry.frame,
+                                           label: AccessibilityText.spoken(text, of: block),
                                            isHeading: block.kind.isHeading,
                                            links: AccessibilityText.links(of: block, in: all, definitions: definitions)))
         }
@@ -47,9 +55,24 @@ extension DocumentLayout {
             label += "\n" + AccessibilityText.spoken(text, of: block)
             links += AccessibilityText.links(of: block, in: all, definitions: definitions)
         }
-        items.append(AccessibilityItem(frame: last.frame, label: label, isHeading: last.isHeading, links: links))
+        items.append(AccessibilityItem(key: last.key, frame: last.frame, label: label, isHeading: last.isHeading, links: links))
         return items
     }
+
+    /// What decides which items the layout has, found without making them.
+    /// A layout that only adds text to the end of another has the same
+    /// items as that one, with longer text, if their shapes are equal.
+    var accessibilityShape: AccessibilityShape {
+        guard entryCount > 0 else { return AccessibilityShape(entries: 0, lastHasNoItem: false) }
+        let block = entry(at: entryCount - 1).layout.block
+        return AccessibilityShape(entries: entryCount, lastHasNoItem: block.text.isEmpty && block.kind != .rule)
+    }
+}
+
+struct AccessibilityShape: Equatable {
+    let entries: Int
+    /// The last block has no text yet, so it has no item.
+    let lastHasNoItem: Bool
 }
 
 /// The words that assistive technologies get for a block.

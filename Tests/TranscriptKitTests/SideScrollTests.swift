@@ -259,7 +259,7 @@ private func drawn(_ layout: DocumentLayout, scroll: SideScroll, scale: CGFloat 
     context.scaleBy(x: scale, y: -scale)
     layout.draw(in: context, dirtyRect: CGRect(x: 0, y: 0, width: layout.width, height: layout.height),
                 text: CGColor(gray: 0, alpha: 1), codeBackground: CGColor(gray: 0.9, alpha: 1), accent: CGColor(gray: 0.6, alpha: 1),
-                dark: false, hiding: .none, scroll: scroll)
+                dark: false, highContrast: false, hiding: .none, scroll: scroll)
     return (Array(UnsafeRawBufferPointer(start: context.data!, count: width * height * 4)), width)
 }
 
@@ -407,7 +407,7 @@ private func drawn(_ layout: DocumentLayout, scroll: SideScroll, scale: CGFloat 
         context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
         context.clip(to: CGRect(x: 0, y: 0, width: 300, height: layout.height))
         DocumentLayout.drawGlyphs(of: ctLine, at: origin, hidden: [], visible: visible, in: context,
-                                  text: CGColor(gray: 0, alpha: 1), dark: false)
+                                  text: CGColor(gray: 0, alpha: 1), dark: false, highContrast: false)
         return Array(UnsafeRawBufferPointer(start: context.data!, count: 600 * Int(layout.height * 2) * 4))
     }
     let all = pixels(visible: nil)

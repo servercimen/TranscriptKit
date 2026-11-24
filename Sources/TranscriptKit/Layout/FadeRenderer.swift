@@ -73,7 +73,8 @@ final class FadeRenderer {
     ///   Their pieces move with it, cut to the block's box.
     func render(_ layout: DocumentLayout, from: Int, fades: [Fade], colors: TailRenderer.Colors, scale: CGFloat,
                 playing: Set<TagKey>, scroll: SideScroll = .none) -> FadeFrame? {
-        if scale != self.scale || self.colors.map({ $0.text != colors.text || $0.dark != colors.dark }) ?? true {
+        let colorsChanged = self.colors.map { $0.text != colors.text || $0.dark != colors.dark || $0.highContrast != colors.highContrast }
+        if scale != self.scale || colorsChanged ?? true {
             drawn.removeAll()
             self.colors = colors
             self.scale = scale
@@ -164,7 +165,7 @@ final class FadeRenderer {
         context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
         DocumentLayout.drawGlyphs(of: line.ctLine, at: origin,
                                   hidden: hidden.map { ($0.lowerBound - line.indexBase)..<($0.upperBound - line.indexBase) },
-                                  in: context, text: colors.text, dark: colors.dark)
+                                  in: context, text: colors.text, dark: colors.dark, highContrast: colors.highContrast)
         return context.makeImage()
     }
 

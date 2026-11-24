@@ -94,11 +94,25 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     public var style = TranscriptStyle() {
         didSet {
             guard style != oldValue else { return }
-            relayoutNow()
-            updateTailStyle()
-            updateFadeDuration()
+            styleChanged()
             updateSidePan()
         }
+    }
+
+    /// `style` as layout uses it, with the Bold Text setting of the trait
+    /// collection.
+    private var layoutStyle: TranscriptStyle {
+        style.withBoldText(traitCollection.legibilityWeight == .bold)
+    }
+
+    private func styleChanged() {
+        emptyLayout = DocumentLayout(document: TranscriptDocument(), width: 1, style: layoutStyle)
+        if bounds.width == 0, unsizedWidth > 0 {
+            engine.layOutUntilPlaced(width: unsizedWidth, style: layoutStyle)
+        }
+        relayoutNow()
+        updateTailStyle()
+        updateFadeDuration()
     }
 
     /// How long text takes to fade in as it streams in, or nil to show it at
@@ -152,11 +166,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// Fetch only from sources you trust.
     public var imageLoader: (@Sendable (TranscriptImage) async -> CGImage?)? {
         didSet {
-            engine.images.setLoader(imageLoader) { [weak self] in
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
-                }
-            }
+            engine.images.setLoader(imageLoader, onChange: imagesChanged)
             relayoutNow()
         }
     }
@@ -168,11 +178,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// arrive. Not set by default.
     public var codeHighlighter: TranscriptCodeHighlighter? {
         didSet {
-            engine.images.setOnChange { [weak self] in
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
-                }
-            }
+            engine.images.setOnChange(imagesChanged)
             engine.images.setHighlighter(codeHighlighter)
             relayoutNow()
         }
@@ -180,23 +186,80 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     /// Draws LaTeX formulas: `\( … \)` inline, and `\[ … \]` and `$$ … $$`
     /// as display math. It is called off the main thread, once for each formula
-    /// and font size. Only the alpha of the image it returns is used: the
-    /// formula is drawn in the text color. A formula shows its LaTeX as
-    /// written until it is drawn, or if the renderer returns nil. Not set by
-    /// default.
+    /// and font size in `mathCache`. Only the alpha of the image it returns is
+    /// used: the formula is drawn in the text color. Not set by default.
+    ///
+    /// Until a formula is drawn, it is empty space of about its size. While
+    /// the LaTeX of a formula changes, as when an app closes an open formula
+    /// in each new snapshot of the text, the formula keeps its last image
+    /// until the new one is drawn, and only its newest LaTeX waits to be
+    /// drawn. If the renderer returns nil, the formula shows its LaTeX as
+    /// written once that LaTeX stays the same for a second: LaTeX that is
+    /// not complete yet can fail while it streams in.
+    ///
+    /// Views share `TranscriptMathCache.shared` by default, and a formula
+    /// that one view drew shows in the others without a call to their
+    /// renderers. Setting this property does not empty the cache. Give views
+    /// whose renderers draw a formula differently a `mathCache` each, and
+    /// call `removeAll()` on the cache when the renderer changes how it draws.
     public var mathRenderer: TranscriptMathRenderer? {
         didSet {
-            engine.images.setOnChange { [weak self] in
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
-                }
-            }
+            engine.images.setOnChange(imagesChanged)
             engine.images.setMathRenderer(mathRenderer)
             relayoutNow()
         }
     }
 
+    /// Keeps the formulas that `mathRenderer` draws, so that views that share
+    /// a cache draw each formula once. `TranscriptMathCache.shared` by default.
+    /// Give views whose renderers draw a formula differently a cache each.
+    public var mathCache: TranscriptMathCache = .shared {
+        didSet {
+            guard mathCache !== oldValue else { return }
+            engine.images.setMathCache(mathCache)
+            relayoutNow()
+        }
+    }
+
+    /// Waits until the view shows its final content: no layout, stream
+    /// parse, image load, formula or code colors are pending, the last
+    /// layout is on screen, and its tiles are drawn. Use it before a
+    /// snapshot, or in a test.
+    ///
+    /// Work that keeps arriving, such as a stream that has not finished,
+    /// does not hold it back: it returns at the first moment when nothing
+    /// is pending. A cancelled task returns at once. An image that the
+    /// loader returns nil for counts as done. A formula that the renderer
+    /// returns nil for counts as done when it shows its LaTeX as written,
+    /// about a second later. A load, a formula or a highlight that never ends
+    /// holds it back: use a timeout, or cancel the task. Fades and tag
+    /// animations that play are not waited for: to compare pixels, turn off
+    /// `textFadeInDuration` and `animatesTags`.
+    ///
+    /// Give the view its size before the call. A view with no width lays
+    /// out nothing, so it settles at once with no content.
+    public func contentSettled() async {
+        await settledWaiters.wait()
+    }
+
     private let engine = LayoutEngine()
+    private lazy var settledWaiters = makeSettledWaiters()
+
+    private func makeSettledWaiters() -> ContentSettledWaiters {
+        let waiters = ContentSettledWaiters(work: engine.work)
+        waiters.stream = { [weak self] in self?.stream }
+        waiters.layOut = { [weak self] in self?.layoutIfNeeded() }
+        waiters.draw = { [weak self] in self?.drawTilesNow() }
+        return waiters
+    }
+
+    /// Lays out again when pictures, formulas or code colors arrive. The
+    /// image store calls it on main.
+    private var imagesChanged: @Sendable () -> Void {
+        { [weak self] in
+            MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
+        }
+    }
 
     /// Holds the tiles, and the tail layer above them, below the system's
     /// selection views.
@@ -220,7 +283,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// What is on screen. Drawing, hit testing and every `UITextInput`
     /// answer come from this layout and its document.
     private var installed: DocumentLayout?
-    private lazy var emptyLayout = DocumentLayout(document: TranscriptDocument(), width: 1, style: style)
+    private lazy var emptyLayout = DocumentLayout(document: TranscriptDocument(), width: 1, style: layoutStyle)
     private var currentLayout: DocumentLayout { installed ?? emptyLayout }
     /// The document on screen, which can be a little behind `document`.
     private var shownDocument: TranscriptDocument { currentLayout.document }
@@ -371,7 +434,8 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         linkTap.delegate = self
         addGestureRecognizer(linkTap)
         self.linkTap = linkTap
-        registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitDisplayScale.self]) { (view: TranscriptTextView, _) in
+        let colorTraits: [UITrait] = [UITraitUserInterfaceStyle.self, UITraitAccessibilityContrast.self, UITraitDisplayScale.self]
+        registerForTraitChanges(colorTraits) { (view: TranscriptTextView, _) in
             // The tiles take over everything, in the new colours; the tail
             // starts again, in them too, with the next append. Animations,
             // drawn in the old ones, end.
@@ -380,6 +444,17 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             view.updateTailStyle()
             view.handTailToTiles()
             view.tiles.values.forEach { $0.setNeedsDisplay() }
+        }
+        registerForTraitChanges([UITraitLegibilityWeight.self]) { (view: TranscriptTextView, previous: UITraitCollection) in
+            guard view.style.withBoldText(previous.legibilityWeight == .bold) != view.layoutStyle else { return }
+            view.styleChanged()
+            // Later: the trait can change during a SwiftUI update, which must
+            // not change SwiftUI state.
+            if view.bounds.width == 0, view.unsizedWidth > 0 {
+                DispatchQueue.main.async { [weak view] in
+                    MainActor.assumeIsolated { view?.onHeightChangeWhileUnsized?() }
+                }
+            }
         }
     }
 
@@ -821,6 +896,14 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         trimSpareTiles()
     }
 
+    /// Draws now the tiles that wait for the next commit. They take back
+    /// the tail first, so that they hold all of the text.
+    private func drawTilesNow() {
+        handTailToTiles()
+        if canvasCheckScheduled { updateCanvas() }
+        for tile in tiles.values { tile.layer.displayIfNeeded() }
+    }
+
     private func makeTile() -> CanvasView {
         let tile = CanvasView()
         tile.owner = self
@@ -839,17 +922,21 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         }
         let colors = resolvedColors()
         currentLayout.draw(in: context, dirtyRect: rect, text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent,
-                           dark: colors.dark, hiding: hiding, scroll: sideScroll)
+                           dark: colors.dark, highContrast: colors.highContrast, hiding: hiding, scroll: sideScroll)
     }
 
     private func resolvedColors() -> TailRenderer.Colors {
         let dark = traitCollection.userInterfaceStyle == .dark
+        let highContrast = traitCollection.accessibilityContrast == .high
         return TailRenderer.Colors(
-            text: style.textColor?.cgColor(dark: dark) ?? UIColor.label.resolvedColor(with: traitCollection).cgColor,
-            codeBackground: style.codeBackgroundColor?.cgColor(dark: dark)
+            text: style.textColor?.cgColor(dark: dark, highContrast: highContrast)
+                ?? UIColor.label.resolvedColor(with: traitCollection).cgColor,
+            codeBackground: style.codeBackgroundColor?.cgColor(dark: dark, highContrast: highContrast)
                 ?? UIColor.secondarySystemFill.resolvedColor(with: traitCollection).cgColor,
-            accent: style.accentColor?.cgColor(dark: dark) ?? UIColor.tertiaryLabel.resolvedColor(with: traitCollection).cgColor,
-            dark: dark
+            accent: style.accentColor?.cgColor(dark: dark, highContrast: highContrast)
+                ?? UIColor.tertiaryLabel.resolvedColor(with: traitCollection).cgColor,
+            dark: dark,
+            highContrast: highContrast
         )
     }
 
@@ -957,14 +1044,14 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             }
         }
         if bounds.width == 0, unsizedWidth > 0, output.source == source, output.layout.width == unsizedWidth,
-           output.layout.style == style {
+           output.layout.style == layoutStyle {
             // Not placed yet: nothing to show, but SwiftUI must hear that the height changed.
             engine.settleAnimations(output.started + output.waiting)
             if ceil(output.layout.height) != unsizedHeight { onHeightChangeWhileUnsized?() }
             return
         }
-        guard output.source == source, output.layout.width == bounds.width, output.layout.style == style else {
-            if output.source < source, output.layout.width == bounds.width, output.layout.style == style {
+        guard output.source == source, output.layout.width == bounds.width, output.layout.style == layoutStyle else {
+            if output.source < source, output.layout.width == bounds.width, output.layout.style == layoutStyle {
                 // From the source just replaced: kept in case the next
                 // layout, from the new one, builds on it.
                 skippedOutput = output
@@ -1004,7 +1091,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     ///   block's colors.
     private func relayoutNow(keepingFades: Bool = false) {
         guard bounds.width > 0,
-              let result = engine.relayout(width: bounds.width, style: style, keepingFades: keepingFades) else { return }
+              let result = engine.relayout(width: bounds.width, style: layoutStyle, keepingFades: keepingFades) else { return }
         skippedOutput = nil
         guard result.source == source else { return }
         install(result.layout, changedTop: nil, tail: nil, keptFadingFrom: result.fadingFrom, isFinished: result.isFinished)
@@ -1349,7 +1436,8 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         let colors = resolvedColors()
         let scale = traitCollection.displayScale
         let sprites = TagAnimationPlayer.sprites(for: tag, animation: animation,
-                                                 appearance: .init(text: colors.text, dark: colors.dark, scale: scale))
+                                                 appearance: .init(text: colors.text, dark: colors.dark,
+                                                                   highContrast: colors.highContrast, scale: scale))
         let start = CACurrentMediaTime()
         // No transaction of its own: the layers go to the screen in the same
         // commit as the tiles and the tail that stop drawing the tag. (An
@@ -1443,7 +1531,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         animationLayer.frame = canvas.bounds
         fadeLayer.frame = canvas.bounds
         if bounds.width > 0 { unsizedWidth = 0 }
-        if bounds.width > 0, installed?.width != bounds.width {
+        if bounds.width > 0, installed?.width != bounds.width || installed?.style != layoutStyle {
             relayoutNow()
             refreshSelectionDisplay()
         }
@@ -1462,15 +1550,15 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     public override func sizeThatFits(_ size: CGSize) -> CGSize {
         let width = size.width.isFinite && size.width > 0 ? size.width : max(bounds.width, 1)
-        if let installed, installed.width == width {
+        if let installed, installed.width == width, installed.style == layoutStyle {
             return CGSize(width: width, height: ceil(installed.height))
         }
         // Kept by the engine, so the relayout when the view takes this width is free.
-        let height = ceil(engine.measure(width: width, style: style))
+        let height = ceil(engine.measure(width: width, style: layoutStyle))
         if bounds.width == 0, onHeightChangeWhileUnsized != nil, size.width.isFinite, size.width > 0 {
             unsizedWidth = width
             unsizedHeight = height
-            engine.layOutUntilPlaced(width: width, style: style)
+            engine.layOutUntilPlaced(width: width, style: layoutStyle)
         }
         return CGSize(width: width, height: height)
     }

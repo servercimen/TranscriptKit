@@ -67,6 +67,7 @@ public final class DocumentLayout: @unchecked Sendable {
         self.document = document
         let imageRevision = images?.revision ?? 0
         self.imageRevision = imageRevision
+        images?.keepFormulas(of: document)
 
         // A line-limited layout may hold a block cut short, so it is not reused.
         let previous = style.lineLimit == nil ? previous.flatMap { $0.width == width && $0.style == style ? $0 : nil } : nil
@@ -413,11 +414,14 @@ public final class DocumentLayout: @unchecked Sendable {
     // MARK: Drawing
 
     /// Draws the blocks intersecting `dirtyRect` into a top-left-origin context.
-    /// `accent` colors quote bars and rules. `dark` picks the dark values of
-    /// custom tags' colors.
+    /// `accent` colors quote bars and rules, and `codeBackground` code blocks
+    /// and table headers, unless the style sets their own colors. `dark`
+    /// picks the dark values of the style's colors and custom tags' colors,
+    /// and `highContrast` their Increase Contrast values.
     public func draw(in context: CGContext, dirtyRect: CGRect, text: CGColor, codeBackground: CGColor, accent: CGColor,
-                     dark: Bool = false) {
-        draw(in: context, dirtyRect: dirtyRect, text: text, codeBackground: codeBackground, accent: accent, dark: dark, hiding: .none)
+                     dark: Bool = false, highContrast: Bool = false) {
+        draw(in: context, dirtyRect: dirtyRect, text: text, codeBackground: codeBackground, accent: accent, dark: dark,
+             highContrast: highContrast, hiding: .none)
     }
 
     /// - Parameter hiding: animated tags whose animation is playing, drawn
@@ -426,44 +430,48 @@ public final class DocumentLayout: @unchecked Sendable {
     /// - Parameter scroll: how far blocks that scroll sideways are scrolled.
     ///   Their lines are drawn moved left by it, inside their box.
     func draw(in context: CGContext, dirtyRect: CGRect, text: CGColor, codeBackground: CGColor, accent: CGColor,
-              dark: Bool, hiding: TagHiding, scroll: SideScroll = .none) {
+              dark: Bool, highContrast: Bool, hiding: TagHiding, scroll: SideScroll = .none) {
         context.saveGState()
         defer { context.restoreGState() }
         // Core Text draws y-up; flip glyphs so they are upright in a y-down context.
         context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
 
-        // Custom tags' highlights, behind the whole line's glyphs. Runs next
-        // to each other with the same color share one highlight, and it stays
-        // within the line, so drawing a band of lines never cuts one off.
+        // Custom tags' highlights and inline code fills, behind the whole
+        // line's glyphs. Runs next to each other with the same fill share one
+        // highlight, and it stays within the line, so drawing a band of lines
+        // never cuts one off.
         func drawHighlights(_ runs: [CTRun], at origin: CGPoint) {
-            var current: (rect: CGRect, color: TranscriptColor)?
+            var current: (rect: CGRect, color: TranscriptColor, radius: CGFloat)?
             func flush() {
                 guard let highlight = current else { return }
                 current = nil
                 context.saveGState()
-                context.setFillColor(highlight.color.cgColor(dark: dark))
+                context.setFillColor(highlight.color.cgColor(dark: dark, highContrast: highContrast))
                 let rect = highlight.rect.insetBy(dx: -1.5, dy: 0)
-                context.addPath(CGPath(roundedRect: rect, cornerWidth: 3, cornerHeight: 3, transform: nil))
+                let radius = min(max(highlight.radius, 0), rect.width / 2, rect.height / 2)
+                context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
                 context.fillPath()
                 context.restoreGState()
             }
             for run in runs {
                 let attributes = CTRunGetAttributes(run) as NSDictionary
-                guard let color = attributes[Self.backgroundKey] as? TranscriptColor, attributes[Self.imageKey] == nil,
+                let tag = attributes[Self.backgroundKey] as? TranscriptColor
+                guard let color = tag ?? attributes[Self.inlineCodeBackgroundKey] as? TranscriptColor, attributes[Self.imageKey] == nil,
                       let font = attributes[kCTFontAttributeName].map({ $0 as! CTFont }) else {
                     flush()
                     continue
                 }
+                let radius: CGFloat = tag != nil ? 3 : style.inlineCodeCornerRadius
                 var position = CGPoint.zero
                 CTRunGetPositions(run, CFRange(location: 0, length: 1), &position)
                 let width = CGFloat(CTRunGetTypographicBounds(run, CFRange(location: 0, length: 0), nil, nil, nil))
                 let ascent = CTFontGetAscent(font)
                 let rect = CGRect(x: origin.x + position.x, y: origin.y - ascent, width: width, height: ascent + CTFontGetDescent(font))
-                if let highlight = current, highlight.color == color, abs(highlight.rect.maxX - rect.minX) < 0.5 {
-                    current = (highlight.rect.union(rect), color)
+                if let highlight = current, highlight.color == color, highlight.radius == radius, abs(highlight.rect.maxX - rect.minX) < 0.5 {
+                    current = (highlight.rect.union(rect), color, radius)
                 } else {
                     flush()
-                    current = (rect, color)
+                    current = (rect, color, radius)
                 }
             }
             flush()
@@ -476,7 +484,8 @@ public final class DocumentLayout: @unchecked Sendable {
         // indexes) are left out.
         func drawLine(_ line: CTLine, at origin: CGPoint, hidden: [Range<Int>] = [], visible: ClosedRange<CGFloat>? = nil) {
             drawHighlights(CTLineGetGlyphRuns(line) as! [CTRun], at: origin)
-            Self.drawGlyphs(of: line, at: origin, hidden: hidden, visible: visible, in: context, text: text, dark: dark)
+            Self.drawGlyphs(of: line, at: origin, hidden: hidden, visible: visible, in: context, text: text, dark: dark,
+                            highContrast: highContrast)
         }
 
         func fill(_ rect: CGRect, radius: CGFloat, color: CGColor) {
@@ -505,7 +514,7 @@ public final class DocumentLayout: @unchecked Sendable {
                 context.interpolationQuality = .high
                 if let tint = item.image.tint {
                     context.clip(to: box, mask: item.image.image)
-                    context.setFillColor(tint.cgColor(dark: dark))
+                    context.setFillColor(tint.cgColor(dark: dark, highContrast: highContrast))
                     context.fill(box)
                 } else {
                     context.draw(item.image.image, in: box)
@@ -530,7 +539,7 @@ public final class DocumentLayout: @unchecked Sendable {
             context.translateBy(x: line.frame.minX, y: entry.y + line.baseline)
             for (index, path) in paths.enumerated() {
                 if !hiding.isEmpty, index < owners.count, let owner = owners[index], hiding.hidesShapes(of: owner) { continue }
-                path.draw(in: context, dark: dark)
+                path.draw(in: context, dark: dark, highContrast: highContrast)
             }
             context.restoreGState()
         }
@@ -557,13 +566,14 @@ public final class DocumentLayout: @unchecked Sendable {
             // Quote bars, run on through the gap from the block above when it
             // is in the same quote.
             let above = index > 0 ? self.entry(at: index - 1) : nil
+            let bar = style.quoteBarColor?.cgColor(dark: dark, highContrast: highContrast) ?? accent
             var x: CGFloat = 0
             for (depth, container) in block.containers.enumerated() {
                 if container == .quote {
                     var top = frame.minY
                     if let above, Self.shareQuote(above.layout.block, block, at: depth) { top = above.frame.maxY }
                     // Square ends, so that segments of one bar meet cleanly.
-                    fill(CGRect(x: x, y: top, width: 3, height: frame.maxY - top), radius: 0, color: accent)
+                    fill(CGRect(x: x, y: top, width: max(style.quoteBarWidth, 0), height: frame.maxY - top), radius: 0, color: bar)
                 }
                 x += style.width(of: container)
             }
@@ -576,7 +586,10 @@ public final class DocumentLayout: @unchecked Sendable {
             case .rule:
                 fill(CGRect(x: box.minX, y: frame.midY - 0.5, width: box.width, height: 1), radius: 0, color: accent)
             case .table:
-                if let table = layout.table { drawGrid(table, top: entry.y, in: context, header: codeBackground, lines: accent) }
+                if let table = layout.table {
+                    let header = style.tableHeaderBackgroundColor?.cgColor(dark: dark, highContrast: highContrast) ?? codeBackground
+                    drawGrid(table, top: entry.y, in: context, header: header, lines: accent)
+                }
             case .paragraph, .heading:
                 break
             }
@@ -632,7 +645,10 @@ public final class DocumentLayout: @unchecked Sendable {
             case .text(let line, let origin)?:
                 drawLine(line, at: CGPoint(x: origin.x, y: entry.y + origin.y))
             case .checkbox(let rect, let checked)?:
-                drawCheckbox(rect.offsetBy(dx: 0, dy: entry.y), checked: checked, in: context, stroke: text)
+                let item = block.containers.lastIndex(of: .listItem) ?? 0
+                let color = style.textColor(inside: block.containers[..<item])?.cgColor(dark: dark, highContrast: highContrast) ?? text
+                drawCheckbox(rect.offsetBy(dx: 0, dy: entry.y), checked: checked, in: context, text: color, dark: dark,
+                             highContrast: highContrast)
             case nil:
                 break
             }
@@ -653,10 +669,11 @@ public final class DocumentLayout: @unchecked Sendable {
                              visible: visible)
                 }
 
+                let imageText = layout.attachments.isEmpty ? text : style.textColor(inside: block.containers)?.cgColor(dark: dark, highContrast: highContrast) ?? text
                 for attachment in layout.attachments {
                     let rect = attachment.rect.offsetBy(dx: 0, dy: entry.y)
                     guard rect.offsetBy(dx: -dx, dy: 0).intersects(dirtyRect) else { continue }
-                    drawImage(attachment.attachment, in: rect, context: context, text: text, background: codeBackground)
+                    drawImage(attachment.attachment, in: rect, context: context, text: imageText, background: codeBackground)
                 }
 
                 for index in visible { drawShapes(of: lines[index], in: entry, over: true, shift: dx) }
@@ -666,8 +683,8 @@ public final class DocumentLayout: @unchecked Sendable {
 
     /// The fill color a run's glyphs are drawn with: the tag's own color, or
     /// the text's. A run with a color attribute (a link) uses that instead.
-    static func setGlyphColor(of attributes: NSDictionary, in context: CGContext, text: CGColor, dark: Bool) {
-        let custom = (attributes[foregroundKey] as? TranscriptColor)?.cgColor(dark: dark)
+    static func setGlyphColor(of attributes: NSDictionary, in context: CGContext, text: CGColor, dark: Bool, highContrast: Bool) {
+        let custom = (attributes[foregroundKey] as? TranscriptColor)?.cgColor(dark: dark, highContrast: highContrast)
         context.setFillColor(custom ?? text)
     }
 
@@ -677,7 +694,7 @@ public final class DocumentLayout: @unchecked Sendable {
     /// - Parameter visible: if set, only the glyphs that start in this range
     ///   of x are drawn.
     static func drawGlyphs(of line: CTLine, at origin: CGPoint, hidden: [Range<Int>], visible: ClosedRange<CGFloat>? = nil,
-                           in context: CGContext, text: CGColor, dark: Bool) {
+                           in context: CGContext, text: CGColor, dark: Bool, highContrast: Bool) {
         for run in CTLineGetGlyphRuns(line) as! [CTRun] {
             let attributes = CTRunGetAttributes(run) as NSDictionary
             if attributes[imageKey] != nil { continue }
@@ -693,10 +710,10 @@ public final class DocumentLayout: @unchecked Sendable {
                 }
             }
             guard !ranges.isEmpty else { continue }
-            setGlyphColor(of: attributes, in: context, text: text, dark: dark)
+            setGlyphColor(of: attributes, in: context, text: text, dark: dark, highContrast: highContrast)
             context.textPosition = origin
             for range in ranges { CTRunDraw(run, context, range) }
-            let custom = (attributes[foregroundKey] as? TranscriptColor)?.cgColor(dark: dark)
+            let custom = (attributes[foregroundKey] as? TranscriptColor)?.cgColor(dark: dark, highContrast: highContrast)
             let strike = attributes[strikethroughKey] != nil
             let underline = attributes[underlineKey] != nil
             guard strike || underline, let font = attributes[kCTFontAttributeName].map({ $0 as! CTFont }) else { continue }
@@ -765,6 +782,7 @@ public final class DocumentLayout: @unchecked Sendable {
     private static let underlineKey = TranscriptStyle.underlineKey.rawValue
     private static let foregroundKey = TranscriptStyle.foregroundKey.rawValue
     private static let backgroundKey = TranscriptStyle.backgroundKey.rawValue
+    private static let inlineCodeBackgroundKey = TranscriptStyle.inlineCodeBackgroundKey.rawValue
 
     private func drawGrid(_ table: BlockLayout.Table, top: CGFloat, in context: CGContext, header: CGColor, lines: CGColor) {
         let frame = table.frame.offsetBy(dx: 0, dy: top)
@@ -794,11 +812,11 @@ public final class DocumentLayout: @unchecked Sendable {
         context.restoreGState()
     }
 
-    private func drawCheckbox(_ rect: CGRect, checked: Bool, in context: CGContext, stroke: CGColor) {
+    private func drawCheckbox(_ rect: CGRect, checked: Bool, in context: CGContext, text: CGColor, dark: Bool, highContrast: Bool) {
         context.saveGState()
         let box = CGPath(roundedRect: rect.insetBy(dx: 0.75, dy: 0.75), cornerWidth: 4, cornerHeight: 4, transform: nil)
         if checked {
-            context.setFillColor(CGColor(red: 0, green: 0.478, blue: 1, alpha: 1))
+            context.setFillColor(style.taskCheckedColor?.cgColor(dark: dark, highContrast: highContrast) ?? CGColor(red: 0, green: 0.478, blue: 1, alpha: 1))
             context.addPath(box)
             context.fillPath()
             let check = CGMutablePath()
@@ -806,14 +824,14 @@ public final class DocumentLayout: @unchecked Sendable {
             check.addLine(to: CGPoint(x: rect.minX + rect.width * 0.43, y: rect.minY + rect.height * 0.7))
             check.addLine(to: CGPoint(x: rect.minX + rect.width * 0.76, y: rect.minY + rect.height * 0.32))
             context.addPath(check)
-            context.setStrokeColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            context.setStrokeColor(style.taskCheckmarkColor?.cgColor(dark: dark, highContrast: highContrast) ?? CGColor(red: 1, green: 1, blue: 1, alpha: 1))
             context.setLineWidth(max(rect.width * 0.12, 1.5))
             context.setLineCap(.round)
             context.setLineJoin(.round)
             context.strokePath()
         } else {
             context.addPath(box)
-            context.setStrokeColor(stroke.copy(alpha: 0.45) ?? stroke)
+            context.setStrokeColor(style.taskUncheckedColor?.cgColor(dark: dark, highContrast: highContrast) ?? text.copy(alpha: 0.45) ?? text)
             context.setLineWidth(1.5)
             context.strokePath()
         }
@@ -838,11 +856,11 @@ public final class DocumentLayout: @unchecked Sendable {
             }
             return
         }
-        // No picture: a chip with the alt text.
+        // No picture: a chip with the alt text, or for a formula being drawn, nothing.
+        guard let label = attachment.label else { return }
         context.setFillColor(background)
         context.addPath(CGPath(roundedRect: rect.insetBy(dx: 0, dy: 1), cornerWidth: 5, cornerHeight: 5, transform: nil))
         context.fillPath()
-        guard let label = attachment.label else { return }
         var ascent: CGFloat = 0
         var descent: CGFloat = 0
         CTLineGetTypographicBounds(label, &ascent, &descent, nil)

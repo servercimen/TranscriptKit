@@ -98,3 +98,76 @@ private func limited(_ limit: Int?) -> TranscriptStyle {
     #expect(filled.accessibilityItems().count == 2)
     #expect(empty.accessibilityShape != filled.accessibilityShape)
 }
+
+private func items(_ markdown: String, width: CGFloat = 300) -> [AccessibilityItem] {
+    DocumentLayout(document: MarkdownStreamParser.document(from: markdown), width: width).accessibilityItems()
+}
+
+@Test func listItemsTellTheirPositionAndTheItemCount() {
+    let list = items("- One\n- Two\n  more of two\n\n  A second paragraph\n- Three")
+    #expect(list.map(\.label) == ["One", "Two more of two", "A second paragraph", "Three"])
+    #expect(list.map(\.value) == ["Item 1 of 3", "Item 2 of 3", nil, "Item 3 of 3"])
+}
+
+@Test func nestedListsAndSeparateListsCountOnTheirOwn() {
+    let list = items("1. One\n   - Inner a\n   - Inner b\n2. Two\n\nText.\n\n- [ ] Task\n- Bullet\n\n3) Other")
+    #expect(list.map(\.value) == ["Item 1 of 2", "Item 1 of 2", "Item 2 of 2", "Item 2 of 2", nil, "Item 1 of 2", "Item 2 of 2",
+                                  "Item 1 of 1"])
+}
+
+@Test func numbersWithAnotherDelimiterStartANewList() {
+    let list = items("1. One\n2. Two\n1) Other")
+    #expect(list.map(\.value) == ["Item 1 of 2", "Item 2 of 2", "Item 1 of 1"])
+}
+
+@Test func theItemCountTakesInItemsThatALineLimitLeavesOut() {
+    var style = TranscriptStyle()
+    style.lineLimit = 1
+    let document = MarkdownStreamParser.document(from: "- One\n- Two\n- Three")
+    let list = DocumentLayout(document: document, width: 300, style: style).accessibilityItems()
+    #expect(list.map(\.value) == ["Item 1 of 3"])
+}
+
+@Test func aTableHasOneItemForEachCell() throws {
+    let list = items("Before.\n\n| Name | Value |\n| --- | ---: |\n| a | [one](https://example.com/1) |\n| b | \\(x^2\\) |")
+    #expect(list.count == 2)
+    let table = try #require(list[1].table)
+    #expect(table.rowCount == 3)
+    #expect(table.columnCount == 2)
+    #expect(table.cells.map(\.label) == ["Name", "Value", "a", "one", "b", "x^2"])
+    #expect(table.cells.map(\.row) == [0, 0, 1, 1, 2, 2])
+    #expect(table.cells.map(\.column) == [0, 1, 0, 1, 0, 1])
+    #expect(table.cells[3].links.map(\.url.absoluteString) == ["https://example.com/1"])
+    // Cells sit side by side in their rows, inside the table's frame.
+    #expect(table.cells[0].frame.maxX <= table.cells[1].frame.minX + 0.5)
+    #expect(table.cells[0].frame.maxY <= table.cells[2].frame.minY + 0.5)
+    #expect(table.cells.allSatisfy { list[1].frame.insetBy(dx: -0.5, dy: -0.5).contains($0.frame) })
+}
+
+@Test func aTableThatStreamsInChangesTheShapeWithEachCell() {
+    var parser = MarkdownStreamParser()
+    parser.append("| A | B |\n| - | - |\n| 1 |")
+    let before = DocumentLayout(document: parser.document, width: 300)
+    parser.append(" 2 |")
+    let after = DocumentLayout(document: parser.document, width: 300, reusing: before)
+    #expect(before.accessibilityShape != after.accessibilityShape)
+    #expect(after.accessibilityItems().first?.table?.cells.count == 4)
+}
+
+@Test func textLeftOutAfterATableGetsAnItemOfItsOwn() {
+    var style = TranscriptStyle()
+    style.lineLimit = 3
+    let document = MarkdownStreamParser.document(from: "| A | B |\n| - | - |\n| 1 | 2 |\n\nAfter the table.")
+    let list = DocumentLayout(document: document, width: 300, style: style).accessibilityItems()
+    #expect(list.count == 2)
+    #expect(list[0].table != nil)
+    #expect(list[1].label == "After the table.")
+}
+
+@Test func formulasAreReadWithTheWordsTheAppGives() {
+    let document = MarkdownStreamParser.document(from: "Area: \\(\\pi r^2\\).")
+    let layout = DocumentLayout(document: document, width: 300)
+    #expect(layout.accessibilityItems().map(\.label) == ["Area: \\pi r^2."])
+    let spoken = layout.accessibilityItems { $0.tex == "\\pi r^2" ? "pi r squared" : $0.tex }
+    #expect(spoken.map(\.label) == ["Area: pi r squared."])
+}

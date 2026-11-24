@@ -193,6 +193,13 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         }
     }
 
+    /// The words that VoiceOver says for a formula, for example from a
+    /// library that turns LaTeX into speech. Called on the main thread. Not
+    /// set by default: VoiceOver then reads the formula's LaTeX.
+    public var mathAccessibilityLabel: ((TranscriptMath) -> String)? {
+        didSet { invalidateAccessibilityElements() }
+    }
+
     private let engine = LayoutEngine()
 
     /// Holds the tiles, and the tail layer above them, below the system's

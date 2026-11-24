@@ -21,6 +21,7 @@ public struct TranscriptText: UIViewRepresentable {
     private var loader: (@Sendable (TranscriptImage) async -> CGImage?)?
     private var highlighter: TranscriptCodeHighlighter?
     private var mathRenderer: TranscriptMathRenderer?
+    private var mathAccessibilityLabel: ((TranscriptMath) -> String)?
     private var animatesTags = true
     private var textFadeInDuration: TimeInterval?
     private var animationTiming: TranscriptAnimationTiming = .immediately
@@ -83,6 +84,15 @@ public struct TranscriptText: UIViewRepresentable {
     public func mathRenderer(_ renderer: @escaping TranscriptMathRenderer) -> TranscriptText {
         var copy = self
         copy.mathRenderer = renderer
+        return copy
+    }
+
+    /// The words that VoiceOver says for a formula; see
+    /// `TranscriptTextView.mathAccessibilityLabel`. Read once, when the view
+    /// is created.
+    public func mathAccessibilityLabel(_ label: @escaping (TranscriptMath) -> String) -> TranscriptText {
+        var copy = self
+        copy.mathAccessibilityLabel = label
         return copy
     }
 
@@ -166,6 +176,7 @@ public struct TranscriptText: UIViewRepresentable {
         if let loader { view.imageLoader = loader }
         if let highlighter { view.codeHighlighter = highlighter }
         if let mathRenderer { view.mathRenderer = mathRenderer }
+        if let mathAccessibilityLabel { view.mathAccessibilityLabel = mathAccessibilityLabel }
         return view
     }
 

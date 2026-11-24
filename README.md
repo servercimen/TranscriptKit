@@ -253,8 +253,17 @@ TranscriptText(stream: stream)
 In UIKit, set `mathRenderer` on `TranscriptTextView`. TranscriptKit uses only the alpha of the image, and draws the
 formula in the text color, so it follows light and dark appearance. A formula that is wider than the text column is
 scaled down to fit. A paragraph that holds only display math is centered. While a formula streams in, it shows
-nothing until it closes, so the text on screen only grows. Copy gives the LaTeX with its delimiters, and VoiceOver
-reads the LaTeX.
+nothing until it closes, so the text on screen only grows. Copy gives the LaTeX with its delimiters.
+
+VoiceOver reads the LaTeX by default. To give VoiceOver other words, for example from a library that turns LaTeX into
+speech, set a label. TranscriptKit calls it on the main thread:
+
+```swift
+TranscriptText(stream: stream)
+    .mathAccessibilityLabel { math in mySpeechText(forLaTeX: math.tex) }
+```
+
+In UIKit, set `mathAccessibilityLabel` on `TranscriptTextView`.
 
 ### Selection
 
@@ -274,8 +283,13 @@ them off with `.showsWritingTools(false)`, or with `showsWritingTools` on `Trans
 ### VoiceOver
 
 VoiceOver reads the text block by block. Headings are in the rotor's list of headings, list items start with their
-number or "Checked" or "Unchecked", and each link in a block is an action that opens it. The spoken words "Open %@",
-"Checked", "Unchecked" and "Separator" come from your app's `Localizable.strings`, so you can translate them there.
+number or "Checked" or "Unchecked", and each link in a block is an action that opens it. A list item also tells its
+position in its list and the number of items, such as "Item 2 of 3". A table is a data table with one element for each
+cell, so VoiceOver reads it cell by cell, with the row, the column and the column's header. While text streams in, each
+block keeps its element, so VoiceOver focus stays on its block.
+
+The spoken words "Open %@", "Checked", "Unchecked", "Separator" and "Item %1$ld of %2$ld" come from your app's
+`Localizable.strings`, so you can translate them there.
 
 ### Line limit and alignment
 

@@ -9,16 +9,36 @@ struct AccessibilityItem: Equatable {
         let url: URL
     }
 
+    /// A table's cells, each an element of its own.
+    struct Table: Equatable {
+        struct Cell: Equatable {
+            let row: Int
+            let column: Int
+            let frame: CGRect
+            let label: String
+            let links: [Link]
+        }
+
+        let rowCount: Int
+        let columnCount: Int
+        /// Row by row; the first row is the header.
+        let cells: [Cell]
+    }
+
     /// The block's id, made unique in the document: an element keeps it
     /// from one layout to the next, so VoiceOver focus stays on the block
     /// while text streams in.
     let key: String
     let frame: CGRect
-    /// What VoiceOver says: the list marker, then the text.
+    /// What VoiceOver says: the list marker, then the text. Empty for a table.
     let label: String
+    /// For the first block of a list item: its position in its list and the
+    /// number of items in the list, such as "Item 2 of 3".
+    let value: String?
     let isHeading: Bool
     /// The links in the text. Each is an action that opens it.
     let links: [Link]
+    let table: Table?
 }
 
 extension DocumentLayout {
@@ -26,46 +46,90 @@ extension DocumentLayout {
     ///
     /// Under a line limit, the last item holds all of its block's text and
     /// the text of the blocks that the limit leaves out, as a label that is
-    /// cut short still reads all of its text.
-    func accessibilityItems() -> [AccessibilityItem] {
+    /// cut short still reads all of its text. When the last block shown is
+    /// a table, the text left out gets an item of its own after it.
+    ///
+    /// - Parameter math: the words for a formula.
+    func accessibilityItems(math: (TranscriptMath) -> String = \.tex) -> [AccessibilityItem] {
         var items: [AccessibilityItem] = []
         let definitions = document.linkDefinitions
+        let positions = AccessibilityText.listPositions(in: document, upTo: entryCount)
         var uses: [String: Int] = [:]
+        func key(for block: TranscriptBlock) -> String {
+            let use = uses[block.id, default: 0]
+            uses[block.id] = use + 1
+            return use == 0 ? block.id : "\(block.id)#\(use)"
+        }
         for index in 0..<entryCount {
             let entry = entry(at: index)
             let block = entry.layout.block
+            if let model = block.kind.table, let grid = entry.layout.table {
+                let table = Self.accessibilityTable(model, grid: grid, of: block, at: entry.y, math: math, definitions: definitions)
+                guard !table.cells.isEmpty else { continue }
+                items.append(AccessibilityItem(key: key(for: block), frame: entry.frame, label: "", value: nil, isHeading: false,
+                                               links: [], table: table))
+                continue
+            }
             let all = 0..<block.utf16Count
-            let text = AccessibilityText.readable(block, in: all)
+            let text = AccessibilityText.readable(block, in: all, math: math)
             if text.isEmpty, block.kind != .rule { continue }
-            let use = uses[block.id, default: 0]
-            uses[block.id] = use + 1
-            items.append(AccessibilityItem(key: use == 0 ? block.id : "\(block.id)#\(use)", frame: entry.frame,
-                                           label: AccessibilityText.spoken(text, of: block),
+            items.append(AccessibilityItem(key: key(for: block), frame: entry.frame, label: AccessibilityText.spoken(text, of: block),
+                                           value: positions[index].map(AccessibilityText.position),
                                            isHeading: block.kind.isHeading,
-                                           links: AccessibilityText.links(of: block, in: all, definitions: definitions)))
+                                           links: AccessibilityText.links(of: block, in: all, math: math, definitions: definitions),
+                                           table: nil))
         }
-        guard leavesTextOut, entryCount < document.count, let last = items.popLast() else { return items }
-        var label = last.label
-        var links = last.links
+        guard leavesTextOut, entryCount < document.count else { return items }
+        var rest: [String] = []
+        var links: [AccessibilityItem.Link] = []
         for index in entryCount..<document.count {
             let block = document.block(at: index)
             let all = 0..<block.utf16Count
-            let text = AccessibilityText.readable(block, in: all)
+            var text = AccessibilityText.readable(block, in: all, math: math)
             if text.isEmpty, block.kind != .rule { continue }
-            label += "\n" + AccessibilityText.spoken(text, of: block)
-            links += AccessibilityText.links(of: block, in: all, definitions: definitions)
+            if block.kind.table != nil { text = text.replacingOccurrences(of: "\t", with: ", ") }
+            rest.append(AccessibilityText.spoken(text, of: block))
+            links += AccessibilityText.links(of: block, in: all, math: math, definitions: definitions)
         }
-        items.append(AccessibilityItem(key: last.key, frame: last.frame, label: label, isHeading: last.isHeading, links: links))
+        guard !rest.isEmpty else { return items }
+        if let last = items.last, last.table == nil {
+            items[items.count - 1] = AccessibilityItem(key: last.key, frame: last.frame, label: ([last.label] + rest).joined(separator: "\n"),
+                                                       value: last.value, isHeading: last.isHeading, links: last.links + links,
+                                                       table: nil)
+        } else {
+            let frame = items.last?.frame ?? CGRect(x: 0, y: 0, width: width, height: height)
+            items.append(AccessibilityItem(key: key(for: document.block(at: entryCount)), frame: frame,
+                                           label: rest.joined(separator: "\n"), value: nil, isHeading: false, links: links, table: nil))
+        }
         return items
+    }
+
+    private static func accessibilityTable(_ model: TranscriptTable, grid: BlockLayout.Table, of block: TranscriptBlock, at y: CGFloat,
+                                           math: (TranscriptMath) -> String,
+                                           definitions: [String: String]) -> AccessibilityItem.Table {
+        var cells: [AccessibilityItem.Table.Cell] = []
+        let rowCount = min(model.rows.count, grid.rowY.count - 1)
+        let columnCount = min(model.columnCount, grid.columnX.count - 1)
+        for row in 0..<max(rowCount, 0) {
+            for (column, range) in model.rows[row].prefix(columnCount).enumerated() {
+                let frame = CGRect(x: grid.columnX[column], y: y + grid.rowY[row], width: grid.columnX[column + 1] - grid.columnX[column],
+                                   height: grid.rowY[row + 1] - grid.rowY[row])
+                cells.append(.init(row: row, column: column, frame: frame,
+                                   label: AccessibilityText.readable(block, in: range, math: math),
+                                   links: AccessibilityText.links(of: block, in: range, math: math, definitions: definitions)))
+            }
+        }
+        return AccessibilityItem.Table(rowCount: max(rowCount, 0), columnCount: max(columnCount, 0), cells: cells)
     }
 
     /// What decides which items the layout has, found without making them.
     /// A layout that only adds text to the end of another has the same
     /// items as that one, with longer text, if their shapes are equal.
     var accessibilityShape: AccessibilityShape {
-        guard entryCount > 0 else { return AccessibilityShape(entries: 0, lastHasNoItem: false) }
+        guard entryCount > 0 else { return AccessibilityShape(entries: 0, lastHasNoItem: false, lastTableCells: 0) }
         let block = entry(at: entryCount - 1).layout.block
-        return AccessibilityShape(entries: entryCount, lastHasNoItem: block.text.isEmpty && block.kind != .rule)
+        return AccessibilityShape(entries: entryCount, lastHasNoItem: block.text.isEmpty && block.kind != .rule,
+                                  lastTableCells: block.kind.table?.rows.reduce(0) { $0 + $1.count } ?? 0)
     }
 }
 
@@ -73,18 +137,21 @@ struct AccessibilityShape: Equatable {
     let entries: Int
     /// The last block has no text yet, so it has no item.
     let lastHasNoItem: Bool
+    /// The number of cells in the last block, if it is a table: a row that
+    /// streams in adds elements.
+    let lastTableCells: Int
 }
 
 /// The words that assistive technologies get for a block.
 enum AccessibilityText {
     /// The block's text in `range`, with images as their alt text and
-    /// formulas as their LaTeX, in place of the U+FFFC character each
+    /// formulas as `math` gives them, in place of the U+FFFC character each
     /// stands for.
-    static func readable(_ block: TranscriptBlock, in range: Range<Int>) -> String {
+    static func readable(_ block: TranscriptBlock, in range: Range<Int>, math: (TranscriptMath) -> String = \.tex) -> String {
         let text = NSMutableString(string: (block.text as NSString).substring(with: NSRange(location: range.lowerBound,
                                                                                           length: range.count)))
         for span in block.spans.reversed() where range.contains(span.range.lowerBound) && span.range.count == 1 {
-            guard let replacement = span.image?.alt ?? span.math?.tex else { continue }
+            guard let replacement = span.image?.alt ?? span.math.map(math) else { continue }
             text.replaceCharacters(in: NSRange(location: span.range.lowerBound - range.lowerBound, length: 1), with: replacement)
         }
         return text as String
@@ -108,17 +175,82 @@ enum AccessibilityText {
         }
     }
 
+    /// A list item's position and the number of items in its list.
+    static func position(_ position: ListPosition) -> String {
+        let format = NSLocalizedString("Item %1$ld of %2$ld",
+                                       comment: "VoiceOver: a list item's position in its list (%1$ld) and the number of items in the list (%2$ld)")
+        return String(format: format, position.index, position.count)
+    }
+
     /// The links that start in `range` of the block's text.
-    static func links(of block: TranscriptBlock, in range: Range<Int>, definitions: [String: String]) -> [AccessibilityItem.Link] {
+    static func links(of block: TranscriptBlock, in range: Range<Int>, math: (TranscriptMath) -> String = \.tex,
+                      definitions: [String: String]) -> [AccessibilityItem.Link] {
         var links: [AccessibilityItem.Link] = []
         for span in block.spans where range.contains(span.range.lowerBound) {
             guard let target = span.link ?? span.reference.flatMap({ definitions[$0] }), let url = URL(string: target) else {
                 continue
             }
             let end = min(span.range.upperBound, block.utf16Count)
-            links.append(.init(title: readable(block, in: span.range.lowerBound..<end), url: url))
+            links.append(.init(title: readable(block, in: span.range.lowerBound..<end, math: math), url: url))
         }
         return links
+    }
+
+    struct ListPosition: Equatable {
+        /// From 1.
+        let index: Int
+        let count: Int
+    }
+
+    /// The position of each list item's first block among the first `end`
+    /// blocks, by block index. The count takes in every item of the list,
+    /// also the items after `end`.
+    ///
+    /// A list is a run of items at one depth, in the same containers, with
+    /// the item's content in between. It ends at a block outside those
+    /// containers, or at an item with another kind of marker: bullets and
+    /// task boxes go together, and numbers go with numbers that have the
+    /// same delimiter.
+    static func listPositions(in document: TranscriptDocument, upTo end: Int) -> [Int: ListPosition] {
+        struct Run {
+            /// The index of the list item container of the list's items.
+            let depth: Int
+            let containers: ArraySlice<TranscriptBlock.Container>
+            let kind: Character
+            var items: [Int] = []
+        }
+        var positions: [Int: ListPosition] = [:]
+        var runs: [Run] = []
+        func close(_ run: Run) {
+            guard run.items.first.map({ $0 < end }) ?? false else { return }
+            for (position, item) in run.items.enumerated() where item < end {
+                positions[item] = ListPosition(index: position + 1, count: run.items.count)
+            }
+        }
+        for index in 0..<document.count {
+            let block = document.block(at: index)
+            while let run = runs.last,
+                  !(block.containers.count > run.depth && block.containers[...run.depth] == run.containers) {
+                close(runs.removeLast())
+            }
+            if index >= end, runs.isEmpty { break }
+            guard let marker = block.marker, let depth = block.containers.lastIndex(of: .listItem) else { continue }
+            let kind: Character
+            switch marker {
+            case .bullet, .task: kind = "-"
+            case .number(let number): kind = number.last ?? "."
+            }
+            if let run = runs.last, run.depth == depth {
+                if run.kind == kind {
+                    runs[runs.count - 1].items.append(index)
+                    continue
+                }
+                close(runs.removeLast())
+            }
+            runs.append(Run(depth: depth, containers: block.containers[...depth], kind: kind, items: [index]))
+        }
+        runs.forEach(close)
+        return positions
     }
 }
 

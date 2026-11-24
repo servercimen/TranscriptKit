@@ -45,4 +45,34 @@ private func elements(of view: TranscriptTextView) -> [UIAccessibilityElement] {
     #expect(zip(added, narrower).allSatisfy { $0 === $1 })
     #expect(narrower[1].accessibilityFrameInContainerSpace.width == 200)
 }
+
+@MainActor
+@Test func aTableIsADataTableOfCells() throws {
+    let view = TranscriptTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 400))
+    view.document = MarkdownStreamParser.document(from: "- One\n- Two\n\n| A | B |\n| - | - |\n| 1 | 2 |")
+    view.layoutIfNeeded()
+    let all = elements(of: view)
+    #expect(all.count == 3)
+    #expect(all[1].accessibilityValue == "Item 2 of 2")
+    let table = try #require(all[2] as? UIAccessibilityContainerDataTable & UIAccessibilityElement)
+    #expect(table.accessibilityContainerType == .dataTable)
+    #expect(table.accessibilityRowCount() == 2)
+    #expect(table.accessibilityColumnCount() == 2)
+    let cell = try #require(table.accessibilityDataTableCellElement(forRow: 1, column: 1) as? UIAccessibilityElement)
+    #expect(cell.accessibilityLabel == "2")
+    #expect(cell.accessibilityContainer as AnyObject === table)
+    #expect((table.accessibilityElements ?? []).count == 4)
+    let header = table.accessibilityHeaderElements?(forColumn: 1)?.first as? UIAccessibilityElement
+    #expect(header?.accessibilityLabel == "B")
+}
+
+@MainActor
+@Test func formulasUseTheLabelTheAppSets() {
+    let view = TranscriptTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 400))
+    view.document = MarkdownStreamParser.document(from: "Area: \\(\\pi r^2\\).")
+    view.layoutIfNeeded()
+    #expect(elements(of: view).first?.accessibilityLabel == "Area: \\pi r^2.")
+    view.mathAccessibilityLabel = { _ in "pi r squared" }
+    #expect(elements(of: view).first?.accessibilityLabel == "Area: pi r squared.")
+}
 #endif

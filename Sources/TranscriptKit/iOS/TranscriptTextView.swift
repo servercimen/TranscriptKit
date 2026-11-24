@@ -132,6 +132,18 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         }
     }
 
+    /// Whether the tags with an animation that the view's first text already
+    /// holds play it, each one time, as if they had just closed. Off by
+    /// default: text that is complete when it is shown, such as an earlier
+    /// message or a document set directly, shows its tags as they end up.
+    ///
+    /// The first text is the first layout with text that the view shows.
+    /// `tagAnimationTiming` applies: with `.whenVisible`, each tag plays when
+    /// it comes on screen. Tags that close later animate as usual. A view
+    /// that is made again, as a lazy stack does with a row that scrolls back
+    /// into view, plays them again. Set it before the view shows text.
+    public var animatesTagsInFirstText = false
+
     /// Lets every tag waiting to animate now play, as soon as the rest of
     /// `tagAnimationTiming` allows. Tags that close later wait for the next
     /// call. Does nothing unless the timing includes `.whenRequested`.
@@ -287,6 +299,8 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     private var isFinished = false
     private var waitingCheckScheduled = false
     private var visibilityCheckScheduled = false
+    /// A layout with text has been on screen.
+    private var hasShownText = false
     /// The last layout passed over for coming from a replaced source.
     private var skippedOutput: LayoutEngine.Output?
     private var hiding: TagHiding { TagHiding(playing: playingKeys, waiting: waiting.keys, fadingFrom: fadingFrom) }
@@ -856,10 +870,22 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             waiting.add(newlyWaiting)
             startWaitingTagsSoon()
         } else {
-            // Everything was drawn again, at rest.
-            removeAllAnimations()
+            // Everything was drawn again, at rest. Tags that wait go on
+            // waiting while the text is the one they closed in, as when an
+            // image arrives or the width changes.
+            let closed = waiting.isEmpty && !animatesFirstText ? [] : layout.closedAnimatedTags()
+            let kept = old.map { layout.document.extends($0.document) } == true ? waiting.keys.intersection(closed) : []
+            removeAllAnimations(keepingWaiting: kept)
             engine.settleAnimations(started + newlyWaiting)
+            var held = kept
+            if animatesFirstText, !hasShownText, layout.length > 0 { held.formUnion(closed) }
+            if !held.isEmpty {
+                engine.holdAnimations(held)
+                waiting.add(held)
+                startWaitingTagsSoon()
+            }
         }
+        if layout.length > 0 { hasShownText = true }
 
         if !isAppend {
             inputDelegate?.textDidChange(self)
@@ -988,6 +1014,9 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     /// Whether tags can animate at all: on, and Reduce Motion off.
     private var animationsCanPlay: Bool { animatesTags && !UIAccessibility.isReduceMotionEnabled }
+
+    /// Whether the first text's closed tags wait to play.
+    private var animatesFirstText: Bool { animatesTagsInFirstText && !hasShownText && animationsCanPlay }
 
     /// Tells the engine whether tags that close start or wait. Outside a
     /// window, only tags that wait to be seen or for the app wait; others
@@ -1142,9 +1171,10 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     }
 
     /// Drops every animation without redrawing, for when everything is
-    /// being drawn again anyway.
-    private func removeAllAnimations() {
-        engine.settleAnimations(waiting.removeAll())
+    /// being drawn again anyway, apart from the waiting tags in `kept`.
+    private func removeAllAnimations(keepingWaiting kept: Set<TagKey> = []) {
+        engine.settleAnimations(waiting.keys.subtracting(kept))
+        waiting.keep(kept)
         guard !playing.isEmpty else { return }
         engine.settleAnimations(playingKeys)
         for play in playing.values {

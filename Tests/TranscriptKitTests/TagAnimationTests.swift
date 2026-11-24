@@ -614,3 +614,53 @@ private let second = TagKey(block: "w-1", start: 4, name: "hop")
     #expect(WaitingTags.isHidden([(isHidden: false, alpha: 1), (isHidden: false, alpha: 0)]))
     #expect(WaitingTags.isHidden([(isHidden: false, alpha: 0.001)]))
 }
+
+@Test func keptWaitingTagsAreTheOnesStillLaidOut() {
+    var list = waitingList([first, second])
+    list.request()
+    list.keep([second])
+    #expect(list.keys == [second] && list.requested == [second])
+    #expect(list.removeAll() == [second])
+    #expect(list.isEmpty && list.requested.isEmpty)
+}
+
+// MARK: Text that is complete when it is shown
+
+/// A document built directly, with its tags closed: the view can hold each
+/// of them back to play, and the engine draws the tail without their shapes
+/// until the view starts them.
+@Test func closedTagsOfAFirstLayoutCanWaitToPlay() throws {
+    let hop = try #require(tags.first { $0.name == "hop" })
+    let text = "Done: login timeouts. Next: billing."
+    let blocks = [
+        TranscriptBlock(id: "d-0", text: text, spans: [
+            InlineSpan(range: 6..<20, customTag: InlineSpan.CustomTag(hop)),
+            InlineSpan(range: 28..<35, customTag: InlineSpan.CustomTag(hop)),
+        ]),
+    ]
+    let document = TranscriptDocument(blocks: blocks)
+    let layout = DocumentLayout(document: document, width: 300)
+    let keys: Set<TagKey> = [TagKey(block: "d-0", start: 6, name: "hop"), TagKey(block: "d-0", start: 28, name: "hop")]
+    #expect(layout.closedAnimatedTags() == keys)
+    // Settled blocks are not newly closed: the engine does not start their tags on its own.
+    #expect(layout.newlyClosedAnimatedTags(since: DocumentLayout(document: document, width: 300)).isEmpty)
+    #expect(layout.tagsStartingTogether(keys).map(\.group.index) == [0, 1])
+
+    let engine = LayoutEngine()
+    engine.setTailStyle(colors: colors, scale: 2)
+    engine.setAnimationsEnabled(true, immediately: false)
+    engine.submit(.init(document: document, source: 1, sequence: 1, isFinished: true))
+    let laidOut = try #require(engine.relayout(width: 300, style: TranscriptStyle()))
+    engine.holdAnimations(laidOut.layout.closedAnimatedTags())
+    var more = document
+    more.append(TranscriptBlock(id: "d-1", text: "More."))
+    engine.submit(.init(document: more, source: 1, sequence: 2, isFinished: true))
+    engine.drainNow()
+    #expect(try #require(engine.takeOutput()).hidden == TagHiding(waiting: keys))
+    engine.playAnimations(keys)
+    var last = more
+    last.append(TranscriptBlock(id: "d-2", text: "Last."))
+    engine.submit(.init(document: last, source: 1, sequence: 3, isFinished: true))
+    engine.drainNow()
+    #expect(try #require(engine.takeOutput()).hidden == TagHiding(playing: keys))
+}

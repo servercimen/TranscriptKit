@@ -34,7 +34,8 @@ import Foundation
 ///
 /// - Only tags that close while the view shows the text being appended are
 ///   animated. Text that is already complete when it is shown, such as
-///   earlier messages, is drawn as it ends up.
+///   earlier messages, is drawn as it ends up, unless
+///   `TranscriptTextView.animatesTagsInFirstText` is on.
 /// - With Reduce Motion on, or `TranscriptTextView.animatesTags` off,
 ///   nothing is animated.
 /// - A recipe is a value: two that are equal must make the same animation.

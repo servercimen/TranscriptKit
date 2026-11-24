@@ -62,6 +62,19 @@ extension DocumentLayout {
         return found
     }
 
+    /// Every animated tag in this layout that has closed, as its lines hold
+    /// them: those a line limit cuts off are left out.
+    func closedAnimatedTags() -> Set<TagKey> {
+        var keys: Set<TagKey> = []
+        for index in 0..<entryCount {
+            for line in entry(at: index).layout.lines {
+                guard let animated = line.decorations?.animated, !animated.isEmpty else { continue }
+                for fragment in animated { keys.insert(fragment.key) }
+            }
+        }
+        return keys
+    }
+
     /// The tags of `keys` that are in this layout and have closed, in text
     /// order, each with its place among them: for tags whose animations
     /// start together.
@@ -132,6 +145,12 @@ struct WaitingTags: Sendable {
     /// Lets every tag waiting now play once the rest of the timing allows.
     mutating func request() {
         requested.formUnion(keys)
+    }
+
+    /// Keeps only the tags in `kept`, for a layout that holds only those.
+    mutating func keep(_ kept: Set<TagKey>) {
+        keys.formIntersection(kept)
+        requested.formIntersection(keys)
     }
 
     /// Empties the list, and returns the tags that waited.

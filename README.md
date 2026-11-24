@@ -177,7 +177,8 @@ TranscriptTag("hop", TranscriptDecoration(animation: .custom(Hop())))
 Until its closing tag arrives, an animated tag shows its text without its shapes. The view then draws the tag's
 glyphs and the animation's paths on Core Animation layers above the text, and draws the tag as usual again when
 the animation ends, so the last frame should match that: glyphs back in place, paths fully shown. Only tags that
-close while text streams in are animated, not earlier messages. Turn animations off with `animatesTags` on the view
+close while text streams in are animated, not earlier messages (see below to animate text that is complete when it
+is shown). Turn animations off with `animatesTags` on the view
 or `.animatesTags(false)` on `TranscriptText`; with Reduce Motion on, nothing is animated. The chat sample's `Boing`
 sweeps a highlighter band in under the text while each letter jumps as the band reaches it.
 
@@ -200,6 +201,19 @@ waiting when it can no longer play (Reduce Motion turned on, animations turned o
 ends up. A view that leaves its window does the same, unless the timing has `.whenVisible` or `.whenRequested`: its
 tags then go on waiting until the view is back in a window. With `.whenVisible`, a view that is hidden or has an
 alpha of 0, or is inside such a view, is not visible.
+
+Text that is complete when it is shown, such as a document set directly or a page of many short texts, can animate
+its tags too. With `animatesTagsInFirstText`, each tag in the first text that the view shows plays its animation
+one time, as if it had just closed. The timing applies, so with `.whenVisible`, each tag plays when it comes on
+screen:
+
+```swift
+TranscriptText(document)
+    .animatesTagsInFirstText()
+    .tagAnimationTiming(.whenVisible)
+```
+
+A view that is made again, as a lazy stack does with a row that scrolls back into view, plays them again.
 
 Tags that wait often start at the same moment, for example when the stream finishes. To stagger them, also
 implement `animation(for:in:)` in the recipe. The group gives the tag's place among the tags that start together,

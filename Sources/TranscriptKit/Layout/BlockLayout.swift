@@ -406,10 +406,12 @@ final class BlockLayout: @unchecked Sendable {
         }
 
         typealias Cell = (text: NSAttributedString, typesetter: CTTypesetter, range: Range<Int>)
+        // Each cell is typeset on its own, so Core Text gives it the direction
+        // of its own text. The table's direction sets the order of the columns.
         func makeCells(_ row: Int) -> [Cell] {
             model.rows[row].prefix(columns).map { range in
                 let text = style.attributedString(for: block, range: range, extraTraits: row == 0 ? .bold : [], images: sizing,
-                                                  definitions: definitions, kerns: decorated?.kerns ?? [:], direction: direction)
+                                                  definitions: definitions, kerns: decorated?.kerns ?? [:])
                 return (text, CTTypesetterCreateWithAttributedString(text), range)
             }
         }

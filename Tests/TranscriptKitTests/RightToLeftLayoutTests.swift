@@ -119,6 +119,16 @@ private func lineSummary(_ layout: BlockLayout) -> [String] {
     #expect(table.minimumWidths[0].allSatisfy { $0 > TranscriptStyle().tableCellPadding * 2 })
 }
 
+@Test func eachTableCellKeepsTheDirectionOfItsOwnText() {
+    let block = layout("| Word | Meaning |\n|---|---|\n| \(arabic)! | hello |").entry(at: 0).layout
+    #expect(!block.isRightToLeft)
+    guard let table = block.table else { Issue.record("no table"); return }
+    // In right-to-left text, the "!" at the end is drawn at the left.
+    let cell = block.lines[table.cellLines[1][0].lowerBound]
+    let runs = CTLineGetGlyphRuns(cell.ctLine) as! [CTRun]
+    #expect(CTRunGetStringRange(runs[0]).location == (arabic as NSString).length)
+}
+
 // MARK: Streaming
 
 private func streamed(_ markdown: String, chunk: Int, width: CGFloat = 300) -> (grown: DocumentLayout, fresh: DocumentLayout) {
@@ -133,7 +143,9 @@ private func streamed(_ markdown: String, chunk: Int, width: CGFloat = 300) -> (
     return (layout!, DocumentLayout(document: parser.document, width: width))
 }
 
-@Test(arguments: [hebrew, "2024: " + hebrew, "Some English first, then " + hebrew, "- " + hebrew, "> 12 " + hebrew])
+private let hebrewTable = "| מילה | פירוש |\n|---|---|\n" + (1...8).map { "| שורה \($0) | \(String(repeating: "מילה ", count: $0)) |" }.joined(separator: "\n")
+
+@Test(arguments: [hebrew, "2024: " + hebrew, "Some English first, then " + hebrew, "- " + hebrew, "> 12 " + hebrew, hebrewTable])
 func streamedRightToLeftTextIsLaidOutAsAWhole(markdown: String) {
     let (grown, fresh) = streamed(markdown, chunk: 7)
     #expect(grown.entryCount == fresh.entryCount)

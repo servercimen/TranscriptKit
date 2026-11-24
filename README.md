@@ -12,7 +12,11 @@ text streaming in at hundreds of characters a second doesn't make scrolling stut
   markup is held back for a character or two, so what is on screen almost never changes style or shrinks.
 - **Off the main thread.** Each frame's chunks are parsed on a background queue and laid out on another. Only the
   blocks that changed are laid out again, and the line being written is drawn on the layout queue into a surface.
-  The main thread installs the result and redraws what changed.
+  The main thread installs the result and redraws what changed. All streams and views share the system's pool of
+  threads, with about one thread for each processor core. At most one long layout for each core runs at a time, also
+  when a layout waits, for example while a font loads the first time. So a screen that shows many texts at once does
+  not start a thread for each of them. Short work, such as the parse and layout of streamed text, goes ahead of the
+  long layouts of other views.
 - **One selectable document.** The whole text is one view with the system's selection handles, loupe and edit menu,
   and a selection can run from one block to the next: across headings, paragraphs, lists and code blocks.
 - **Markdown:**

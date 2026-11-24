@@ -15,6 +15,12 @@ import QuartzCore
 /// first layout, a change of width or style, and a replaced document when
 /// the view's `replacementCrossfadeDuration` asks for it. It does so through
 /// `queue.sync`, so the engine's state is only ever touched on its queue.
+/// When the queue is idle, the main thread does that work itself and does
+/// not wait for a thread. The queue shares its threads with the queues of
+/// all other views and streams (see `WorkQueue`). A drain of short work,
+/// such as text added to the end, goes ahead of the long layouts of other
+/// views. A long drain waits for its turn among the long layouts of all
+/// views; a `sync` call does not wait for that turn.
 ///
 /// While text is being appended, the engine also draws the end of the
 /// document into a surface (see `TailRenderer`), which travels with the
@@ -79,7 +85,7 @@ final class LayoutEngine: @unchecked Sendable {
         }
     }
 
-    let queue = DispatchQueue(label: "TranscriptKit.layout", qos: .userInitiated)
+    let queue = WorkQueue.serial(label: "TranscriptKit.layout")
     /// The work in flight: drains that are scheduled or running, a result
     /// that the view has not taken yet, and the image store's loads.
     let work: PendingWork
@@ -98,6 +104,14 @@ final class LayoutEngine: @unchecked Sendable {
     /// `pending` waits for `relayout` on the main thread: a drain leaves it.
     private var pendingIsForMain = false
     private var drainScheduled = false
+    /// The scheduled drain goes ahead of the long work of other views.
+    private var drainIsUrgent = false
+    /// Identifies the scheduled drain. An older drain that runs later, as a
+    /// long drain can, leaves the schedule alone.
+    private var drainID = 0
+    /// The document of the newest layout, or of the one the queue makes
+    /// next. A document that only adds a little to it is short work.
+    private var laidOut = TranscriptDocument()
     /// Layouts are made at most this often: a document that arrives sooner
     /// waits, and is replaced by any newer one that arrives meanwhile. More
     /// than one layout per display frame would never be seen.
@@ -241,6 +255,7 @@ final class LayoutEngine: @unchecked Sendable {
             pendingIsForMain = false
             mailbox = nil
             onOutput = nil
+            laidOut = TranscriptDocument()
         }
         queue.async {
             self.base = nil
@@ -264,7 +279,8 @@ final class LayoutEngine: @unchecked Sendable {
     @discardableResult
     func submit(_ request: Request, schedulesLayout: Bool = true) -> Bool {
         var accepted = true
-        let delay: CFTimeInterval? = lock.withLock {
+        let urgent = Self.isShortWork(request.document, after: lock.withLock { laidOut })
+        let schedule: (delay: CFTimeInterval, urgent: Bool, id: Int)? = lock.withLock {
             guard !isShutDown else { accepted = false; return nil }
             guard request.source >= currentSource else { return nil }
             if request.source > currentSource {
@@ -275,19 +291,41 @@ final class LayoutEngine: @unchecked Sendable {
             lastSequence = request.sequence
             pending = request
             pendingIsForMain = !schedulesLayout
-            if drainScheduled || !schedulesLayout { return nil }
+            if !schedulesLayout { return nil }
+            // A drain that is not urgent can wait behind the work of other
+            // views, so short work schedules an urgent one of its own. The
+            // drain that runs first takes the request.
+            if drainScheduled, drainIsUrgent || !urgent { return nil }
             drainScheduled = true
-            return max(lastDrain + frameInterval - CACurrentMediaTime(), 0)
+            drainIsUrgent = urgent
+            drainID += 1
+            return (max(lastDrain + frameInterval - CACurrentMediaTime(), 0), urgent, drainID)
         }
-        if let delay {
+        if let schedule {
+            let id = schedule.id
             work.begin()
-            if delay > 0 {
-                queue.asyncAfter(deadline: .now() + delay) { self.drain(); self.work.end() }
+            if schedule.urgent {
+                WorkQueue.async(queue, urgent: true, after: schedule.delay) { self.drain(id); self.work.end() }
             } else {
-                queue.async { self.drain(); self.work.end() }
+                WorkQueue.asyncLong(queue, after: schedule.delay) { self.drain(id); self.work.end() }
             }
         }
         return accepted
+    }
+
+    /// Whether laying out `document` takes about a millisecond or less: its
+    /// text is short, or it adds only a little text to the end of `laidOut`,
+    /// whose layout it reuses. An urgent drain keeps its QoS when a longer
+    /// document replaces the waiting one.
+    private static func isShortWork(_ document: TranscriptDocument, after laidOut: TranscriptDocument) -> Bool {
+        let length = document.utf16Count
+        if length <= WorkQueue.shortLength { return true }
+        // Documents that share no storage, as when the app parses each
+        // version itself, would compare every block. A stream shares all
+        // but its last block or two.
+        guard laidOut.count > 0, length - laidOut.utf16Count <= WorkQueue.shortLength,
+              laidOut.count - document.knownSharedPrefix(with: laidOut) <= 8 else { return false }
+        return document.extends(laidOut)
     }
 
     private func takePending() -> Request? {
@@ -311,12 +349,18 @@ final class LayoutEngine: @unchecked Sendable {
 
     /// Lays out the newest waiting document. One that arrives while this
     /// works schedules its own drain, a frame after this one started.
-    private func drain() {
+    ///
+    /// - Parameter id: the drain's `drainID`, or nil to end the schedule.
+    private func drain(_ id: Int? = nil) {
         let next: Request? = lock.withLock {
-            drainScheduled = false
+            if id == nil || id == drainID {
+                drainScheduled = false
+                drainIsUrgent = false
+            }
             guard let request = pending, !pendingIsForMain else { return nil }
             pending = nil
             lastDrain = CACurrentMediaTime()
+            if width > 0 { laidOut = request.document }
             return request
         }
         guard let request = next else { return }
@@ -441,7 +485,7 @@ final class LayoutEngine: @unchecked Sendable {
     /// stays in use. Any thread; the result comes like any other.
     func settleFinishedFades() {
         work.begin()
-        queue.async { [self] in
+        WorkQueue.async(queue, urgent: true) { [self] in
             defer { work.end() }
             guard let layout = base, width > 0, layout.width == width else { return }
             let (fading, band) = updateFades(layout: layout, appendedTo: layout, tagsStarted: false)
@@ -565,6 +609,7 @@ final class LayoutEngine: @unchecked Sendable {
             }
             lock.withLock {
                 mailbox = nil
+                laidOut = latestDocument
                 hiding = TagHiding(fadingFrom: kept)
                 if kept == nil { fades.removeAll() }
             }

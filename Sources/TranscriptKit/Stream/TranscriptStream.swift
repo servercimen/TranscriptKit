@@ -90,13 +90,7 @@ public final class TranscriptStream {
         let finish = finishPending
         pending = ""
         finishPending = false
-        let worker = worker
-        // Waits for a job already running: the queue is serial.
-        let latest = worker.queue.sync {
-            _ = worker.apply(text, finish: finish)
-            return worker.latest
-        }
-        receive(latest)
+        receive(worker.applyNow(text, finish: finish))
         runIdleActions()
     }
 
@@ -149,9 +143,7 @@ public final class TranscriptStream {
         pending = ""
         finishPending = false
         jobInFlight = true
-        let worker = worker
-        worker.queue.async { [weak self] in
-            let update = worker.apply(text, finish: finish)
+        worker.parse(text, finish: finish) { [weak self] update in
             DispatchQueue.main.async {
                 MainActor.assumeIsolated {
                     guard let self else { return }
@@ -218,7 +210,7 @@ final class UnplacedHeightSignal {
 
 /// The parser and the attached sinks. `parser` is only touched on `queue`.
 final class StreamWorker: @unchecked Sendable {
-    let queue = DispatchQueue(label: "TranscriptKit.TranscriptStream", qos: .userInitiated)
+    let queue = WorkQueue.serial(label: "TranscriptKit.TranscriptStream")
 
     private var parser: MarkdownStreamParser
     private let lock = NSLock()
@@ -233,6 +225,24 @@ final class StreamWorker: @unchecked Sendable {
 
     var latest: StreamUpdate {
         lock.withLock { latestUpdate }
+    }
+
+    /// Parses `text` on `queue`, then calls `done` there with the new
+    /// version, if any. A short text goes ahead of the long work of other
+    /// streams and views.
+    func parse(_ text: String, finish: Bool, then done: @escaping @Sendable (StreamUpdate?) -> Void) {
+        WorkQueue.async(queue, urgent: text.utf16.count <= WorkQueue.shortLength) {
+            done(self.apply(text, finish: finish))
+        }
+    }
+
+    /// Parses `text` now and returns the latest version. Waits for a parse
+    /// already on `queue`, as the queue is serial, but not for other queues.
+    func applyNow(_ text: String, finish: Bool) -> StreamUpdate {
+        queue.sync {
+            _ = apply(text, finish: finish)
+            return latest
+        }
     }
 
     /// Parses `text` and passes the new version to every sink. Runs on `queue`.

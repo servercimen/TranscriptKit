@@ -194,7 +194,7 @@ final class UnplacedHeightSignal {
 
 /// The parser and the attached sinks. `parser` is only touched on `queue`.
 final class StreamWorker: @unchecked Sendable {
-    let queue = DispatchQueue(label: "TranscriptKit.TranscriptStream", qos: .userInitiated)
+    let queue = WorkQueue.serial(label: "TranscriptKit.TranscriptStream")
 
     private var parser: MarkdownStreamParser
     private let lock = NSLock()

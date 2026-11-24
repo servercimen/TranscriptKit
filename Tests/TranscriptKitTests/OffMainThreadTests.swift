@@ -31,6 +31,18 @@ private func object(_ target: NSObject, _ name: String, _ argument: Any? = nil) 
     }
 }
 
+/// Calls a method that takes one object and returns nothing.
+@MainActor
+private func call(_ target: NSObject, _ name: String, _ argument: Any?) async {
+    let call = Unchecked(value: (target, argument))
+    await offMain {
+        typealias Method = @convention(c) (NSObject, Selector, Any?) -> Void
+        let selector = NSSelectorFromString(name)
+        let (target, argument) = call.value
+        unsafeBitCast(target.method(for: selector), to: Method.self)(target, selector, argument)
+    }
+}
+
 @MainActor
 private func integer(_ target: NSObject, _ name: String) async -> Int {
     let target = Unchecked(value: target)
@@ -140,5 +152,45 @@ private func viewWithText() -> TranscriptTextView {
         tokenizer.value.rangeEnclosingPosition(start.value, with: .word, inDirection: .storage(.forward))
     }
     #expect((word as? TranscriptTextRange)?.range == 0..<5)
+}
+@MainActor
+@Test func settersActionsAndHitTestsWorkOffTheMainThread() async throws {
+    let view = viewWithText()
+    var opened: [URL] = []
+    view.openLink = { opened.append($0) }
+    let elements = try #require(await object(view, "accessibilityElements") as? [NSObject])
+    let action = try #require((await object(elements[1], "accessibilityCustomActions") as? [UIAccessibilityCustomAction])?.first)
+    let handled = await offMain { [action = Unchecked(value: action)] in action.value.actionHandler?(action.value) ?? false }
+    #expect(handled)
+    #expect(opened.map(\.absoluteString) == ["https://example.com"])
+
+    let delegate = Delegate()
+    await call(view, "setInputDelegate:", delegate)
+    #expect(await object(view, "inputDelegate") === delegate)
+    await call(view, "setInputDelegate:", nil)
+    if #available(iOS 18.0, macCatalyst 18.0, *) {
+        _ = await offMain { [view = Unchecked(value: view)] in view.value.writingToolsBehavior = .none }
+        let behavior = await offMain { [view = Unchecked(value: view)] in view.value.writingToolsBehavior }
+        #expect(behavior == .none)
+        #expect(!view.showsWritingTools)
+    }
+
+    #expect(await bool(view, "canBecomeFirstResponder"))
+    #expect(await object(view, "inputView") != nil)
+    let inside = await offMain { [view = Unchecked(value: view)] in view.value.point(inside: CGPoint(x: 10, y: 10), with: nil) }
+    #expect(inside)
+    await call(view, "selectAll:", nil)
+    #expect(view.selectedRange?.lowerBound == 0)
+    let copy = await offMain { [view = Unchecked(value: view)] in
+        view.value.canPerformAction(#selector(UIResponderStandardEditActions.copy(_:)), withSender: nil)
+    }
+    #expect(copy)
+}
+
+private final class Delegate: NSObject, UITextInputDelegate {
+    func selectionWillChange(_ textInput: (any UITextInput)?) {}
+    func selectionDidChange(_ textInput: (any UITextInput)?) {}
+    func textWillChange(_ textInput: (any UITextInput)?) {}
+    func textDidChange(_ textInput: (any UITextInput)?) {}
 }
 #endif

@@ -89,4 +89,43 @@ private func elements(of view: TranscriptTextView) -> [UIAccessibilityElement] {
     view.mathAccessibilityLabel = { _ in "pi r squared" }
     #expect(elements(of: view).first?.accessibilityLabel == "Area: pi r squared.")
 }
+@MainActor
+@Test func selectAllUnderALineLimitCopiesAllOfTheText() async {
+    let view = TranscriptTextView(frame: CGRect(x: 0, y: 0, width: 200, height: 400))
+    var parser = MarkdownStreamParser()
+    parser.append(String(repeating: "Words that wrap onto several lines. ", count: 6) + "\n\n## Later heading\n\nLast")
+    view.document = parser.document
+    var style = view.style
+    style.lineLimit = 2
+    view.style = style
+    view.layoutIfNeeded()
+    var reported: [Range<Int>?] = []
+    view.onSelectionChange = { reported.append($0) }
+    view.selectAll(nil)
+    let shown = (view.endOfDocument as? TranscriptTextPosition)?.offset ?? 0
+    #expect(shown < parser.document.utf16Count)
+    #expect(view.selectedRange == 0..<parser.document.utf16Count)
+    // What `copy(_:)` puts on the pasteboard.
+    #expect(view.selectedRange.map { parser.document.copyText(in: $0) }?.hasSuffix("Last") == true)
+    #expect(view.selectedText?.hasSuffix("Last") == true)
+    #expect(reported == [0..<parser.document.utf16Count])
+    // The selection grows with text that streams in after the cut.
+    parser.append(" paragraph.")
+    view.document = parser.document
+    await wait { view.selectedRange == 0..<parser.document.utf16Count }
+    #expect(view.selectedRange == 0..<parser.document.utf16Count)
+    #expect(reported.last == 0..<parser.document.utf16Count)
+    #expect(view.selectedText?.hasSuffix("Last paragraph.") == true)
+}
+
+@MainActor
+@Test func anElementReadsAllOfTheTextUnderALineLimit() {
+    let view = TranscriptTextView(frame: CGRect(x: 0, y: 0, width: 200, height: 400))
+    view.document = MarkdownStreamParser.document(from: "First paragraph that wraps onto lines.\n\nSecond.")
+    var style = view.style
+    style.lineLimit = 1
+    view.style = style
+    view.layoutIfNeeded()
+    #expect(elements(of: view).map(\.accessibilityLabel) == ["First paragraph that wraps onto lines.\nSecond."])
+}
 #endif

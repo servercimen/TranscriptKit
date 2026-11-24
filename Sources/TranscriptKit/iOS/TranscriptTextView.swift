@@ -1246,7 +1246,11 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     // MARK: Responder
 
-    public override var canBecomeFirstResponder: Bool { isSelectable }
+    // The responder and hit test overrides below are `nonisolated` for the
+    // same reason as the `UITextInput` methods: assistive technologies can
+    // reach them from another thread (see `onMainThread`).
+
+    nonisolated public override var canBecomeFirstResponder: Bool { onMainThread { isSelectable } }
 
     private static let didBecomeFirstResponder = Notification.Name("TranscriptTextViewDidBecomeFirstResponder")
 
@@ -1267,12 +1271,14 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     }
 
     /// Without selection, only links take touches.
-    public override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
-        guard super.point(inside: point, with: event) else { return false }
-        // Hit testing comes before the touch begins, and the touch's gesture
-        // recognizers are gathered after it, so ones added now see it.
-        if isSelectable { addTextInteractionIfNeeded() }
-        return isSelectable || linkURL(at: point) != nil
+    nonisolated public override func point(inside point: CGPoint, with event: UIEvent?) -> Bool {
+        onMainThread {
+            guard super.point(inside: point, with: event) else { return false }
+            // Hit testing comes before the touch begins, and the touch's gesture
+            // recognizers are gathered after it, so ones added now see it.
+            if isSelectable { addTextInteractionIfNeeded() }
+            return isSelectable || linkURL(at: point) != nil
+        }
     }
 
     private func addTextInteractionIfNeeded() {
@@ -1284,7 +1290,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     }
 
     /// Read-only: an empty input view keeps the keyboard from appearing.
-    public override var inputView: UIView? { emptyInputView }
+    nonisolated public override var inputView: UIView? { onMainThread { emptyInputView } }
 
     /// Whether the edit menu offers Writing Tools for the selected text, on
     /// devices that have them. On by default, as in a `UITextView`.
@@ -1296,26 +1302,32 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         set { onMainThread { showsWritingTools = newValue != .none } }
     }
 
-    public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
-        switch action {
-        case #selector(copy(_:)):
-            return !(selection?.isEmpty ?? true)
-        case #selector(selectAll(_:)):
-            return currentLayout.length > 0 && selection != 0..<currentLayout.length
-        case #selector(paste(_:)), #selector(cut(_:)), #selector(delete(_:)):
-            return false
-        default:
-            return super.canPerformAction(action, withSender: sender)
+    nonisolated public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        // The sender only goes on to `super`, on the main thread.
+        nonisolated(unsafe) let sender = sender
+        return onMainThread {
+            switch action {
+            case #selector(copy(_:)):
+                return !(selection?.isEmpty ?? true)
+            case #selector(selectAll(_:)):
+                return currentLayout.length > 0 && selection != 0..<currentLayout.length
+            case #selector(paste(_:)), #selector(cut(_:)), #selector(delete(_:)):
+                return false
+            default:
+                return super.canPerformAction(action, withSender: sender)
+            }
         }
     }
 
-    public override func copy(_ sender: Any?) {
-        guard let range = selectedRange else { return }
-        UIPasteboard.general.string = shownDocument.copyText(in: range)
+    nonisolated public override func copy(_ sender: Any?) {
+        onMainThread {
+            guard let range = selectedRange else { return }
+            UIPasteboard.general.string = shownDocument.copyText(in: range)
+        }
     }
 
-    public override func selectAll(_ sender: Any?) {
-        select(0..<currentLayout.length)
+    nonisolated public override func selectAll(_ sender: Any?) {
+        onMainThread { select(0..<currentLayout.length) }
     }
 
     /// Selects a range of the document's flat UTF-16 offset space, or clears

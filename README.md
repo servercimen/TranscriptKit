@@ -346,6 +346,30 @@ selection ends, and its range is nil. The selection stays when the person opens 
 
 In UIKit, use `onSelectionChange`, `selectedRange` and `selectsAllWhenShown` on `TranscriptTextView`.
 
+### Waiting for the final content
+
+The view lays out plain text at once only when it shows no layout yet. A style or a renderer that the app sets before
+the document, on a view that has a width, makes the view lay out the empty text first. The text of the document then
+shows on a later turn of the main run loop, as in the example below. Layouts of later updates, images, formulas and
+code colors also come back on later turns. A snapshot or a test that does not wait for them can show no text, or the
+text without them.
+`contentSettled()` on `TranscriptTextView` returns when the view shows its final content. Then no layout, stream
+parse, image load, formula or code colors are pending, the last layout is on screen, and its tiles are drawn:
+
+```swift
+let view = TranscriptTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 600))
+view.mathRenderer = myMathRenderer
+view.document = document
+await view.contentSettled()
+let image = UIGraphicsImageRenderer(bounds: view.bounds).image { view.layer.render(in: $0.cgContext) }
+```
+
+While a stream that has not finished goes on, `contentSettled()` returns at the first moment when nothing is pending.
+A cancelled task returns at once. An image or a formula that comes back as nil counts as done. A load, a formula or
+a highlight that never ends holds back `contentSettled()`, so use a timeout or cancel the task. Give the view its size
+before the call: a view with no width lays out nothing and settles at once. Fades and tag animations that play are not
+waited for, so turn off `textFadeInDuration` and `animatesTags` to compare pixels.
+
 ## In this repository
 
 | Folder | Contents |

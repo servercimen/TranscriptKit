@@ -48,3 +48,35 @@ jobs:
         run: >
           xcodebuild build -project Benchmark/TranscriptBench.xcodeproj -scheme TranscriptBench
           -destination 'generic/platform=iOS' -skipMacroValidation CODE_SIGNING_ALLOWED=NO
+
+  ios-view-tests:
+    name: iOS view tests
+    runs-on: macos-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show the Xcode version
+        run: xcodebuild -version
+      - name: Pick a simulator
+        run: |
+          sdk=$(xcrun --sdk iphonesimulator --show-sdk-version)
+          udid=$(xcrun simctl list devices available --json | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          sdk = [int(part) for part in sys.argv[1].split(".")]
+          def version(runtime):
+              return [int(part) for part in runtime.rsplit("iOS-", 1)[1].split("-")]
+          runtimes = sorted((r for r in devices if ".SimRuntime.iOS-" in r and version(r) <= sdk), key=version, reverse=True)
+          phones = [(r, d) for r in runtimes for d in devices[r] if ".iPhone-" in d["deviceTypeIdentifier"]]
+          if not phones:
+              sys.exit("No iPhone simulator is available.")
+          runtime, device = phones[0]
+          print(device["name"], runtime, file=sys.stderr)
+          print(device["udid"])
+          ' "$sdk")
+          echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
+      - name: Run the view tests
+        run: >
+          xcodebuild test -scheme TranscriptKit
+          -destination "platform=iOS Simulator,id=$SIMULATOR_UDID"
+          -only-testing:TranscriptKitViewTests

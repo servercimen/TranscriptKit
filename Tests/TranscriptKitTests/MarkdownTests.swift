@@ -167,11 +167,12 @@ private func substring(_ result: InlineParser.Result, _ span: InlineSpan) -> Str
 
 // MARK: Streaming
 
-/// Feeds `sample` in chunks of `size` characters and returns every intermediate document.
-private func stream(chunkSize size: Int) -> (steps: [TranscriptDocument], final: TranscriptDocument) {
-    var parser = MarkdownStreamParser(idPrefix: "md")
+/// Feeds `markdown` in chunks of `size` characters and returns every intermediate document.
+private func stream(chunkSize size: Int, markdown: String = sample,
+                    newlinesAsLineBreaks: Bool = false) -> (steps: [TranscriptDocument], final: TranscriptDocument) {
+    var parser = MarkdownStreamParser(idPrefix: "md", newlinesAsLineBreaks: newlinesAsLineBreaks)
     var steps: [TranscriptDocument] = []
-    var rest = Substring(sample)
+    var rest = Substring(markdown)
     while !rest.isEmpty {
         parser.append(String(rest.prefix(size)))
         rest = rest.dropFirst(size)
@@ -187,17 +188,19 @@ func streamingMatchesOneShotParse(chunkSize: Int) {
     #expect(stream(chunkSize: chunkSize).final == expected)
 }
 
-@Test func frozenBlocksNeverChange() {
-    let steps = stream(chunkSize: 1).steps
+@Test(arguments: [false, true])
+func frozenBlocksNeverChange(newlinesAsLineBreaks: Bool) {
+    let steps = stream(chunkSize: 1, newlinesAsLineBreaks: newlinesAsLineBreaks).steps
     for (previous, next) in zip(steps, steps.dropFirst()) {
         let settled = previous.blocks.dropLast()
         #expect(Array(next.blocks.prefix(settled.count)) == Array(settled))
     }
 }
 
-@Test func displayedTextOnlyGrowsWhileStreaming() {
+@Test(arguments: [false, true])
+func displayedTextOnlyGrowsWhileStreaming(newlinesAsLineBreaks: Bool) {
     // Character by character is the worst case: every partial marker is seen.
-    let steps = stream(chunkSize: 1).steps
+    let steps = stream(chunkSize: 1, newlinesAsLineBreaks: newlinesAsLineBreaks).steps
     var violations: [String] = []
     for (previous, next) in zip(steps, steps.dropFirst()) where !next.extends(previous) {
         violations.append("\(previous.blocks.last.map { "\($0.kind) \($0.text.suffix(24))" } ?? "-")  ->  \(next.blocks.last.map { "\($0.kind) \($0.text.suffix(24))" } ?? "-")")

@@ -34,6 +34,16 @@ let x = "a < b" // ** not bold **
 Trailing paragraph with an unclosed `code span and *emphasis
 """
 
+/// Paragraphs whose lines end in a single newline, as models write them,
+/// next to hard breaks and to lines that could start another block.
+/// Written with explicit "\n" so that the trailing spaces stay.
+let lineBreakMarkdown = "First line\nsecond line  \nthird line\\\nfourth line \nfifth\t\n**bold** start\n"
+    + "a <b\n    >tag</b\n    > over lines, a break<br>\nafter it<br />\\\nand <br\n/> inside\n"
+    + "`code\nspan` and [link\ntext](\nhttps://x.y) and *emphasis\nover lines*\r\nCRLF line\r\n\n"
+    + "- item one\n  continued\nlazy line\n- item two\n\n> quote one\n> quote two\nlazy quote\n\n"
+    + "Setext title\nover two lines\n===\n\nA | B\nnot a table\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n"
+    + "$$\nx = 1\ny = 2\n\nafter math\n1. one\n   two\n\n```\ncode\nlines\n```\nlast line\nends here"
+
 /// The benchmark's answer text (Benchmark/TranscriptBench/Corpus.swift).
 func answerSection(_ index: Int) -> String {
     """
@@ -92,16 +102,16 @@ private func chunks(of text: String, size: Int?, seed: UInt64 = 1) -> [String] {
     return result
 }
 
-@Test(arguments: [1, 2, 3, 5, 7, 13, nil] as [Int?])
-func incrementalParseMatchesParsingFromScratch(chunkSize: Int?) {
-    for markdown in [trickyMarkdown, (1...3).map(answerSection).joined()] {
-        var parser = MarkdownStreamParser(idPrefix: "md")
+@Test(arguments: [1, 2, 3, 5, 7, 13, nil] as [Int?], [false, true])
+func incrementalParseMatchesParsingFromScratch(chunkSize: Int?, newlinesAsLineBreaks: Bool) {
+    for markdown in [trickyMarkdown, (1...3).map(answerSection).joined(), lineBreakMarkdown] {
+        var parser = MarkdownStreamParser(idPrefix: "md", newlinesAsLineBreaks: newlinesAsLineBreaks)
         var sent = ""
         var mismatches: [String] = []
         for chunk in chunks(of: markdown, size: chunkSize, seed: 7) {
             parser.append(chunk)
             sent += chunk
-            var fresh = MarkdownStreamParser(idPrefix: "md")
+            var fresh = MarkdownStreamParser(idPrefix: "md", newlinesAsLineBreaks: newlinesAsLineBreaks)
             fresh.append(sent)
             if parser.document != fresh.document, mismatches.count < 5 {
                 mismatches.append("after \(sent.count) characters: \(describe(parser.document.blocks.last)) vs \(describe(fresh.document.blocks.last))")
@@ -109,7 +119,7 @@ func incrementalParseMatchesParsingFromScratch(chunkSize: Int?) {
         }
         #expect(mismatches.isEmpty, "\(mismatches.joined(separator: "\n"))")
         parser.finish()
-        #expect(parser.document == MarkdownStreamParser.document(from: markdown))
+        #expect(parser.document == MarkdownStreamParser.document(from: markdown, newlinesAsLineBreaks: newlinesAsLineBreaks))
     }
 }
 
@@ -244,6 +254,25 @@ private func randomInline(length: Int, using generator: inout SeededGenerator) -
         }
     }
     #expect(mismatches.isEmpty, "\(mismatches.joined(separator: "\n"))")
+}
+
+/// The inline parse of a paragraph of many single-newline lines resumes
+/// near its end with the option too, so an update does not parse it whole.
+@Test func checkpointKeepsUpWithLineBreaks() {
+    let lines = (0..<120).map { "Line \($0) with **bold**, `code` and a < b." }
+    for newlines in [false, true] {
+        var state = BlockParser.State(newlinesAsLineBreaks: newlines)
+        for line in lines { state.process(line) }
+        let source = state.blocks[0].inlineSource().units
+        #expect(source.contains(UInt16(UInt8(ascii: "\n"))) == newlines)
+        var checkpoint = InlineParser.Checkpoint()
+        var end = 0
+        while end < source.count {
+            end = min(end + 7, source.count)
+            _ = InlineParser.parse(Array(source[..<end]), open: true, stableLength: end, resumingFrom: &checkpoint)
+        }
+        #expect(source.count - checkpoint.position < 10, "newlines: \(newlines)")
+    }
 }
 
 /// The UTF-8 decoder used for lines gives the same units as `utf16`.

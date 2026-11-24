@@ -10,5 +10,6 @@ let package = Package(
     targets: [
         .target(name: "TranscriptKit"),
         .testTarget(name: "TranscriptKitTests", dependencies: ["TranscriptKit"]),
+        .testTarget(name: "TranscriptKitViewTests", dependencies: ["TranscriptKit"]),
     ]
 )

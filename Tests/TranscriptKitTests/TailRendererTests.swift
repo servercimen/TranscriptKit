@@ -214,6 +214,45 @@ func tailFramesMatchWithTablesAndContainers(chunk: Int) {
     #expect(mismatches.isEmpty, "\(mismatches.joined(separator: "\n"))")
 }
 
+/// Right-to-left text, and a block that turns right to left when its first
+/// letter arrives, stream into the tail as they draw from scratch.
+@Test(arguments: [2, 7])
+func tailFramesMatchInRightToLeftText(chunk: Int) {
+    let markdown = """
+    שלום עולם, זה משפט ארוך בעברית שעובר לשורה הבאה ברוחב הזה.
+
+    > 2024: מרחבא בעולם, וזה ציטוט ארוך
+
+    - פריט ראשון ברשימה
+    - [ ] משימה פתוחה
+
+    | מילה | פירוש |
+    | --- | --- |
+    | אחת | ראשונה |
+
+    English, then עברית at the end.
+
+    """
+    let scale: CGFloat = 2
+    var checked = 0
+    var mismatches: [String] = []
+    var frameIndex = 0
+    streamTail(markdown, chunk: chunk, scale: scale) { layout, frame in
+        frameIndex += 1
+        let width = Int(((layout.width + 2 * TailRenderer.sideMargin) * scale).rounded())
+        let height = Int((TailRenderer.height * scale).rounded())
+        let actual = pixels(of: frame.surface, width: width, height: height)
+        let expected = expectedPixels(layout, top: frame.top, scale: scale)
+        let differing = zip(actual, expected).filter { abs(Int($0) - Int($1)) > 2 }.count
+        if differing > 0, mismatches.count < 3 {
+            mismatches.append("frame \(frameIndex), top \(frame.top): \(differing) bytes differ")
+        }
+        checked += 1
+    }
+    #expect(checked > 10)
+    #expect(mismatches.isEmpty, "\(mismatches.joined(separator: "\n"))")
+}
+
 /// Rows already written keep their lines while a table streams, as long as
 /// the columns stay the same.
 @Test func streamingTableKeepsFinishedRows() throws {

@@ -38,6 +38,7 @@ Trailing paragraph with an unclosed `code span and *emphasis
 /// next to hard breaks and to lines that could start another block.
 /// Written with explicit "\n" so that the trailing spaces stay.
 let lineBreakMarkdown = "First line\nsecond line  \nthird line\\\nfourth line \nfifth\t\n**bold** start\n"
+    + "a <b\n    >tag</b\n    > over lines, a break<br>\nafter it<br />\\\nand <br\n/> inside\n"
     + "`code\nspan` and [link\ntext](\nhttps://x.y) and *emphasis\nover lines*\r\nCRLF line\r\n\n"
     + "- item one\n  continued\nlazy line\n- item two\n\n> quote one\n> quote two\nlazy quote\n\n"
     + "Setext title\nover two lines\n===\n\nA | B\nnot a table\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n"

@@ -40,8 +40,9 @@ public struct MarkdownStreamParser: Sendable {
     ///     `TranscriptTag`. Other tags show as written.
     ///   - newlinesAsLineBreaks: if true, a single newline inside a paragraph
     ///     or a heading is a line break, as models often intend. A line that
-    ///     ends in a backslash or two spaces still gives one line break, not
-    ///     two. If false (the default), the newline is a space, as in CommonMark.
+    ///     ends in a backslash, two spaces or `<br>` still gives one line
+    ///     break, not two. A newline in a code span is still a space. If false
+    ///     (the default), the newline is a space, as in CommonMark.
     public init(idPrefix: String = String(UUID().uuidString.prefix(8)), tags: [TranscriptTag] = [],
                 newlinesAsLineBreaks: Bool = false) {
         self.idPrefix = idPrefix
@@ -181,7 +182,8 @@ public struct MarkdownStreamParser: Sendable {
             paragraph.becomeParagraph()
             let text = paragraph.inlineSource()
             let result = InlineParser.parse(text.units, open: false, stableLength: text.units.count,
-                                            resumingFrom: &paragraph.checkpoint, tags: tags)
+                                            resumingFrom: &paragraph.checkpoint, tags: tags,
+                                            newlinesAsLineBreaks: raw.newlinesAsLineBreaks)
             return TranscriptBlock(id: id, kind: .paragraph, text: result.text, spans: result.spans,
                                    containers: raw.containers, marker: raw.marker)
         case .heading(let level):
@@ -191,7 +193,7 @@ public struct MarkdownStreamParser: Sendable {
         }
         let source = raw.inlineSource()
         let result = InlineParser.parse(source.units, open: open, stableLength: source.stableLength, resumingFrom: &raw.checkpoint,
-                                        tags: tags)
+                                        tags: tags, newlinesAsLineBreaks: raw.newlinesAsLineBreaks)
         return TranscriptBlock(id: id, kind: kind, text: result.text, spans: result.spans,
                                containers: raw.containers, marker: raw.marker)
     }

@@ -25,7 +25,22 @@ private func parse(_ markdown: String, newlines: Bool = true) -> [TranscriptBloc
         #expect(parse("one\\\ntwo", newlines: newlines).map(\.text) == ["one\ntwo"])
         #expect(parse("one \\\ntwo", newlines: newlines).map(\.text) == ["one\ntwo"])
     }
-    #expect(parse("one<br>\ntwo").map(\.text) == ["one\n\ntwo"])
+    #expect(parse("one<br>\ntwo").map(\.text) == ["one\ntwo"])
+    #expect(parse("one<BR />\ntwo<br/>\nthree").map(\.text) == ["one\ntwo\nthree"])
+    #expect(parse("one<br>\\\ntwo").map(\.text) == ["one\ntwo"])
+    #expect(parse("one<br><br>\ntwo").map(\.text) == ["one\n\ntwo"])
+    #expect(parse("one\\<br>\ntwo").map(\.text) == ["one<br>\ntwo"])
+    #expect(parse("one<br>\ntwo", newlines: false).map(\.text) == ["one\n two"])
+}
+
+@Test func builtInTagsCanSpanLinesWithTheOption() {
+    for newlines in [false, true] {
+        #expect(parse("a <br\n/>b", newlines: newlines).map(\.text) == ["a \nb"])
+        let bold = parse("<b\n    >bold</b\n    > after", newlines: newlines)[0]
+        #expect(bold.text == "bold after")
+        #expect(bold.spans.map(\.range) == [0..<4])
+        #expect(bold.spans.map(\.traits) == [.bold])
+    }
 }
 
 @Test func newlinesInContainersAreLineBreaksWithTheOption() {
@@ -64,14 +79,15 @@ private func parse(_ markdown: String, newlines: Bool = true) -> [TranscriptBloc
     #expect(parse("<b>one\ntwo</b>")[0].spans.map(\.range) == [0..<7])
 }
 
-/// A code span keeps the newline as a line break, as the rest of the
-/// paragraph does.
-@Test func codeSpanKeepsTheLineBreakWithTheOption() {
-    let block = parse("a `b\nc` d")[0]
-    #expect(block.text == "a b\nc d")
+/// A newline in a code span is a space, as in CommonMark.
+@Test func newlineInCodeSpanIsASpaceWithTheOption() {
+    let block = parse("a `b\nc` d\ne")[0]
+    #expect(block.text == "a b c d\ne")
     #expect(block.spans.map(\.range) == [2..<5])
     #expect(block.spans.map(\.traits) == [.code])
+    #expect(parse("`` a\n``")[0].text == "a")
     #expect(parse("a `b\nc` d", newlines: false)[0].text == "a b c d")
+    #expect(parse("a `b\\\nc` d", newlines: false)[0].text == "a b\nc d")
 }
 
 @Test func copiedTextHasTheLineBreaks() {
@@ -95,11 +111,11 @@ private func parse(_ markdown: String, newlines: Bool = true) -> [TranscriptBloc
     #expect(plain.document.blocks.map(\.text) == ["one two"])
 }
 
-
 /// Each line of a paragraph only adds text at the end while it streams in:
 /// the line break before it does not appear first as a space.
 @Test func lineBreaksOnlyGrowTheTextWhileStreaming() {
-    let markdown = "One line\nanother line\nand **a third\nwith bold** that\nends\n\n- item\n  more\n\n> quote\n> more"
+    let markdown = "One line\nanother line\nand **a third\nwith bold** that\nends\nwith `code\nspan` and<br>\nnext\n\n"
+        + "- item\n  more\n\n> quote\n> more"
     var parser = MarkdownStreamParser(idPrefix: "g", newlinesAsLineBreaks: true)
     var previous = parser.document
     var violations: [String] = []
@@ -112,7 +128,8 @@ private func parse(_ markdown: String, newlines: Bool = true) -> [TranscriptBloc
     }
     #expect(violations.isEmpty, "\(violations.joined(separator: "\n"))")
     parser.finish()
-    #expect(parser.document.blocks.map(\.text) == ["One line\nanother line\nand a third\nwith bold that\nends", "item\nmore", "quote\nmore"])
+    #expect(parser.document.blocks.map(\.text) == ["One line\nanother line\nand a third\nwith bold that\nends\nwith code span and\nnext",
+                                                   "item\nmore", "quote\nmore"])
 }
 
 /// A link destination after a line break is still read.

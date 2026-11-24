@@ -114,3 +114,11 @@ private func parse(_ markdown: String, newlines: Bool = true) -> [TranscriptBloc
     parser.finish()
     #expect(parser.document.blocks.map(\.text) == ["One line\nanother line\nand a third\nwith bold that\nends", "item\nmore", "quote\nmore"])
 }
+
+/// A link destination after a line break is still read.
+@Test func linkDestinationCanStartOnTheNextLine() {
+    #expect(parse("[a](\nhttps://x.y)")[0].spans.first?.link == "https://x.y")
+    #expect(parse("[a](https://x.y\n\"title\")")[0].spans.first?.link == "https://x.y")
+    #expect(parse("[a](\nhttps://x.y)", newlines: false)[0].spans.first?.link == "https://x.y")
+    #expect(parse("[a](\\\nhttps://x.y)", newlines: false)[0].spans.first?.link == "https://x.y")
+}

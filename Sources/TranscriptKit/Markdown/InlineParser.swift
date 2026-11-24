@@ -611,7 +611,7 @@ enum InlineParser {
             let opener = state.brackets.removeLast()
             if close != nil || open {
                 let raw = String(decoding: units[(i + 2)..<(close ?? count)], as: UTF16.self)
-                    .trimmingCharacters(in: .whitespaces)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 var destination = String(raw.prefix { !$0.isWhitespace })
                 if destination.hasPrefix("<"), destination.hasSuffix(">"), destination.count >= 2 {
                     destination = String(destination.dropFirst().dropLast())

@@ -288,6 +288,9 @@ position in its list and the number of items, such as "Item 2 of 3". A table is 
 cell, so VoiceOver reads it cell by cell, with the row, the column and the column's header. While text streams in, each
 block keeps its element, so VoiceOver focus stays on its block.
 
+Assistive technologies, such as VoiceOver, Speak Screen and Voice Control, can ask for the elements and the text from
+any thread. TranscriptKit then does the work on the main thread and gives the answer to the thread that asked.
+
 The spoken words "Open %@", "Checked", "Unchecked", "Separator" and "Item %1$ld of %2$ld" come from your app's
 `Localizable.strings`, so you can translate them there.
 

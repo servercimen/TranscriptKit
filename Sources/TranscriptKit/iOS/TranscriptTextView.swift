@@ -801,7 +801,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         TranscriptDiagnostics.count(\.installs)
         let old = installed
         let isAppend = changedTop != nil && old != nil
-        if !isAppend { inputDelegate?.textWillChange(self) }
+        if !isAppend { storedInputDelegate?.textWillChange(self) }
         if isAppend {
             self.fadingFrom = fadingFrom
         } else if let keptFadingFrom {
@@ -870,7 +870,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         }
 
         if !isAppend {
-            inputDelegate?.textDidChange(self)
+            storedInputDelegate?.textDidChange(self)
             refreshSelectionDisplay()
         }
         postAccessibilityLayoutChangeIfNeeded(for: layout, isAppend: isAppend)
@@ -1226,13 +1226,14 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     var accessibilityCache: AccessibilityCache?
 
     /// A container: VoiceOver reads its blocks (see `accessibilityElements(for:)`).
-    public override var isAccessibilityElement: Bool {
+    nonisolated public override var isAccessibilityElement: Bool {
         get { false }
         set {}
     }
 
-    public override var accessibilityElements: [Any]? {
-        get { accessibilityElements(for: currentLayout) }
+    /// Any thread: assistive technologies can ask from another one (see `onMainThread`).
+    nonisolated public override var accessibilityElements: [Any]? {
+        get { onMainThread { accessibilityElements(for: currentLayout) } }
         set {}
     }
 
@@ -1283,9 +1284,9 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     public var showsWritingTools = true
 
     @available(iOS 18.0, *)
-    public var writingToolsBehavior: UIWritingToolsBehavior {
-        get { showsWritingTools ? .default : .none }
-        set { showsWritingTools = newValue != .none }
+    nonisolated public var writingToolsBehavior: UIWritingToolsBehavior {
+        get { onMainThread { showsWritingTools ? .default : .none } }
+        set { onMainThread { showsWritingTools = newValue != .none } }
     }
 
     public override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
@@ -1314,9 +1315,9 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// the selection when `range` is nil.
     public func select(_ range: Range<Int>?) {
         if range != nil { addTextInteractionIfNeeded() }
-        inputDelegate?.selectionWillChange(self)
+        storedInputDelegate?.selectionWillChange(self)
         selection = range.map { clamp($0.lowerBound)..<clamp($0.upperBound) }
-        inputDelegate?.selectionDidChange(self)
+        storedInputDelegate?.selectionDidChange(self)
         refreshSelectionDisplay()
     }
 
@@ -1326,6 +1327,10 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     }
 
     // MARK: UITextInput — positions and ranges
+
+    // Every `UITextInput` method is `nonisolated` and does its work on the
+    // main thread, because assistive technologies and the tokenizer can
+    // call it from another thread (see `onMainThread`).
 
     private func offset(of position: UITextPosition) -> Int {
         (position as? TranscriptTextPosition)?.offset ?? 0
@@ -1339,130 +1344,160 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         min(max(offset, 0), currentLayout.length)
     }
 
-    public var beginningOfDocument: UITextPosition { TranscriptTextPosition(offset: 0) }
-    public var endOfDocument: UITextPosition { TranscriptTextPosition(offset: currentLayout.length) }
+    nonisolated public var beginningOfDocument: UITextPosition { onMainThread { TranscriptTextPosition(offset: 0) } }
+    nonisolated public var endOfDocument: UITextPosition { onMainThread { TranscriptTextPosition(offset: currentLayout.length) } }
 
-    public func textRange(from fromPosition: UITextPosition, to toPosition: UITextPosition) -> UITextRange? {
-        let a = clamp(offset(of: fromPosition))
-        let b = clamp(offset(of: toPosition))
-        return TranscriptTextRange(range: min(a, b)..<max(a, b))
-    }
-
-    public func position(from position: UITextPosition, offset: Int) -> UITextPosition? {
-        let target = self.offset(of: position) + offset
-        guard target >= 0, target <= currentLayout.length else { return nil }
-        return TranscriptTextPosition(offset: target)
-    }
-
-    public func position(from position: UITextPosition, in direction: UITextLayoutDirection, offset: Int) -> UITextPosition? {
-        let start = self.offset(of: position)
-        switch direction {
-        case .left: return TranscriptTextPosition(offset: clamp(start - offset))
-        case .right: return TranscriptTextPosition(offset: clamp(start + offset))
-        case .up, .down:
-            let caret = currentLayout.caretRect(at: start)
-            let step = caret.height * CGFloat(offset) * (direction == .up ? -1 : 1)
-            let target = currentLayout.closestOffset(to: CGPoint(x: caret.midX, y: caret.midY + step))
-            return TranscriptTextPosition(offset: target)
-        @unknown default: return nil
+    nonisolated public func textRange(from fromPosition: UITextPosition, to toPosition: UITextPosition) -> UITextRange? {
+        onMainThread {
+            let a = clamp(offset(of: fromPosition))
+            let b = clamp(offset(of: toPosition))
+            return TranscriptTextRange(range: min(a, b)..<max(a, b))
         }
     }
 
-    public func compare(_ position: UITextPosition, to other: UITextPosition) -> ComparisonResult {
-        let a = offset(of: position)
-        let b = offset(of: other)
+    nonisolated public func position(from position: UITextPosition, offset: Int) -> UITextPosition? {
+        onMainThread {
+            let target = self.offset(of: position) + offset
+            guard target >= 0, target <= currentLayout.length else { return nil }
+            return TranscriptTextPosition(offset: target)
+        }
+    }
+
+    nonisolated public func position(from position: UITextPosition, in direction: UITextLayoutDirection, offset: Int) -> UITextPosition? {
+        onMainThread {
+            let start = self.offset(of: position)
+            switch direction {
+            case .left: return TranscriptTextPosition(offset: clamp(start - offset))
+            case .right: return TranscriptTextPosition(offset: clamp(start + offset))
+            case .up, .down:
+                let caret = currentLayout.caretRect(at: start)
+                let step = caret.height * CGFloat(offset) * (direction == .up ? -1 : 1)
+                let target = currentLayout.closestOffset(to: CGPoint(x: caret.midX, y: caret.midY + step))
+                return TranscriptTextPosition(offset: target)
+            @unknown default: return nil
+            }
+        }
+    }
+
+    nonisolated public func compare(_ position: UITextPosition, to other: UITextPosition) -> ComparisonResult {
+        let a = TranscriptTextPosition.offset(of: position)
+        let b = TranscriptTextPosition.offset(of: other)
         return a < b ? .orderedAscending : (a > b ? .orderedDescending : .orderedSame)
     }
 
-    public func offset(from: UITextPosition, to toPosition: UITextPosition) -> Int {
-        offset(of: toPosition) - offset(of: from)
+    nonisolated public func offset(from: UITextPosition, to toPosition: UITextPosition) -> Int {
+        TranscriptTextPosition.offset(of: toPosition) - TranscriptTextPosition.offset(of: from)
     }
 
-    public func position(within range: UITextRange, farthestIn direction: UITextLayoutDirection) -> UITextPosition? {
-        let range = self.range(of: range)
-        switch direction {
-        case .left, .up: return TranscriptTextPosition(offset: range.lowerBound)
-        case .right, .down: return TranscriptTextPosition(offset: range.upperBound)
-        @unknown default: return nil
+    nonisolated public func position(within range: UITextRange, farthestIn direction: UITextLayoutDirection) -> UITextPosition? {
+        onMainThread {
+            let range = self.range(of: range)
+            switch direction {
+            case .left, .up: return TranscriptTextPosition(offset: range.lowerBound)
+            case .right, .down: return TranscriptTextPosition(offset: range.upperBound)
+            @unknown default: return nil
+            }
         }
     }
 
-    public func characterRange(byExtending position: UITextPosition, in direction: UITextLayoutDirection) -> UITextRange? {
-        let start = offset(of: position)
-        switch direction {
-        case .left, .up: return TranscriptTextRange(range: clamp(start - 1)..<start)
-        case .right, .down: return TranscriptTextRange(range: start..<clamp(start + 1))
-        @unknown default: return nil
+    nonisolated public func characterRange(byExtending position: UITextPosition, in direction: UITextLayoutDirection) -> UITextRange? {
+        onMainThread {
+            let start = offset(of: position)
+            switch direction {
+            case .left, .up: return TranscriptTextRange(range: clamp(start - 1)..<start)
+            case .right, .down: return TranscriptTextRange(range: start..<clamp(start + 1))
+            @unknown default: return nil
+            }
         }
     }
 
     // MARK: UITextInput — text and selection
 
-    public func text(in range: UITextRange) -> String? {
-        shownDocument.text(in: self.range(of: range))
+    nonisolated public func text(in range: UITextRange) -> String? {
+        onMainThread { shownDocument.text(in: self.range(of: range)) }
     }
 
-    public var selectedTextRange: UITextRange? {
-        get { selection.map { TranscriptTextRange(range: $0) } }
-        set { selection = newValue.map { range(of: $0) } }
+    nonisolated public var selectedTextRange: UITextRange? {
+        get { onMainThread { selection.map { TranscriptTextRange(range: $0) } } }
+        set { onMainThread { selection = newValue.map { range(of: $0) } } }
     }
 
-    public weak var inputDelegate: UITextInputDelegate?
-    public private(set) lazy var tokenizer: UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
+    private weak var storedInputDelegate: UITextInputDelegate?
 
-    // MARK: UITextInput — geometry
-
-    public func caretRect(for position: UITextPosition) -> CGRect {
-        currentLayout.caretRect(at: clamp(offset(of: position)))
-    }
-
-    public func firstRect(for range: UITextRange) -> CGRect {
-        let range = self.range(of: range)
-        return currentLayout.selectionRects(for: range).first ?? currentLayout.caretRect(at: range.lowerBound)
-    }
-
-    public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
-        let rects = currentLayout.selectionRects(for: self.range(of: range))
-        return rects.enumerated().map { index, rect in
-            TranscriptSelectionRect(rect: rect, containsStart: index == 0, containsEnd: index == rects.count - 1)
+    nonisolated public var inputDelegate: UITextInputDelegate? {
+        get { onMainThread { storedInputDelegate } }
+        set {
+            // Only the main thread uses the delegate once it is stored.
+            nonisolated(unsafe) let delegate = newValue
+            onMainThread { storedInputDelegate = delegate }
         }
     }
 
-    public func closestPosition(to point: CGPoint) -> UITextPosition? {
-        TranscriptTextPosition(offset: currentLayout.closestOffset(to: point))
+    private lazy var storedTokenizer: UITextInputTokenizer = UITextInputStringTokenizer(textInput: self)
+
+    nonisolated public var tokenizer: UITextInputTokenizer { onMainThread { storedTokenizer } }
+
+    // MARK: UITextInput — geometry
+
+    nonisolated public func caretRect(for position: UITextPosition) -> CGRect {
+        onMainThread { currentLayout.caretRect(at: clamp(offset(of: position))) }
     }
 
-    public func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? {
-        let range = self.range(of: range)
-        let offset = currentLayout.closestOffset(to: point)
-        return TranscriptTextPosition(offset: min(max(offset, range.lowerBound), range.upperBound))
+    nonisolated public func firstRect(for range: UITextRange) -> CGRect {
+        onMainThread {
+            let range = self.range(of: range)
+            return currentLayout.selectionRects(for: range).first ?? currentLayout.caretRect(at: range.lowerBound)
+        }
     }
 
-    public func characterRange(at point: CGPoint) -> UITextRange? {
-        let offset = currentLayout.closestOffset(to: point)
-        guard offset < currentLayout.length else { return nil }
-        return TranscriptTextRange(range: offset..<(offset + 1))
+    nonisolated public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
+        onMainThread {
+            let rects = currentLayout.selectionRects(for: self.range(of: range))
+            return rects.enumerated().map { index, rect in
+                TranscriptSelectionRect(rect: rect, containsStart: index == 0, containsEnd: index == rects.count - 1)
+            }
+        }
     }
 
-    public func baseWritingDirection(for position: UITextPosition, in direction: UITextStorageDirection) -> NSWritingDirection {
+    nonisolated public func closestPosition(to point: CGPoint) -> UITextPosition? {
+        onMainThread { TranscriptTextPosition(offset: currentLayout.closestOffset(to: point)) }
+    }
+
+    nonisolated public func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? {
+        onMainThread {
+            let range = self.range(of: range)
+            let offset = currentLayout.closestOffset(to: point)
+            return TranscriptTextPosition(offset: min(max(offset, range.lowerBound), range.upperBound))
+        }
+    }
+
+    nonisolated public func characterRange(at point: CGPoint) -> UITextRange? {
+        onMainThread {
+            let offset = currentLayout.closestOffset(to: point)
+            guard offset < currentLayout.length else { return nil }
+            return TranscriptTextRange(range: offset..<(offset + 1))
+        }
+    }
+
+    nonisolated public func baseWritingDirection(for position: UITextPosition, in direction: UITextStorageDirection) -> NSWritingDirection {
         .leftToRight
     }
 
-    public func setBaseWritingDirection(_ writingDirection: NSWritingDirection, for range: UITextRange) {}
+    nonisolated public func setBaseWritingDirection(_ writingDirection: NSWritingDirection, for range: UITextRange) {}
 
     // MARK: UITextInput — editing (unsupported: the view is read-only)
 
-    public var hasText: Bool { currentLayout.length > 0 }
-    public func insertText(_ text: String) {}
-    public func deleteBackward() {}
-    public func replace(_ range: UITextRange, withText text: String) {}
-    public var markedTextRange: UITextRange? { nil }
-    public var markedTextStyle: [NSAttributedString.Key: Any]? {
+    nonisolated public var hasText: Bool { onMainThread { currentLayout.length > 0 } }
+    nonisolated public func insertText(_ text: String) {}
+    nonisolated public func deleteBackward() {}
+    nonisolated public func replace(_ range: UITextRange, withText text: String) {}
+    nonisolated public var markedTextRange: UITextRange? { nil }
+    nonisolated public var markedTextStyle: [NSAttributedString.Key: Any]? {
         get { nil }
         set {}
     }
-    public func setMarkedText(_ markedText: String?, selectedRange: NSRange) {}
-    public func unmarkText() {}
+    nonisolated public func setMarkedText(_ markedText: String?, selectedRange: NSRange) {}
+    nonisolated public func unmarkText() {}
 }
 
 // MARK: - Canvas
@@ -1494,32 +1529,43 @@ private final class CanvasView: UIView {
 
 // MARK: - Position, range and selection rect types
 
+// These never change once made, so their getters are `nonisolated`: the
+// system can read them on any thread.
+
 final class TranscriptTextPosition: UITextPosition {
-    let offset: Int
+    nonisolated let offset: Int
 
     init(offset: Int) {
         self.offset = offset
         super.init()
     }
+
+    nonisolated static func offset(of position: UITextPosition) -> Int {
+        (position as? TranscriptTextPosition)?.offset ?? 0
+    }
 }
 
 final class TranscriptTextRange: UITextRange {
-    let range: Range<Int>
+    nonisolated let range: Range<Int>
+    private nonisolated let startPosition: TranscriptTextPosition
+    private nonisolated let endPosition: TranscriptTextPosition
 
     init(range: Range<Int>) {
         self.range = range
+        startPosition = TranscriptTextPosition(offset: range.lowerBound)
+        endPosition = TranscriptTextPosition(offset: range.upperBound)
         super.init()
     }
 
-    override var start: UITextPosition { TranscriptTextPosition(offset: range.lowerBound) }
-    override var end: UITextPosition { TranscriptTextPosition(offset: range.upperBound) }
-    override var isEmpty: Bool { range.isEmpty }
+    nonisolated override var start: UITextPosition { startPosition }
+    nonisolated override var end: UITextPosition { endPosition }
+    nonisolated override var isEmpty: Bool { range.isEmpty }
 }
 
 final class TranscriptSelectionRect: UITextSelectionRect {
-    private let storedRect: CGRect
-    private let storedContainsStart: Bool
-    private let storedContainsEnd: Bool
+    private nonisolated let storedRect: CGRect
+    private nonisolated let storedContainsStart: Bool
+    private nonisolated let storedContainsEnd: Bool
 
     init(rect: CGRect, containsStart: Bool, containsEnd: Bool) {
         storedRect = rect
@@ -1528,11 +1574,11 @@ final class TranscriptSelectionRect: UITextSelectionRect {
         super.init()
     }
 
-    override var rect: CGRect { storedRect }
-    override var writingDirection: NSWritingDirection { .leftToRight }
-    override var containsStart: Bool { storedContainsStart }
-    override var containsEnd: Bool { storedContainsEnd }
-    override var isVertical: Bool { false }
+    nonisolated override var rect: CGRect { storedRect }
+    nonisolated override var writingDirection: NSWritingDirection { .leftToRight }
+    nonisolated override var containsStart: Bool { storedContainsStart }
+    nonisolated override var containsEnd: Bool { storedContainsEnd }
+    nonisolated override var isVertical: Bool { false }
 }
 
 /// Watches a scroll view's content size for the text views in it, with one

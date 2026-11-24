@@ -43,7 +43,7 @@ private func elements(of view: TranscriptTextView) -> [UIAccessibilityElement] {
     view.layoutIfNeeded()
     let narrower = elements(of: view)
     #expect(zip(added, narrower).allSatisfy { $0 === $1 })
-    #expect(narrower[1].accessibilityFrameInContainerSpace.width == 200)
+    #expect((narrower[1] as? TextAccessibilityElement)?.frameInView.width == 200)
 }
 
 @MainActor

@@ -15,18 +15,17 @@ extension TranscriptTextView {
         if cache.layout === layout { return cache.elements }
         var byKey: [String: UIAccessibilityElement] = [:]
         var elements: [UIAccessibilityElement] = []
-        let openLink: (URL) -> Void = { [weak self] url in self?.openLink(url) }
         for item in layout.accessibilityItems(math: mathAccessibilityLabel ?? \.tex) {
             let element: UIAccessibilityElement
             if let table = item.table {
                 let tableElement = cache.byKey[item.key] as? TableAccessibilityElement
                     ?? TableAccessibilityElement(accessibilityContainer: self)
-                tableElement.update(frame: item.frame, table: table, in: self, openLink: openLink)
+                tableElement.update(frame: item.frame, table: table, in: self)
                 element = tableElement
             } else {
                 let blockElement = cache.byKey[item.key] as? BlockAccessibilityElement
                     ?? BlockAccessibilityElement(accessibilityContainer: self)
-                blockElement.update(with: item, openLink: openLink)
+                blockElement.update(with: item, in: self)
                 element = blockElement
             }
             byKey[item.key] = element
@@ -61,37 +60,71 @@ extension TranscriptTextView {
     }
 }
 
-private func traits(heading: Bool, links: Bool) -> UIAccessibilityTraits {
-    var traits: UIAccessibilityTraits = .staticText
-    if heading { traits.insert(.header) }
-    if links { traits.insert(.link) }
-    return traits
-}
+/// The text and frame of a block or a table cell. Assistive technologies
+/// can ask for them from any thread, so they are kept here, and the
+/// getters read them on the main thread (see `onMainThread`).
+class TextAccessibilityElement: UIAccessibilityElement {
+    private var label: String?
+    private var value: String?
+    private var traits: UIAccessibilityTraits = .staticText
+    /// The element in the view's coordinates.
+    private(set) var frameInView: CGRect = .zero
+    private weak var view: TranscriptTextView?
+    private var links: [AccessibilityItem.Link]?
+    private var actions: [UIAccessibilityCustomAction]?
 
-@MainActor
-private func actions(for links: [AccessibilityItem.Link], openLink: @escaping (URL) -> Void) -> [UIAccessibilityCustomAction] {
-    let format = NSLocalizedString("Open %@", comment: "VoiceOver action that opens a link; %@ is the link's text")
-    return links.map { link in
-        UIAccessibilityCustomAction(name: String(format: format, link.title)) { _ in
-            openLink(link.url)
-            return true
+    func update(label: String, value: String?, isHeading: Bool, frame: CGRect, links: [AccessibilityItem.Link],
+                in view: TranscriptTextView) {
+        self.label = label
+        self.value = value
+        frameInView = frame
+        self.view = view
+        var traits: UIAccessibilityTraits = .staticText
+        if isHeading { traits.insert(.header) }
+        if !links.isEmpty { traits.insert(.link) }
+        self.traits = traits
+        guard self.links != links else { return }
+        self.links = links
+        let format = NSLocalizedString("Open %@", comment: "VoiceOver action that opens a link; %@ is the link's text")
+        actions = links.map { link in
+            UIAccessibilityCustomAction(name: String(format: format, link.title)) { @Sendable [weak view] _ in
+                onMainThread { view?.openLink(link.url) }
+                return true
+            }
         }
+    }
+
+    nonisolated override var accessibilityLabel: String? {
+        get { onMainThread { label } }
+        set { onMainThread { label = newValue } }
+    }
+
+    nonisolated override var accessibilityValue: String? {
+        get { onMainThread { value } }
+        set { onMainThread { value = newValue } }
+    }
+
+    nonisolated override var accessibilityTraits: UIAccessibilityTraits {
+        get { onMainThread { traits } }
+        set { onMainThread { traits = newValue } }
+    }
+
+    /// From the view: a table cell's container is the table's element, not a view.
+    nonisolated override var accessibilityFrame: CGRect {
+        get { onMainThread { view.map { UIAccessibility.convertToScreenCoordinates(frameInView, in: $0) } ?? .zero } }
+        set {}
+    }
+
+    nonisolated override var accessibilityCustomActions: [UIAccessibilityCustomAction]? {
+        get { onMainThread { actions } }
+        set { onMainThread { actions = newValue } }
     }
 }
 
 /// A block's element. Its block's id keeps it from one layout to the next.
-final class BlockAccessibilityElement: UIAccessibilityElement {
-    private var links: [AccessibilityItem.Link]?
-
-    func update(with item: AccessibilityItem, openLink: @escaping (URL) -> Void) {
-        if accessibilityLabel != item.label { accessibilityLabel = item.label }
-        if accessibilityValue != item.value { accessibilityValue = item.value }
-        if accessibilityFrameInContainerSpace != item.frame { accessibilityFrameInContainerSpace = item.frame }
-        let traits = traits(heading: item.isHeading, links: !item.links.isEmpty)
-        if accessibilityTraits != traits { accessibilityTraits = traits }
-        guard links != item.links else { return }
-        links = item.links
-        accessibilityCustomActions = actions(for: item.links, openLink: openLink)
+final class BlockAccessibilityElement: TextAccessibilityElement {
+    func update(with item: AccessibilityItem, in view: TranscriptTextView) {
+        update(label: item.label, value: item.value, isHeading: item.isHeading, frame: item.frame, links: item.links, in: view)
     }
 }
 
@@ -101,74 +134,71 @@ final class TableAccessibilityElement: UIAccessibilityElement, UIAccessibilityCo
     private var cells: [CellAccessibilityElement] = []
     private var rowCount = 0
     private var columnCount = 0
+    private var frameInView: CGRect = .zero
+    private weak var view: TranscriptTextView?
 
-    override init(accessibilityContainer container: Any) {
-        super.init(accessibilityContainer: container)
-        isAccessibilityElement = false
-        accessibilityContainerType = .dataTable
-    }
-
-    func update(frame: CGRect, table: AccessibilityItem.Table, in view: TranscriptTextView, openLink: @escaping (URL) -> Void) {
-        if accessibilityFrameInContainerSpace != frame { accessibilityFrameInContainerSpace = frame }
+    func update(frame: CGRect, table: AccessibilityItem.Table, in view: TranscriptTextView) {
+        frameInView = frame
+        self.view = view
         rowCount = table.rowCount
         columnCount = table.columnCount
         var cells: [CellAccessibilityElement] = []
         for (index, cell) in table.cells.enumerated() {
             let element = index < self.cells.count && self.cells[index].row == cell.row && self.cells[index].column == cell.column
                 ? self.cells[index] : CellAccessibilityElement(accessibilityContainer: self)
-            element.update(with: cell, in: view, openLink: openLink)
+            element.update(with: cell, in: view)
             cells.append(element)
         }
-        if cells.count != self.cells.count || zip(cells, self.cells).contains(where: { $0 !== $1 }) {
-            self.cells = cells
-            accessibilityElements = cells
-        }
+        self.cells = cells
     }
 
-    func accessibilityDataTableCellElement(forRow row: Int, column: Int) -> (any UIAccessibilityContainerDataTableCell)? {
-        cells.first { $0.row == row && $0.column == column }
+    nonisolated override var isAccessibilityElement: Bool {
+        get { false }
+        set {}
     }
 
-    func accessibilityRowCount() -> Int { rowCount }
+    nonisolated override var accessibilityContainerType: UIAccessibilityContainerType {
+        get { .dataTable }
+        set {}
+    }
 
-    func accessibilityColumnCount() -> Int { columnCount }
+    nonisolated override var accessibilityElements: [Any]? {
+        get { onMainThread { cells } }
+        set {}
+    }
 
-    func accessibilityHeaderElements(forColumn column: Int) -> [any UIAccessibilityContainerDataTableCell]? {
-        cells.first { $0.row == 0 && $0.column == column }.map { [$0] }
+    nonisolated override var accessibilityFrame: CGRect {
+        get { onMainThread { view.map { UIAccessibility.convertToScreenCoordinates(frameInView, in: $0) } ?? .zero } }
+        set {}
+    }
+
+    nonisolated func accessibilityDataTableCellElement(forRow row: Int, column: Int) -> (any UIAccessibilityContainerDataTableCell)? {
+        onMainThread { cells.first { $0.row == row && $0.column == column } }
+    }
+
+    nonisolated func accessibilityRowCount() -> Int { onMainThread { rowCount } }
+
+    nonisolated func accessibilityColumnCount() -> Int { onMainThread { columnCount } }
+
+    nonisolated func accessibilityHeaderElements(forColumn column: Int) -> [any UIAccessibilityContainerDataTableCell]? {
+        onMainThread { cells.first { $0.row == 0 && $0.column == column }.map { [$0] } }
     }
 }
 
 /// A table cell's element.
-final class CellAccessibilityElement: UIAccessibilityElement, UIAccessibilityContainerDataTableCell {
+final class CellAccessibilityElement: TextAccessibilityElement, UIAccessibilityContainerDataTableCell {
     private(set) var row = -1
     private(set) var column = -1
-    /// The cell in the view's coordinates.
-    private var frameInView: CGRect = .zero
-    private weak var view: UIView?
-    private var links: [AccessibilityItem.Link]?
 
-    func update(with cell: AccessibilityItem.Table.Cell, in view: UIView, openLink: @escaping (URL) -> Void) {
+    func update(with cell: AccessibilityItem.Table.Cell, in view: TranscriptTextView) {
         row = cell.row
         column = cell.column
-        frameInView = cell.frame
-        self.view = view
-        if accessibilityLabel != cell.label { accessibilityLabel = cell.label }
-        let traits = traits(heading: false, links: !cell.links.isEmpty)
-        if accessibilityTraits != traits { accessibilityTraits = traits }
-        guard links != cell.links else { return }
-        links = cell.links
-        accessibilityCustomActions = actions(for: cell.links, openLink: openLink)
+        update(label: cell.label, value: nil, isHeading: false, frame: cell.frame, links: cell.links, in: view)
     }
 
-    /// From the view, because the container is the table's element and not a view.
-    override var accessibilityFrame: CGRect {
-        get { view.map { UIAccessibility.convertToScreenCoordinates(frameInView, in: $0) } ?? .zero }
-        set {}
-    }
+    nonisolated func accessibilityRowRange() -> NSRange { onMainThread { NSRange(location: row, length: 1) } }
 
-    func accessibilityRowRange() -> NSRange { NSRange(location: row, length: 1) }
-
-    func accessibilityColumnRange() -> NSRange { NSRange(location: column, length: 1) }
+    nonisolated func accessibilityColumnRange() -> NSRange { onMainThread { NSRange(location: column, length: 1) } }
 }
 
 final class AccessibilityCache {

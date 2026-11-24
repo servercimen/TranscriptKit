@@ -14,7 +14,8 @@ text streaming in at hundreds of characters a second doesn't make scrolling stut
   blocks that changed are laid out again, and the line being written is drawn on the layout queue into a surface.
   The main thread installs the result and redraws what changed. All streams and views share the system's pool of
   threads, with about one thread for each processor core, so a screen that shows many texts at once does not start a
-  thread for each of them.
+  thread for each of them. Short work, such as the parse and layout of streamed text, goes ahead of the long layouts
+  of other views.
 - **One selectable document.** The whole text is one view with the system's selection handles, loupe and edit menu,
   and a selection can run from one block to the next: across headings, paragraphs, lists and code blocks.
 - **Markdown:**

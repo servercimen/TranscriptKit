@@ -86,6 +86,10 @@ private func markdown(paragraphs: Int) -> String {
 
 private let longMarkdown = markdown(paragraphs: 800)
 private let longDocument = MarkdownStreamParser.document(from: longMarkdown, idPrefix: "long")
+/// Long enough that the work of many queues overlaps, for the bound tests.
+private let mediumMarkdown = markdown(paragraphs: 300)
+private let mediumDocument = MarkdownStreamParser.document(from: mediumMarkdown, idPrefix: "medium")
+private let shortDocument = MarkdownStreamParser.document(from: "Short text.", idPrefix: "short")
 
 private var cores: Int { ProcessInfo.processInfo.activeProcessorCount }
 
@@ -104,12 +108,12 @@ private func engines(_ count: Int) -> [LayoutEngine] {
     return engines
 }
 
-/// Runs `measurement` a few times, and returns the run with the fewest items
-/// at once. One run can go above the bound, but not every run.
-private func fewestAtOnce(_ measurement: () -> Measurement) throws -> Measurement {
+/// Runs `measurement` a few times, and returns the run with the lowest
+/// `value`. One run can go above the bound, but not every run.
+private func fewest(_ value: (Measurement) -> Int, _ measurement: () -> Measurement) throws -> Measurement {
     let runs = (0..<5).map { _ in measurement() }
-    let fewest = try #require(runs.min { ($0.peak ?? 0) < ($1.peak ?? 0) })
-    print("Runs: \(runs.map { $0.peak ?? 0 }) at once; fewest: \(fewest)")
+    let fewest = try #require(runs.min { value($0) < value($1) })
+    print("Runs: \(runs.map(value)); fewest: \(fewest)")
     return fewest
 }
 
@@ -149,11 +153,12 @@ struct SharedQueueTests {
         // Core Text loads its fonts the first time, and threads that wait for
         // that make GCD add threads.
         _ = DocumentLayout(document: longDocument, width: 200)
+        _ = DocumentLayout(document: mediumDocument, width: 200)
     }
 
     /// A measurement: the engines lay out through their own code path, and
     /// the output handler runs on the thread that made each layout.
-    @Test(arguments: [20, manyQueues])
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["TRANSCRIPTKIT_TIMING"] != nil), arguments: [20, manyQueues])
     func measureThreadsWhileEnginesLayOutAtOnce(_ count: Int) {
         let engines = engines(count)
         let meter = Meter()
@@ -170,12 +175,12 @@ struct SharedQueueTests {
 
     @Test func layoutsOnManyEngineQueuesRunAboutOnePerCore() throws {
         let engines = engines(manyQueues)
-        let result = try fewestAtOnce {
+        let result = try fewest({ $0.peak ?? 0 }) {
             let meter = Meter()
             return measure(engines.map(\.queue), meter: meter) { index, done in
                 engines[index].queue.async {
                     meter.enter()
-                    _ = DocumentLayout(document: longDocument, width: 200)
+                    _ = DocumentLayout(document: mediumDocument, width: 200)
                     meter.leave()
                     done()
                 }
@@ -185,14 +190,14 @@ struct SharedQueueTests {
     }
 
     @Test func manyStreamsParseAboutOnePerCore() throws {
-        let result = try fewestAtOnce {
+        let result = try fewest({ $0.peak ?? 0 }) {
             let workers = (0..<manyQueues).map { _ in StreamWorker(parser: MarkdownStreamParser()) }
             let meter = Meter()
             let result = measure(workers.map(\.queue), meter: meter) { index, done in
                 let worker = workers[index]
                 worker.queue.async {
                     meter.enter()
-                    _ = worker.apply(longMarkdown, finish: true)
+                    _ = worker.apply(mediumMarkdown, finish: true)
                     meter.leave()
                     done()
                 }
@@ -203,22 +208,90 @@ struct SharedQueueTests {
         #expect(try #require(result.peak) <= bound)
     }
 
+    /// Short layouts go ahead of long ones at a higher QoS. Many of them at
+    /// once still share a pool of about one thread for each core.
+    @Test func manyShortLayoutsRunOnAboutOneThreadPerCore() throws {
+        let engines = engines(manyQueues)
+        let result = try fewest(\.threads) {
+            let meter = Meter()
+            let sequence = Int(Date().timeIntervalSince1970 * 1000)
+            return measure(engines.map(\.queue), meter: meter) { index, done in
+                let engine = engines[index]
+                engine.setOutputHandler {
+                    meter.mark()
+                    _ = engine.takeOutput()
+                    done()
+                }
+                let document = MarkdownStreamParser.document(from: "Short text \(sequence).", idPrefix: "\(sequence)")
+                engine.submit(.init(document: document, source: 1, sequence: sequence))
+            }
+        }
+        #expect(result.threads <= bound)
+    }
+
+    /// While every thread of the pool is busy with long layouts, short work
+    /// that a person waits to see starts at once: the parse of a streamed
+    /// chunk, a short document on another view, and text added to the end of
+    /// a long document on a third view.
+    @Test func shortWorkDoesNotWaitForTheBusyPool() throws {
+        let busy = engines(manyQueues)
+        let worker = StreamWorker(parser: MarkdownStreamParser())
+        let short = LayoutEngine()
+        _ = short.relayout(width: 200, style: TranscriptStyle())
+        var parser = MarkdownStreamParser()
+        parser.append(longMarkdown)
+        let growing = LayoutEngine()
+        growing.submit(.init(document: parser.document, source: 1, sequence: 1))
+        _ = growing.relayout(width: 200, style: TranscriptStyle())
+        parser.append("\n\nMore text at the end.")
+        let grown = parser.document
+
+        let lock = NSLock()
+        nonisolated(unsafe) var waits: [String: TimeInterval] = [:]
+        let done = DispatchGroup()
+        let record: @Sendable (String, Date) -> Void = { name, start in
+            lock.withLock { waits[name] = Date().timeIntervalSince(start) }
+            done.leave()
+        }
+        let waitForBusy = startLongLayouts(on: busy)
+        Thread.sleep(forTimeInterval: 0.02)
+
+        for _ in 0..<3 { done.enter() }
+        let start = Date()
+        worker.parse("Some **text** here.", finish: true) { _ in record("parse", start) }
+        short.setOutputHandler { record("short layout", start) }
+        short.submit(.init(document: shortDocument, source: 1, sequence: 1))
+        growing.setOutputHandler { record("append layout", start) }
+        growing.submit(.init(document: grown, source: 1, sequence: 2))
+        done.wait()
+        let busyTime = waitForBusy()
+
+        let longest = try #require(waits.values.max())
+        print("While \(busy.count) engines lay out for \(busyTime * 1000) ms: "
+              + waits.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value * 1000) ms" }.joined(separator: ", "))
+        #expect(waits.count == 3)
+        #expect(worker.latest.isFinished)
+        #expect(longest < busyTime / 10)
+    }
+
     /// The main thread needs a layout now, as when the view gets a new width,
-    /// from an engine that has a short layout waiting for a thread while
-    /// every thread of the pool is busy.
+    /// from an engine that has work waiting for a thread while every thread
+    /// of the pool is busy. The work is not urgent, so only the `sync` call
+    /// can get it a thread at once.
     @Test func aSynchronousLayoutDoesNotWaitForTheBusyPool() throws {
         let busy = engines(manyQueues)
         let engine = LayoutEngine()
+        engine.submit(.init(document: shortDocument, source: 1, sequence: 1))
         _ = engine.relayout(width: 200, style: TranscriptStyle())
         let waitForBusy = startLongLayouts(on: busy)
         Thread.sleep(forTimeInterval: 0.02)
 
         let (relayout, measure, height) = onInteractiveThread {
-            engine.submit(.init(document: MarkdownStreamParser.document(from: "Short text."), source: 1, sequence: 1))
+            engine.queue.async {}
             var start = Date()
             let layout = engine.relayout(width: 180, style: TranscriptStyle())
             let relayout = Date().timeIntervalSince(start)
-            engine.submit(.init(document: MarkdownStreamParser.document(from: "Short text, longer."), source: 1, sequence: 2))
+            engine.queue.async {}
             start = Date()
             _ = engine.measure(width: 150, style: TranscriptStyle())
             return (relayout, Date().timeIntervalSince(start), layout?.layout.height ?? 0)
@@ -231,8 +304,8 @@ struct SharedQueueTests {
         #expect(measure < busyTime / 4)
     }
 
-    /// `TranscriptStream.flush()` calls `sync` on the stream's queue, which
-    /// has a parse waiting for a thread while every thread of the pool is busy.
+    /// `TranscriptStream.flush()` waits for the stream's queue, which has a
+    /// parse waiting for a thread while every thread of the pool is busy.
     @Test func aFlushDoesNotWaitForTheBusyPool() {
         let busy = engines(manyQueues)
         let worker = StreamWorker(parser: MarkdownStreamParser())
@@ -242,10 +315,7 @@ struct SharedQueueTests {
         let (latest, elapsed) = onInteractiveThread {
             worker.queue.async { _ = worker.apply("Some **text", finish: false) }
             let start = Date()
-            let latest = worker.queue.sync {
-                _ = worker.apply("** here.", finish: true)
-                return worker.latest
-            }
+            let latest = worker.applyNow("** here.", finish: true)
             return (latest, Date().timeIntervalSince(start))
         }
         let busyTime = waitForBusy()

@@ -33,6 +33,8 @@ public struct TranscriptText: UIViewRepresentable {
     /// so that SwiftUI measures the view again (see
     /// `TranscriptTextView.onHeightChangeWhileUnsized`).
     @State private var unsizedRevision = 0
+    /// The stream's `unplacedHeight` revision when this was made.
+    private var unplacedHeightRevision = 0
 
     public init(_ document: TranscriptDocument, style: TranscriptStyle = .init()) {
         self.source = .document(document)
@@ -42,6 +44,12 @@ public struct TranscriptText: UIViewRepresentable {
     public init(stream: TranscriptStream, style: TranscriptStyle = .init()) {
         self.source = .stream(stream)
         self.style = style
+        // A lazy stack can leave a new row unplaced and then ignore the
+        // row's own state, so `unsizedRevision` does not reach it. Read
+        // here, the revision is a dependency of the view whose body makes
+        // this one: when it changes, that body runs again, this value
+        // differs, and SwiftUI updates and measures the row.
+        self.unplacedHeightRevision = stream.unplacedHeight.revision
     }
 
     /// Loads the pictures for images in the text; see
@@ -196,7 +204,12 @@ public struct TranscriptText: UIViewRepresentable {
         // only if the update reads that state.
         _ = unsizedRevision
         let revision = $unsizedRevision
-        view.onHeightChangeWhileUnsized = { revision.wrappedValue &+= 1 }
+        let unplacedHeight: UnplacedHeightSignal?
+        if case .stream(let stream) = source { unplacedHeight = stream.unplacedHeight } else { unplacedHeight = nil }
+        view.onHeightChangeWhileUnsized = {
+            revision.wrappedValue &+= 1
+            unplacedHeight?.revision &+= 1
+        }
     }
 
     public func sizeThatFits(_ proposal: ProposedViewSize, uiView: TranscriptTextView, context: Context) -> CGSize? {

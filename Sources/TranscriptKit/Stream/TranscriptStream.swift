@@ -1,4 +1,5 @@
 import Foundation
+import Observation
 #if canImport(UIKit) && !os(watchOS)
 import QuartzCore
 import UIKit
@@ -37,6 +38,10 @@ public final class TranscriptStream {
     /// appended since then is not in it yet; call `flush()` first if you
     /// need it now.
     public private(set) var document: TranscriptDocument
+
+    /// Changed when a view of the stream that SwiftUI has not placed yet gets
+    /// a new height (see `TranscriptText`).
+    let unplacedHeight = UnplacedHeightSignal()
 
     private let worker: StreamWorker
     private var documentSequence = 0
@@ -180,6 +185,11 @@ public final class TranscriptStream {
         }
     }
     #endif
+}
+
+@Observable
+final class UnplacedHeightSignal {
+    var revision = 0
 }
 
 /// The parser and the attached sinks. `parser` is only touched on `queue`.

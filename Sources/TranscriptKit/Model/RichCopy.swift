@@ -26,8 +26,7 @@ extension TranscriptDocument {
     /// `text` with each font that has a private name (the system fonts,
     /// whose names start with a period) changed to a public font of the
     /// same size and traits. Apps that find a font by its name in the RTF
-    /// do not find a private name, and show another font, without bold or
-    /// italic.
+    /// can fail to find a private name, and show another font.
     static func withPublicFonts(_ text: NSAttributedString) -> NSAttributedString {
         let result = NSMutableAttributedString(attributedString: text)
         let whole = NSRange(location: 0, length: result.length)

@@ -274,10 +274,10 @@ them off with `.showsWritingTools(false)`, or with `showsWritingTools` on `Trans
 Copy puts two forms of the selected text on the pasteboard. The plain text is readable as Markdown, with list
 markers, quote prefixes and tables (see `copyText(in:)` on `TranscriptDocument`). The rich text is RTF, with the
 fonts of the text, bold, italic, code, links, strikethrough and underline. The system font has a private name that
-other apps cannot find, so the RTF names Helvetica Neue in its place, with the same size, bold and italic. It has no
-colors, so pasted text takes the colors of the place it goes to. Its list markers, quote prefixes, tables and rules are the characters of the plain
-text, not RTF lists or tables. Text in a table cell keeps its bold, italic, code and links. An app that reads plain
-text gets the plain text.
+some apps do not find, so the RTF names Helvetica Neue in its place, with the same size, bold and italic. It has no
+colors, so pasted text takes the colors of the place it goes to. Its list markers, quote prefixes, tables and rules are
+the characters of the plain text, not RTF lists or tables. Text in a table cell keeps its bold, italic, code and
+links. An app that reads plain text gets the plain text.
 
 ### VoiceOver
 

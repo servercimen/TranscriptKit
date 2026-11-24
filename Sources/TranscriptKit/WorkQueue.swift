@@ -27,6 +27,14 @@ import Foundation
 /// does not wait for the work of other queues, but it still waits for the
 /// work that is already on its own queue.
 ///
+/// GCD starts more threads when a thread of the pool waits, for example
+/// while Core Text loads a font the first time. So the pool alone does not
+/// limit the threads: in the first burst after launch, each queue can get a
+/// thread again. `asyncLong` sets a hard limit for long layouts: at most one
+/// for each core runs at a time. The other long work waits outside its queue
+/// and does not ask GCD for a thread, so GCD has nothing to start threads
+/// for. A long layout that waits keeps its place in the limit.
+///
 /// Work on these queues must not wait for work on another of them, as
 /// `sync` does: a thread that waits does no work, and GCD then starts more
 /// threads.
@@ -40,6 +48,29 @@ enum WorkQueue {
         DispatchQueue(label: label, qos: .userInitiated, target: .global(qos: .userInitiated))
     }
 
+    /// At most this many items of long work run at a time.
+    static let longWorkLimit = max(2, ProcessInfo.processInfo.activeProcessorCount)
+
+    private static let longWork = Limit(count: longWorkLimit)
+
+    /// Runs long `work` on `queue` after `delay` seconds, when fewer than
+    /// `longWorkLimit` items of long work run. Until then, the work waits
+    /// outside `queue`, oldest first, and holds no thread.
+    ///
+    /// A `sync` call on `queue` can run before work that waits for the
+    /// limit, so use this only for work that takes the newest state when it
+    /// runs, and that can find nothing to do.
+    static func asyncLong(_ queue: DispatchQueue, after delay: TimeInterval = 0,
+                          execute work: @escaping @Sendable () -> Void) {
+        if delay > 0 {
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + delay) {
+                longWork.run(work, on: queue)
+            }
+        } else {
+            longWork.run(work, on: queue)
+        }
+    }
+
     /// Runs `work` on `queue` after `delay` seconds. Urgent work goes ahead
     /// of the long work of other queues.
     static func async(_ queue: DispatchQueue, urgent: Bool, after delay: TimeInterval = 0,
@@ -51,5 +82,48 @@ enum WorkQueue {
         } else {
             queue.async(qos: qos, flags: flags, execute: work)
         }
+    }
+}
+
+/// Lets at most `count` work items run at a time, and keeps the others in
+/// order until one ends. It never makes a thread wait.
+private final class Limit: @unchecked Sendable {
+    private let count: Int
+    private let lock = NSLock()
+    private var running = 0
+    private var waiting: [(work: @Sendable () -> Void, queue: DispatchQueue)] = []
+
+    init(count: Int) {
+        self.count = count
+    }
+
+    func run(_ work: @escaping @Sendable () -> Void, on queue: DispatchQueue) {
+        let starts: Bool = lock.withLock {
+            guard running < count else {
+                waiting.append((work, queue))
+                return false
+            }
+            running += 1
+            return true
+        }
+        if starts { start(work, on: queue) }
+    }
+
+    private func start(_ work: @escaping @Sendable () -> Void, on queue: DispatchQueue) {
+        queue.async {
+            work()
+            self.end()
+        }
+    }
+
+    private func end() {
+        let item: (work: @Sendable () -> Void, queue: DispatchQueue)? = lock.withLock {
+            guard !waiting.isEmpty else {
+                running -= 1
+                return nil
+            }
+            return waiting.removeFirst()
+        }
+        if let item { start(item.work, on: item.queue) }
     }
 }

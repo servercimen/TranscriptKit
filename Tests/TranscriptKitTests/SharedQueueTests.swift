@@ -173,20 +173,64 @@ struct SharedQueueTests {
         for engine in engines { #expect(engine.backgroundLayoutCount == 1) }
     }
 
-    @Test func layoutsOnManyEngineQueuesRunAboutOnePerCore() throws {
-        let engines = engines(manyQueues)
-        let result = try fewest({ $0.peak ?? 0 }) {
-            let meter = Meter()
-            return measure(engines.map(\.queue), meter: meter) { index, done in
-                engines[index].queue.async {
-                    meter.enter()
+    /// Long layouts run at most one for each core at a time, also when they
+    /// wait, as Core Text does while it loads a font the first time. When
+    /// the threads of the pool wait, GCD starts a thread for each queue.
+    @Test(arguments: [false, true])
+    func longWorkStaysWithinTheLimit(waits: Bool) throws {
+        let queues = (0..<manyQueues).map { WorkQueue.serial(label: "TranscriptKitTests.long.\($0)") }
+        let meter = Meter()
+        let result = measure(queues, meter: meter) { index, done in
+            WorkQueue.asyncLong(queues[index]) {
+                meter.enter()
+                if waits {
+                    Thread.sleep(forTimeInterval: 0.05)
+                } else {
                     _ = DocumentLayout(document: mediumDocument, width: 200)
-                    meter.leave()
-                    done()
                 }
+                meter.leave()
+                done()
             }
         }
-        #expect(try #require(result.peak) <= bound)
+        print("Long work\(waits ? " that waits" : ""): \(result)")
+        #expect(try #require(result.peak) <= WorkQueue.longWorkLimit)
+    }
+
+    /// A long drain waits while the long work of other views fills the
+    /// limit. Short work and `sync` calls on the same engine do not wait.
+    @Test func aLongDrainWaitsForItsTurn() throws {
+        let engine = LayoutEngine()
+        _ = engine.relayout(width: 200, style: TranscriptStyle())
+        let outputs = DispatchSemaphore(value: 0)
+        engine.setOutputHandler {
+            _ = engine.takeOutput()
+            outputs.signal()
+        }
+        let running = DispatchGroup()
+        let release = DispatchSemaphore(value: 0)
+        for index in 0..<WorkQueue.longWorkLimit {
+            running.enter()
+            WorkQueue.asyncLong(WorkQueue.serial(label: "TranscriptKitTests.hold.\(index)")) {
+                running.leave()
+                release.wait()
+            }
+        }
+        running.wait()
+
+        engine.submit(.init(document: longDocument, source: 1, sequence: 1))
+        Thread.sleep(forTimeInterval: 0.05)
+        let start = Date()
+        #expect(engine.backgroundLayoutCount == 0)
+        #expect(Date().timeIntervalSince(start) < 1)
+
+        engine.submit(.init(document: shortDocument, source: 1, sequence: 2))
+        #expect(outputs.wait(timeout: .now() + 5) == .success)
+        #expect(engine.backgroundLayoutCount == 1)
+
+        for _ in 0..<WorkQueue.longWorkLimit { release.signal() }
+        engine.submit(.init(document: longDocument, source: 1, sequence: 3))
+        #expect(outputs.wait(timeout: .now() + 10) == .success)
+        #expect(engine.backgroundLayoutCount == 2)
     }
 
     @Test func manyStreamsParseAboutOnePerCore() throws {

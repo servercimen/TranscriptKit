@@ -18,7 +18,8 @@ import QuartzCore
 /// not wait for a thread. The queue shares its threads with the queues of
 /// all other views and streams (see `WorkQueue`). A drain of short work,
 /// such as text added to the end, goes ahead of the long layouts of other
-/// views.
+/// views. A long drain waits for its turn among the long layouts of all
+/// views; a `sync` call does not wait for that turn.
 ///
 /// While text is being appended, the engine also draws the end of the
 /// document into a surface (see `TailRenderer`), which travels with the
@@ -91,6 +92,9 @@ final class LayoutEngine: @unchecked Sendable {
     private var drainScheduled = false
     /// The scheduled drain goes ahead of the long work of other views.
     private var drainIsUrgent = false
+    /// Identifies the scheduled drain. An older drain that runs later, as a
+    /// long drain can, leaves the schedule alone.
+    private var drainID = 0
     /// The document of the newest layout, or of the one the queue makes
     /// next. A document that only adds a little to it is short work.
     private var laidOut = TranscriptDocument()
@@ -240,7 +244,7 @@ final class LayoutEngine: @unchecked Sendable {
     func submit(_ request: Request) -> Bool {
         var accepted = true
         let urgent = Self.isShortWork(request.document, after: lock.withLock { laidOut })
-        let schedule: (delay: CFTimeInterval, urgent: Bool)? = lock.withLock {
+        let schedule: (delay: CFTimeInterval, urgent: Bool, id: Int)? = lock.withLock {
             guard !isShutDown else { accepted = false; return nil }
             guard request.source >= currentSource else { return nil }
             if request.source > currentSource {
@@ -256,10 +260,16 @@ final class LayoutEngine: @unchecked Sendable {
             if drainScheduled, drainIsUrgent || !urgent { return nil }
             drainScheduled = true
             drainIsUrgent = urgent
-            return (max(lastDrain + frameInterval - CACurrentMediaTime(), 0), urgent)
+            drainID += 1
+            return (max(lastDrain + frameInterval - CACurrentMediaTime(), 0), urgent, drainID)
         }
         if let schedule {
-            WorkQueue.async(queue, urgent: schedule.urgent, after: schedule.delay) { self.drain() }
+            let id = schedule.id
+            if schedule.urgent {
+                WorkQueue.async(queue, urgent: true, after: schedule.delay) { self.drain(id) }
+            } else {
+                WorkQueue.asyncLong(queue, after: schedule.delay) { self.drain(id) }
+            }
         }
         return accepted
     }
@@ -297,10 +307,14 @@ final class LayoutEngine: @unchecked Sendable {
 
     /// Lays out the newest waiting document. One that arrives while this
     /// works schedules its own drain, a frame after this one started.
-    private func drain() {
+    ///
+    /// - Parameter id: the drain's `drainID`, or nil to end the schedule.
+    private func drain(_ id: Int? = nil) {
         let next: Request? = lock.withLock {
-            drainScheduled = false
-            drainIsUrgent = false
+            if id == nil || id == drainID {
+                drainScheduled = false
+                drainIsUrgent = false
+            }
             guard let request = pending else { return nil }
             pending = nil
             lastDrain = CACurrentMediaTime()

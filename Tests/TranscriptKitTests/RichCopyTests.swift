@@ -26,7 +26,7 @@ let x = 1
 
 | a | b |
 | - | - |
-| 1 | 2 |
+| **heavy** | [cell](https://example.com/c) |
 
 ---
 
@@ -89,6 +89,12 @@ private func offset(of string: String, in text: NSAttributedString) -> Int {
         == NSUnderlineStyle.single.rawValue)
     #expect(text.attribute(.underlineStyle, at: offset(of: "Some", in: text), effectiveRange: nil) == nil)
 
+    #expect(traits(text, at: offset(of: "heavy", in: text)).contains(.traitBold))
+    #expect(!traits(text, at: offset(of: "| a", in: text)).contains(.traitBold))
+    let cell = text.attribute(.link, at: offset(of: "cell", in: text), effectiveRange: nil) as? URL
+    #expect(cell == URL(string: "https://example.com/c"))
+    #expect(text.attribute(.link, at: offset(of: "| a", in: text), effectiveRange: nil) == nil)
+
     // Replaced and added text keeps the font of the block it is in.
     #expect(font(text, at: offset(of: "alt", in: text)) != nil)
     #expect(font(text, at: offset(of: "\\(x^2\\)", in: text)) != nil)
@@ -132,6 +138,8 @@ private func offset(of string: String, in text: NSAttributedString) -> Int {
         return (link as? URL)?.absoluteString ?? link as? String
     }
     #expect(readLink("link") == "https://example.com/a")
+    #expect(readLink("cell") == "https://example.com/c")
+    #expect(readTraits("heavy").contains(.boldFontMask))
     #expect(read.attribute(.strikethroughStyle, at: offset(of: "gone", in: read), effectiveRange: nil) as? Int
         == NSUnderlineStyle.single.rawValue)
     #expect(read.attribute(.underlineStyle, at: offset(of: "under", in: read), effectiveRange: nil) as? Int

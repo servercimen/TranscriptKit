@@ -434,8 +434,7 @@ public struct TranscriptDocument: Equatable, Sendable {
                 piece = NSMutableAttributedString(string: "---", attributes: attributes)
             case .table(let table):
                 guard lower < upper || includesStart else { continue }
-                piece = NSMutableAttributedString(string: Self.markdownTable(table, text: block.text, local: (lower - start)..<(upper - start)),
-                                                  attributes: attributes)
+                piece = markdownTable(table, of: block, local: (lower - start)..<(upper - start), attributes: attributes, style: style)
             case .paragraph, .heading, .code:
                 guard lower < upper else { continue }
                 let local = NSRange(location: lower - start, length: upper - lower)
@@ -497,15 +496,26 @@ public struct TranscriptDocument: Equatable, Sendable {
         return result
     }
 
-    /// The rows of `table` that `local` touches, as a Markdown table.
-    private static func markdownTable(_ table: TranscriptTable, text: String, local: Range<Int>) -> String {
-        let string = text as NSString
-        var lines: [String] = []
+    /// The rows of `table` that `local` touches, as a Markdown table. With
+    /// `style`, each cell keeps the styles of its spans.
+    private func markdownTable(_ table: TranscriptTable, of block: TranscriptBlock, local: Range<Int>,
+                               attributes: [NSAttributedString.Key: Any], style: TranscriptStyle?) -> NSMutableAttributedString {
+        let string = block.text as NSString
+        let result = NSMutableAttributedString()
+        func append(_ text: String) { result.append(NSAttributedString(string: text, attributes: attributes)) }
         for (index, row) in table.rows.enumerated() {
             guard let first = row.first, let last = row.last,
                   first.lowerBound < max(local.upperBound, local.lowerBound + 1), last.upperBound >= local.lowerBound else { continue }
-            let cells = row.map { string.substring(with: NSRange(location: $0.lowerBound, length: $0.count)) }
-            lines.append("| " + cells.joined(separator: " | ") + " |")
+            if result.length > 0 { append("\n") }
+            append("| ")
+            for (column, cell) in row.enumerated() {
+                if column > 0 { append(" | ") }
+                let range = NSRange(location: cell.lowerBound, length: cell.count)
+                let piece = NSMutableAttributedString(string: string.substring(with: range), attributes: attributes)
+                if let style { styleSpans(of: block, from: cell.lowerBound, in: piece, style: style) }
+                result.append(piece)
+            }
+            append(" |")
             if index == 0 {
                 let rule = table.alignments.map { alignment -> String in
                     switch alignment {
@@ -514,9 +524,9 @@ public struct TranscriptDocument: Equatable, Sendable {
                     case .trailing: return "---:"
                     }
                 }
-                lines.append("| " + rule.joined(separator: " | ") + " |")
+                append("\n| " + rule.joined(separator: " | ") + " |")
             }
         }
-        return lines.joined(separator: "\n")
+        return result
     }
 }

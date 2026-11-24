@@ -350,38 +350,42 @@ public final class DocumentLayout: @unchecked Sendable {
         // Core Text draws y-up; flip glyphs so they are upright in a y-down context.
         context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
 
-        // Custom tags' highlights, behind the whole line's glyphs. Runs next
-        // to each other with the same color share one highlight, and it stays
-        // within the line, so drawing a band of lines never cuts one off.
+        // Custom tags' highlights and inline code fills, behind the whole
+        // line's glyphs. Runs next to each other with the same fill share one
+        // highlight, and it stays within the line, so drawing a band of lines
+        // never cuts one off.
         func drawHighlights(_ runs: [CTRun], at origin: CGPoint) {
-            var current: (rect: CGRect, color: TranscriptColor)?
+            var current: (rect: CGRect, color: TranscriptColor, radius: CGFloat)?
             func flush() {
                 guard let highlight = current else { return }
                 current = nil
                 context.saveGState()
                 context.setFillColor(highlight.color.cgColor(dark: dark))
                 let rect = highlight.rect.insetBy(dx: -1.5, dy: 0)
-                context.addPath(CGPath(roundedRect: rect, cornerWidth: 3, cornerHeight: 3, transform: nil))
+                let radius = min(max(highlight.radius, 0), rect.width / 2, rect.height / 2)
+                context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
                 context.fillPath()
                 context.restoreGState()
             }
             for run in runs {
                 let attributes = CTRunGetAttributes(run) as NSDictionary
-                guard let color = attributes[Self.backgroundKey] as? TranscriptColor, attributes[Self.imageKey] == nil,
+                let tag = attributes[Self.backgroundKey] as? TranscriptColor
+                guard let color = tag ?? attributes[Self.inlineCodeBackgroundKey] as? TranscriptColor, attributes[Self.imageKey] == nil,
                       let font = attributes[kCTFontAttributeName].map({ $0 as! CTFont }) else {
                     flush()
                     continue
                 }
+                let radius: CGFloat = tag != nil ? 3 : style.inlineCodeCornerRadius
                 var position = CGPoint.zero
                 CTRunGetPositions(run, CFRange(location: 0, length: 1), &position)
                 let width = CGFloat(CTRunGetTypographicBounds(run, CFRange(location: 0, length: 0), nil, nil, nil))
                 let ascent = CTFontGetAscent(font)
                 let rect = CGRect(x: origin.x + position.x, y: origin.y - ascent, width: width, height: ascent + CTFontGetDescent(font))
-                if let highlight = current, highlight.color == color, abs(highlight.rect.maxX - rect.minX) < 0.5 {
-                    current = (highlight.rect.union(rect), color)
+                if let highlight = current, highlight.color == color, highlight.radius == radius, abs(highlight.rect.maxX - rect.minX) < 0.5 {
+                    current = (highlight.rect.union(rect), color, radius)
                 } else {
                     flush()
-                    current = (rect, color)
+                    current = (rect, color, radius)
                 }
             }
             flush()
@@ -636,6 +640,7 @@ public final class DocumentLayout: @unchecked Sendable {
     private static let underlineKey = TranscriptStyle.underlineKey.rawValue
     private static let foregroundKey = TranscriptStyle.foregroundKey.rawValue
     private static let backgroundKey = TranscriptStyle.backgroundKey.rawValue
+    private static let inlineCodeBackgroundKey = TranscriptStyle.inlineCodeBackgroundKey.rawValue
 
     private func drawGrid(_ table: BlockLayout.Table, top: CGFloat, in context: CGContext, header: CGColor, lines: CGColor) {
         let frame = table.frame.offsetBy(dx: 0, dy: top)

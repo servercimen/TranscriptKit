@@ -205,3 +205,39 @@ private func taskBoxes(_ layout: DocumentLayout) -> (checked: CGRect, unchecked:
     #expect(after.count(in: row, near: (169, 169, 169), tolerance: 8) == 0)
     #expect(after.count(in: row, near: (255, 0, 0), tolerance: 8) == 12)
 }
+
+// MARK: Inline code
+
+@Test func inlineCodeTakesItsFill() {
+    let markdown = "Run `make all` now."
+    let block = MarkdownStreamParser.document(from: markdown).blocks[0]
+    let code = (block.text as NSString).range(of: "make all")
+    let plainText = TranscriptStyle().attributedString(for: block)
+    #expect(plainText.attribute(TranscriptStyle.inlineCodeBackgroundKey, at: code.location, effectiveRange: nil) == nil)
+
+    var style = TranscriptStyle()
+    let red = TranscriptColor(red: 1, green: 0, blue: 0)
+    style.inlineCodeBackgroundColor = red
+    style.inlineCodeCornerRadius = 2
+    let styledText = style.attributedString(for: block)
+    #expect(styledText.attribute(TranscriptStyle.inlineCodeBackgroundKey, at: code.location, effectiveRange: nil) as? TranscriptColor == red)
+    #expect(styledText.attribute(TranscriptStyle.inlineCodeBackgroundKey, at: 0, effectiveRange: nil) == nil)
+
+    let plain = layout(markdown)
+    let styled = layout(markdown, style: style)
+    let line = styled.entry(at: 0).layout.lines[0]
+    let box = line.frame.offsetBy(dx: 0, dy: styled.entry(at: 0).y)
+    #expect(Drawing(plain).count(in: box, near: (255, 0, 0)) == 0)
+    #expect(Drawing(styled).count(in: box, near: (255, 0, 0)) > 200)
+}
+
+@Test func aTagHighlightWinsOverTheInlineCodeFill() {
+    let yellow = TranscriptColor(red: 1, green: 1, blue: 0)
+    let tag = TranscriptTag("mark", TranscriptDecoration(background: yellow))
+    var style = TranscriptStyle()
+    style.inlineCodeBackgroundColor = TranscriptColor(red: 1, green: 0, blue: 0)
+    let block = MarkdownStreamParser.document(from: "<mark>`code`</mark>", tags: [tag]).blocks[0]
+    let text = style.attributedString(for: block)
+    #expect(text.attribute(TranscriptStyle.backgroundKey, at: 0, effectiveRange: nil) as? TranscriptColor == yellow)
+    #expect(text.attribute(TranscriptStyle.inlineCodeBackgroundKey, at: 0, effectiveRange: nil) == nil)
+}

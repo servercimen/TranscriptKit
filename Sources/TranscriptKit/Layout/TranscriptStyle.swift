@@ -102,6 +102,11 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// The width of the bar at the left of a block quote. Keep it less than
     /// `quoteIndent`, or the bar covers the text.
     public var quoteBarWidth: CGFloat = 3
+    /// The fill behind inline code. Nil draws no fill. A custom tag's
+    /// highlight wins over it.
+    public var inlineCodeBackgroundColor: TranscriptColor?
+    /// The corner radius of the fill behind inline code.
+    public var inlineCodeCornerRadius: CGFloat = 4
     /// The color of the text in block quotes. Nil uses the text color. Links,
     /// code colors and custom tags' colors win over it.
     public var quoteTextColor: TranscriptColor?
@@ -277,6 +282,8 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// resolved for light or dark when drawn, by `DocumentLayout`.
     static let foregroundKey = NSAttributedString.Key("TranscriptKit.foreground")
     static let backgroundKey = NSAttributedString.Key("TranscriptKit.background")
+    /// The fill behind inline code, a `TranscriptColor`, drawn like a highlight.
+    static let inlineCodeBackgroundKey = NSAttributedString.Key("TranscriptKit.inlineCodeBackground")
     private static let kernKey = NSAttributedString.Key(kCTKernAttributeName as String)
 
     func attributes(for kind: TranscriptBlock.Kind, weight: CGFloat? = nil) -> [NSAttributedString.Key: Any] {
@@ -371,7 +378,11 @@ public struct TranscriptStyle: Equatable, Sendable {
                 // Resolved for light or dark when drawn, like a tag's color.
                 result.addAttribute(Self.foregroundKey, value: linkColor, range: range)
             }
-            if let background { result.addAttribute(Self.backgroundKey, value: background, range: range) }
+            if let background {
+                result.addAttribute(Self.backgroundKey, value: background, range: range)
+            } else if traits.contains(.code), let fill = inlineCodeBackgroundColor {
+                result.addAttribute(Self.inlineCodeBackgroundKey, value: fill, range: range)
+            }
             if image != nil || math != nil, range.length == 1 {
                 let font = result.attribute(Self.fontKey, at: lower, effectiveRange: nil).map { $0 as! CTFont } ?? self.font(for: block.kind)
                 let attachment = math.map { ImageAttachment(math: $0, sizing: images, font: font, style: self) }

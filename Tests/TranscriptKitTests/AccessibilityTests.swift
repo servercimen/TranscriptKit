@@ -171,3 +171,39 @@ private func items(_ markdown: String, width: CGFloat = 300) -> [AccessibilityIt
     let spoken = layout.accessibilityItems { $0.tex == "\\pi r^2" ? "pi r squared" : $0.tex }
     #expect(spoken.map(\.label) == ["Area: pi r squared."])
 }
+
+private func isNeeded(from old: DocumentLayout, to new: DocumentLayout, isAppend: Bool) -> Bool {
+    AccessibilityLayoutChange.isNeeded(isAppend: isAppend, oldShape: old.accessibilityShape, oldItems: old.accessibilityItems(),
+                                       newShape: new.accessibilityShape, newItems: { new.accessibilityItems() })
+}
+
+@Test func aLayoutChangeIsPostedOnlyWhenElementsChange() {
+    var parser = MarkdownStreamParser()
+    parser.append("# Title\n\nFirst words")
+    let before = DocumentLayout(document: parser.document, width: 300)
+    // The same text laid out again, as after new colors for code: nothing to tell.
+    #expect(!isNeeded(from: before, to: DocumentLayout(document: parser.document, width: 300), isAppend: false))
+    // Another width moves the elements.
+    #expect(isNeeded(from: before, to: DocumentLayout(document: parser.document, width: 200), isAppend: false))
+    parser.append(" and more")
+    let longer = DocumentLayout(document: parser.document, width: 300, reusing: before)
+    #expect(!isNeeded(from: before, to: longer, isAppend: true))
+    // The same layout installed as a new one: the label changed.
+    #expect(isNeeded(from: before, to: longer, isAppend: false))
+    parser.append("\n\nA new paragraph")
+    let added = DocumentLayout(document: parser.document, width: 300, reusing: longer)
+    #expect(isNeeded(from: longer, to: added, isAppend: true))
+}
+
+@Test func textThatStreamsInAfterATableUnderALineLimitChangesTheShape() {
+    var style = TranscriptStyle()
+    style.lineLimit = 3
+    var parser = MarkdownStreamParser()
+    parser.append("| A | B |\n| - | - |\n| 1 | 2 |\n\n")
+    let before = DocumentLayout(document: parser.document, width: 300, style: style)
+    parser.append("After")
+    let after = DocumentLayout(document: parser.document, width: 300, style: style)
+    #expect(before.accessibilityItems().count == 1)
+    #expect(after.accessibilityItems().count == 2)
+    #expect(isNeeded(from: before, to: after, isAppend: true))
+}

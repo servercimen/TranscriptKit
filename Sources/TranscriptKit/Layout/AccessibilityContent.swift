@@ -92,7 +92,8 @@ extension DocumentLayout {
             links += AccessibilityText.links(of: block, in: all, math: math, definitions: definitions)
         }
         guard !rest.isEmpty else { return items }
-        if let last = items.last, last.table == nil {
+        if !items.isEmpty, !hasAccessibilityRemainder {
+            let last = items[items.count - 1]
             items[items.count - 1] = AccessibilityItem(key: last.key, frame: last.frame, label: ([last.label] + rest).joined(separator: "\n"),
                                                        value: last.value, isHeading: last.isHeading, links: last.links + links,
                                                        table: nil)
@@ -108,9 +109,8 @@ extension DocumentLayout {
                                            math: (TranscriptMath) -> String,
                                            definitions: [String: String]) -> AccessibilityItem.Table {
         var cells: [AccessibilityItem.Table.Cell] = []
-        let rowCount = min(model.rows.count, grid.rowY.count - 1)
-        let columnCount = min(model.columnCount, grid.columnX.count - 1)
-        for row in 0..<max(rowCount, 0) {
+        let (rowCount, columnCount) = accessibilityGridSize(model, grid: grid)
+        for row in 0..<rowCount {
             for (column, range) in model.rows[row].prefix(columnCount).enumerated() {
                 let frame = CGRect(x: grid.columnX[column], y: y + grid.rowY[row], width: grid.columnX[column + 1] - grid.columnX[column],
                                    height: grid.rowY[row + 1] - grid.rowY[row])
@@ -119,17 +119,50 @@ extension DocumentLayout {
                                    links: AccessibilityText.links(of: block, in: range, math: math, definitions: definitions)))
             }
         }
-        return AccessibilityItem.Table(rowCount: max(rowCount, 0), columnCount: max(columnCount, 0), cells: cells)
+        return AccessibilityItem.Table(rowCount: rowCount, columnCount: columnCount, cells: cells)
+    }
+
+    /// The rows and columns of a table that have a place in its grid.
+    private static func accessibilityGridSize(_ model: TranscriptTable, grid: BlockLayout.Table) -> (rows: Int, columns: Int) {
+        (max(min(model.rows.count, grid.rowY.count - 1), 0), max(min(model.columnCount, grid.columnX.count - 1), 0))
+    }
+
+    /// The number of cells that `accessibilityTable` makes.
+    private static func accessibilityCellCount(_ model: TranscriptTable, grid: BlockLayout.Table) -> Int {
+        let (rows, columns) = accessibilityGridSize(model, grid: grid)
+        return model.rows.prefix(rows).reduce(0) { $0 + min($1.count, columns) }
     }
 
     /// What decides which items the layout has, found without making them.
     /// A layout that only adds text to the end of another has the same
     /// items as that one, with longer text, if their shapes are equal.
     var accessibilityShape: AccessibilityShape {
-        guard entryCount > 0 else { return AccessibilityShape(entries: 0, lastHasNoItem: false, lastTableCells: 0) }
+        guard entryCount > 0 else {
+            return AccessibilityShape(entries: 0, lastHasNoItem: false, lastTableCells: 0, hasRemainder: hasAccessibilityRemainder)
+        }
         let block = entry(at: entryCount - 1).layout.block
         return AccessibilityShape(entries: entryCount, lastHasNoItem: block.text.isEmpty && block.kind != .rule,
-                                  lastTableCells: block.kind.table?.rows.reduce(0) { $0 + $1.count } ?? 0)
+                                  lastTableCells: block.kind.table?.rows.reduce(0) { $0 + $1.count } ?? 0,
+                                  hasRemainder: hasAccessibilityRemainder)
+    }
+
+    /// Whether the text that a line limit leaves out gets an item of its
+    /// own, after the items of the blocks shown. It does when no block shown
+    /// has an item, or when the last one that has an item is a table.
+    var hasAccessibilityRemainder: Bool {
+        guard leavesTextOut, entryCount < document.count,
+              (entryCount..<document.count).contains(where: { AccessibilityText.hasItem(document.block(at: $0)) }) else {
+            return false
+        }
+        for index in (0..<entryCount).reversed() {
+            let entry = entry(at: index)
+            if let model = entry.layout.block.kind.table, let grid = entry.layout.table {
+                if Self.accessibilityCellCount(model, grid: grid) > 0 { return true }
+            } else if AccessibilityText.hasItem(entry.layout.block) {
+                return false
+            }
+        }
+        return true
     }
 }
 
@@ -140,6 +173,27 @@ struct AccessibilityShape: Equatable {
     /// The number of cells in the last block, if it is a table: a row that
     /// streams in adds elements.
     let lastTableCells: Int
+    /// See `DocumentLayout.hasAccessibilityRemainder`.
+    let hasRemainder: Bool
+}
+
+/// When assistive technologies must hear that the layout changed.
+enum AccessibilityLayoutChange {
+    /// Whether a new layout needs a layout-changed notification.
+    ///
+    /// A layout that only adds text to the end of the old one needs it only
+    /// when elements come or go, which the shape tells. Other layouts, such
+    /// as the ones that a new width or an image start, need it when an item
+    /// changed, for example its frame. A layout that only gives code other
+    /// colors has the same items, so it needs none.
+    ///
+    /// - Parameter newItems: the items of the new layout, made only when
+    ///   they are needed.
+    static func isNeeded(isAppend: Bool, oldShape: AccessibilityShape?, oldItems: [AccessibilityItem],
+                         newShape: AccessibilityShape, newItems: () -> [AccessibilityItem]) -> Bool {
+        guard let oldShape, oldShape == newShape else { return true }
+        return !isAppend && newItems() != oldItems
+    }
 }
 
 /// The words that assistive technologies get for a block.
@@ -155,6 +209,12 @@ enum AccessibilityText {
             text.replaceCharacters(in: NSRange(location: span.range.lowerBound - range.lowerBound, length: 1), with: replacement)
         }
         return text as String
+    }
+
+    /// Whether a block that is not a table gets an item: it has text, or it
+    /// is a rule.
+    static func hasItem(_ block: TranscriptBlock) -> Bool {
+        !readable(block, in: 0..<block.utf16Count).isEmpty || block.kind == .rule
     }
 
     /// What VoiceOver says for a block: its list marker, then its text.

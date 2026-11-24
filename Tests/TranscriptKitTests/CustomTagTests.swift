@@ -122,6 +122,27 @@ private func tagged(_ result: InlineParser.Result) -> [String] {
     #expect(inline("a <mark>b</ma", open: true).text == "a b")
 }
 
+/// A span that the app makes itself, for a document built without the
+/// parser, gives what a parsed tag gives.
+@Test func appMadeTagSpansMatchParsedOnes() throws {
+    let parsed = MarkdownStreamParser.document(from: #"Ask <mention id="42">@ana</mention> now."#, idPrefix: "a", tags: tags)
+    let mention = try #require(tags.first { $0.name == "mention" })
+    let made = TranscriptDocument(blocks: [
+        TranscriptBlock(id: "a-0", text: "Ask @ana now.",
+                        spans: [InlineSpan(range: 4..<8, tagged: InlineSpan.CustomTag(mention, attributes: ["id": "42"]))]),
+    ])
+    #expect(made.blocks[0].spans == parsed.blocks[0].spans)
+    #expect(made.blocks[0].spans[0].traits == .bold)
+    #expect(made.blocks[0].spans[0].link == "app://people/42")
+
+    let named = InlineSpan.CustomTag(name: "Mention", attributes: ["id": "42"], decoration: mention.decoration(for: ["id": "42"]))
+    #expect(named == made.blocks[0].spans[0].customTag)
+    // The plain initializer keeps the span's own traits and link.
+    let plain = InlineSpan(range: 0..<1, link: "app://other", customTag: named)
+    #expect(plain.link == "app://other" && plain.traits.isEmpty && plain.customTag == named)
+    #expect(InlineSpan(range: 0..<1, customTag: named).link == nil)
+}
+
 // MARK: Streaming
 
 private let streamedSamples = [

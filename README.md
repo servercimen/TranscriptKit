@@ -127,9 +127,14 @@ let tags = [
 let stream = TranscriptStream(tags: tags)
 ```
 
+A pill that breaks across two lines is open where it breaks. To keep a tag on one line, set `keepsTogether: true`
+in its decoration: a tag that does not fit at the end of a line then goes to the next line as a whole. A tag wider
+than a line, or with a line break in it, still breaks.
+
 A tag can also show a small image before its text, such as an icon in a pill. The image takes room after the tag's
-padding, so the tag's shapes surround it, and it is centred on the text's cap height. A tint fills the shape of a
-template image, such as a symbol:
+padding, so the tag's shapes surround it, and it is centred on the text's cap height. A tag with an animation shows
+its image once the animation has played; with `showsDuringAnimation: true`, the image shows from the start, while
+the tag waits and while it plays. A tint fills the shape of a template image, such as a symbol:
 
 ```swift
 TranscriptTag("chip") { attributes in
@@ -147,9 +152,20 @@ TranscriptTag("chip") { attributes in
 ```
 
 Tags the app doesn't define show as written. For a shape of your own, implement `TranscriptShapeRecipe`. It returns
-paths for each line the tag's text is on and may draw a little outside the text, up to 12 points to the sides,
-past the view's edges. The chat sample has two such shapes, `Zigzag` and `SoftUnderline`, in
+paths for each line the tag's text is on and may draw a little outside the text, up to 12 points to the sides
+and 6 points above and below the line, past the view's edges. The chat sample has two such shapes, `Zigzag` and `SoftUnderline`, in
 [`SampleTags.swift`](Examples/ChatSample/ChatSample/SampleTags.swift).
+
+An app can also build a tagged document without the parser. Make an `InlineSpan.CustomTag` from a tag definition,
+or from a name and a decoration. Then make the span with `InlineSpan(range:tagged:)`, which also gives it the
+decoration's traits and link:
+
+```swift
+let mention = InlineSpan.CustomTag(tags[0], attributes: ["id": "42"])
+let document = TranscriptDocument(blocks: [
+    TranscriptBlock(text: "Ask @ana now.", spans: [InlineSpan(range: 4..<8, tagged: mention)]),
+])
+```
 
 ### Animated tags
 
@@ -178,7 +194,8 @@ TranscriptTag("hop", TranscriptDecoration(animation: .custom(Hop())))
 Until its closing tag arrives, an animated tag shows its text without its shapes. The view then draws the tag's
 glyphs and the animation's paths on Core Animation layers above the text, and draws the tag as usual again when
 the animation ends, so the last frame should match that: glyphs back in place, paths fully shown. Only tags that
-close while text streams in are animated, not earlier messages. Turn animations off with `animatesTags` on the view
+close while text streams in are animated, not earlier messages (see below to animate text that is complete when it
+is shown). Turn animations off with `animatesTags` on the view
 or `.animatesTags(false)` on `TranscriptText`; with Reduce Motion on, nothing is animated. The chat sample's `Boing`
 sweeps a highlighter band in under the text while each letter jumps as the band reaches it.
 
@@ -197,8 +214,41 @@ TranscriptText(stream: stream)
 ```
 
 In UIKit, set `tagAnimationTiming` on `TranscriptTextView` and call `playTagAnimations()`. A tag that is still
-waiting when it can no longer play (Reduce Motion turned on, animations turned off, the view leaving its window, a
-new document) is shown as it ends up.
+waiting when it can no longer play (Reduce Motion turned on, animations turned off, a new document) is shown as it
+ends up. A view that leaves its window does the same, unless the timing has `.whenVisible` or `.whenRequested`: its
+tags then go on waiting until the view is back in a window. With `.whenVisible`, a view that is hidden or has an
+alpha of 0, or is inside such a view, is not visible. The view looks again a short time later, at most one second
+apart, so a tag can start up to one second after its view shows. When the view lays out the same text again, for
+example at a new width or when an image arrives, waiting tags go on waiting and playing tags go on playing. A
+playing tag whose glyphs move plays again from the start.
+
+Text that is complete when it is shown, such as a document set directly or a page of many short texts, can animate
+its tags too. With `animatesTagsInFirstText`, each tag in the first text that the view shows plays its animation
+one time, as if it had just closed. The timing applies, so with `.whenVisible`, each tag plays when it comes on
+screen:
+
+```swift
+TranscriptText(document)
+    .animatesTagsInFirstText()
+    .tagAnimationTiming(.whenVisible)
+```
+
+A view that is made again, as a lazy stack does with a row that scrolls back into view, plays them again.
+
+Tags that wait often start at the same moment, for example when the stream finishes. To stagger them, also
+implement `animation(for:in:)` in the recipe. The group gives the tag's place among the tags that start together,
+in text order, and how many they are:
+
+```swift
+func animation(for fragments: [TranscriptFragment], in group: TranscriptAnimationGroup) -> TranscriptAnimation {
+    var staggered = animation(for: fragments)
+    let delay = Double(group.index) * 0.15
+    for index in staggered.glyphs.indices {
+        staggered.glyphs[index].offsetY = staggered.glyphs[index].offsetY?.delayed(by: delay)
+    }
+    return staggered
+}
+```
 
 ### Fading in text
 

@@ -194,6 +194,13 @@ final class LayoutEngine: @unchecked Sendable {
         }
     }
 
+    /// The view holds these closed tags back until their timing lets them
+    /// play, as tags that close in an update wait: tails leave their shapes
+    /// out. Any thread.
+    func holdAnimations(_ keys: some Sequence<TagKey>) {
+        lock.withLock { hiding.waiting.formUnion(keys) }
+    }
+
     /// The view has started these waiting tags' animations: tails leave
     /// them out entirely. Any thread.
     func playAnimations(_ keys: some Sequence<TagKey>) {
@@ -531,8 +538,9 @@ final class LayoutEngine: @unchecked Sendable {
             base = layout
             measured = nil
             // The view draws everything itself after this; the tail starts
-            // again with the next append. Animations stop: the view shows
-            // every tag at rest after a relayout.
+            // again with the next append. The view tells the engine again
+            // which tags still wait or play (`holdAnimations`,
+            // `playAnimations`).
             tailActive = false
             tailRenderer?.reset()
             var kept: Int?

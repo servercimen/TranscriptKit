@@ -105,10 +105,15 @@ public struct TranscriptDecoration: Equatable, Sendable {
     /// A small image before the text, such as an icon in a pill. It sits in
     /// the space where the tag starts, after `padding`, so shapes surround it.
     public var image: TranscriptTagImage?
+    /// Whether the tag's text stays on one line, as a pill should: a tag
+    /// that does not fit at the end of a line goes to the next line as a
+    /// whole. A tag wider than a line, or with a line break in it, still
+    /// breaks. Off by default.
+    public var keepsTogether: Bool
 
     public init(traits: InlineSpan.Traits = [], foreground: TranscriptColor? = nil, background: TranscriptColor? = nil,
                 link: String? = nil, padding: CGFloat = 0, shapes: [Shape] = [], animation: Animation? = nil,
-                image: TranscriptTagImage? = nil) {
+                image: TranscriptTagImage? = nil, keepsTogether: Bool = false) {
         self.traits = traits
         self.foreground = foreground
         self.background = background
@@ -117,15 +122,17 @@ public struct TranscriptDecoration: Equatable, Sendable {
         self.shapes = shapes
         self.animation = animation
         self.image = image
+        self.keepsTogether = keepsTogether
     }
 
     /// Whether layout has to do anything for it beyond styling the text.
-    var shapesText: Bool { padding > 0 || !shapes.isEmpty || animation != nil || image != nil }
+    var shapesText: Bool { padding > 0 || !shapes.isEmpty || animation != nil || image != nil || keepsTogether }
 }
 
 /// A small image before a custom tag's text; see `TranscriptDecoration.image`.
 /// It is centred on the text's cap height. A tag with an animation shows its
-/// image when it shows its shapes: once the animation has played.
+/// image when it shows its shapes, once the animation has played, unless
+/// `showsDuringAnimation` is set.
 public struct TranscriptTagImage: Equatable, @unchecked Sendable {
     public var image: CGImage
     /// How large it is drawn, in points.
@@ -135,12 +142,18 @@ public struct TranscriptTagImage: Equatable, @unchecked Sendable {
     /// A color to fill the image's shape with, for a template image such as
     /// a symbol, or nil to draw the image's own colors.
     public var tint: TranscriptColor?
+    /// For a tag with an animation: whether the image shows from the start,
+    /// while the tag is open, while it waits for its animation and while the
+    /// animation plays. The animation does not move it. Off by default: the
+    /// image shows with the tag's shapes.
+    public var showsDuringAnimation: Bool
 
-    public init(_ image: CGImage, size: CGSize, gap: CGFloat = 4, tint: TranscriptColor? = nil) {
+    public init(_ image: CGImage, size: CGSize, gap: CGFloat = 4, tint: TranscriptColor? = nil, showsDuringAnimation: Bool = false) {
         self.image = image
         self.size = size
         self.gap = max(gap, 0)
         self.tint = tint
+        self.showsDuringAnimation = showsDuringAnimation
     }
 
     /// The space the image takes before the text.
@@ -148,6 +161,7 @@ public struct TranscriptTagImage: Equatable, @unchecked Sendable {
 
     public static func == (a: TranscriptTagImage, b: TranscriptTagImage) -> Bool {
         a.image === b.image && a.size == b.size && a.gap == b.gap && a.tint == b.tint
+            && a.showsDuringAnimation == b.showsDuringAnimation
     }
 }
 
@@ -248,7 +262,22 @@ extension InlineSpan {
         let shapesText: Bool
         let isAnimated: Bool
 
-        init(name: String, attributes: [String: String], decoration: TranscriptDecoration, isOpen: Bool = false) {
+        /// A tag for a span that the app makes itself, for example in a
+        /// document built with `TranscriptDocument(blocks:)`. Make the span
+        /// with `InlineSpan(range:tagged:)`, so that it also gets the
+        /// decoration's traits and link.
+        ///
+        /// - Parameter name: lowercased, as the parser does.
+        public convenience init(name: String, attributes: [String: String] = [:], decoration: TranscriptDecoration) {
+            self.init(name: name.lowercased(), attributes: attributes, decoration: decoration, isOpen: false)
+        }
+
+        /// The tag `tag` defines, with the decoration it gives `attributes`.
+        public convenience init(_ tag: TranscriptTag, attributes: [String: String] = [:]) {
+            self.init(name: tag.name, attributes: attributes, decoration: tag.decoration(for: attributes), isOpen: false)
+        }
+
+        init(name: String, attributes: [String: String], decoration: TranscriptDecoration, isOpen: Bool) {
             self.name = name
             self.attributes = attributes
             self.decoration = decoration

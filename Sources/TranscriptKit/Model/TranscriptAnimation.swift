@@ -34,12 +34,17 @@ import Foundation
 ///
 /// - Only tags that close while the view shows the text being appended are
 ///   animated. Text that is already complete when it is shown, such as
-///   earlier messages, is drawn as it ends up.
+///   earlier messages, is drawn as it ends up, unless
+///   `TranscriptTextView.animatesTagsInFirstText` is on.
 /// - With Reduce Motion on, or `TranscriptTextView.animatesTags` off,
 ///   nothing is animated.
 /// - A recipe is a value: two that are equal must make the same animation.
 /// - `animation(for:)` runs on the main thread when the animation starts.
 ///   Keep it quick: a few curves per glyph is fine.
+/// - Several tags can start at the same moment, for example when the
+///   stream finishes or when they come on screen. To stagger them,
+///   implement `animation(for:in:)` too, and delay each tag by its
+///   `TranscriptAnimationGroup.index`.
 /// - Glyphs and paths are drawn above the view's text, not cut off at its
 ///   edges, so they may move further than shapes may reach
 ///   (`TranscriptPath.maximumOverhang`); keep them near the text, or they
@@ -48,6 +53,44 @@ public protocol TranscriptAnimationRecipe: Hashable, Sendable {
     /// The animation for one tag, from its fragments: one per line its text
     /// is on, in order, each with its glyphs (`TranscriptFragment.glyphs`).
     func animation(for fragments: [TranscriptFragment]) -> TranscriptAnimation
+
+    /// The animation for one tag of `group`, the tags whose animations start
+    /// at the same moment in the same view. By default, `animation(for:)`.
+    func animation(for fragments: [TranscriptFragment], in group: TranscriptAnimationGroup) -> TranscriptAnimation
+}
+
+extension TranscriptAnimationRecipe {
+    public func animation(for fragments: [TranscriptFragment], in group: TranscriptAnimationGroup) -> TranscriptAnimation {
+        animation(for: fragments)
+    }
+}
+
+/// The tags whose animations start at the same moment in one view, and the
+/// place of one of them, for a `TranscriptAnimationRecipe` that staggers them.
+///
+/// ```swift
+/// func animation(for fragments: [TranscriptFragment], in group: TranscriptAnimationGroup) -> TranscriptAnimation {
+///     var staggered = animation(for: fragments)
+///     let delay = Double(group.index) * 0.15
+///     for index in staggered.glyphs.indices {
+///         staggered.glyphs[index].offsetY = staggered.glyphs[index].offsetY?.delayed(by: delay)
+///     }
+///     return staggered
+/// }
+/// ```
+public struct TranscriptAnimationGroup: Sendable, Hashable {
+    /// The tag's place among them, in text order, from 0.
+    public var index: Int
+    /// How many tags start together, 1 or more.
+    public var count: Int
+
+    public init(index: Int, count: Int) {
+        self.index = max(index, 0)
+        self.count = max(count, self.index + 1)
+    }
+
+    /// A tag that starts alone.
+    public static let single = TranscriptAnimationGroup(index: 0, count: 1)
 }
 
 /// What a `TranscriptAnimationRecipe` plays: how each glyph moves and which
@@ -266,8 +309,16 @@ public struct TranscriptCurve: Sendable, Equatable {
 /// ```
 ///
 /// A tag that is still waiting when animations can no longer play (Reduce
-/// Motion turned on, `animatesTags` turned off, the view leaving its window,
-/// or a new document) is shown as it ends up, shapes and all.
+/// Motion turned on, `animatesTags` turned off, or a new document) is shown
+/// as it ends up, shapes and all. A view that leaves its window does the
+/// same, unless the timing has `.whenVisible` or `.whenRequested`: its tags
+/// then go on waiting, and tags that close meanwhile wait too. A view out of
+/// its window plays no animation.
+///
+/// When the view lays out the same text again (a new width or style, or an
+/// image, code colors or a formula that arrived), waiting tags go on
+/// waiting and playing tags go on playing. A playing tag whose glyphs move
+/// plays again from the start.
 public struct TranscriptAnimationTiming: OptionSet, Hashable, Sendable {
     public let rawValue: Int
     public init(rawValue: Int) { self.rawValue = rawValue }
@@ -275,7 +326,11 @@ public struct TranscriptAnimationTiming: OptionSet, Hashable, Sendable {
     /// As soon as the tag's closing tag arrives.
     public static let immediately: TranscriptAnimationTiming = []
     /// Not before the tag's text is on screen: a tag that closes while it is
-    /// scrolled out of view plays when it is scrolled into view.
+    /// scrolled out of view plays when it is scrolled into view. A view that
+    /// is hidden, or has an alpha of 0, is not on screen, nor is one inside
+    /// such a view. No call tells the view when an ancestor shows again, so
+    /// the view looks again after 0.25 s, then less often, up to one second
+    /// apart, until it shows.
     public static let whenVisible = TranscriptAnimationTiming(rawValue: 1 << 0)
     /// Not before the stream has finished (`TranscriptStream.finish()`), or
     /// the view shows a document that was set directly rather than streamed.
@@ -323,8 +378,8 @@ extension TranscriptDecoration {
             AnyHashable(recipe).hash(into: &hasher)
         }
 
-        func animation(for fragments: [TranscriptFragment]) -> TranscriptAnimation {
-            recipe.animation(for: fragments)
+        func animation(for fragments: [TranscriptFragment], in group: TranscriptAnimationGroup = .single) -> TranscriptAnimation {
+            recipe.animation(for: fragments, in: group)
         }
     }
 }

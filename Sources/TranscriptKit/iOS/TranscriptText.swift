@@ -25,6 +25,7 @@ public struct TranscriptText: UIViewRepresentable {
     private var animatesTags = true
     private var textFadeInDuration: TimeInterval?
     private var animationTiming: TranscriptAnimationTiming = .immediately
+    private var animatesFirstText = false
     private var isSelectable = true
     private var playTrigger: AnyHashable?
     private var selectionChange: ((Range<Int>?) -> Void)?
@@ -103,6 +104,15 @@ public struct TranscriptText: UIViewRepresentable {
     public func animatesTags(_ animates: Bool) -> TranscriptText {
         var copy = self
         copy.animatesTags = animates
+        return copy
+    }
+
+    /// Whether the tags with an animation that the first text already holds
+    /// play it, each one time; see `TranscriptTextView.animatesTagsInFirstText`.
+    /// Off by default.
+    public func animatesTagsInFirstText(_ animates: Bool = true) -> TranscriptText {
+        var copy = self
+        copy.animatesFirstText = animates
         return copy
     }
 
@@ -190,6 +200,7 @@ public struct TranscriptText: UIViewRepresentable {
         }
         view.style = style
         view.animatesTags = animatesTags
+        view.animatesTagsInFirstText = animatesFirstText
         view.textFadeInDuration = textFadeInDuration
         view.tagAnimationTiming = animationTiming
         view.isSelectable = isSelectable

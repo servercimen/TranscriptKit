@@ -14,6 +14,10 @@ struct DecoratedTags {
         /// Its place among the block's spans, where outer tags come first.
         let order: Int
 
+        /// It keeps together and has no line break in its text, so it can
+        /// stay on one line.
+        let keepsTogether: Bool
+
         var padding: CGFloat { tag.decoration.padding }
         /// The space before the text: the padding, and the image after it.
         var leadingRoom: CGFloat { padding + (tag.decoration.image?.room ?? 0) }
@@ -49,7 +53,9 @@ struct DecoratedTags {
             guard let custom = span.customTag, custom.shapesText else { continue }
             var textEnd = span.range.upperBound
             while textEnd > span.range.lowerBound, text.character(at: textEnd - 1) == 0x0A { textEnd -= 1 }
-            let tag = Tag(range: span.range, textEnd: textEnd, tag: custom, order: order)
+            let keepsTogether = custom.decoration.keepsTogether
+                && !(span.range.lowerBound..<textEnd).contains { [0x0A, 0x0D, 0x2028, 0x2029].contains(text.character(at: $0)) }
+            let tag = Tag(range: span.range, textEnd: textEnd, tag: custom, order: order, keepsTogether: keepsTogether)
             tags.append(tag)
             guard tag.leadingRoom > 0 else { continue }
             let before = span.range.lowerBound - 1
@@ -60,6 +66,44 @@ struct DecoratedTags {
         self.tags = tags
         self.kerns = kerns
         self.startPadding = startPadding
+    }
+
+    /// Where a line that starts at block offset `start` and would end at
+    /// `end` ends instead, so that it does not cut a tag that keeps together
+    /// and fits on a line of its own: just before the first such tag that
+    /// starts on the line after `start` and goes on past `end`, so that it
+    /// starts the next line. A line that starts with such a tag holds all
+    /// of it, even when text without a space follows it.
+    ///
+    /// - Parameter fits: whether the text in a range fits on a line that
+    ///   starts at the range's start.
+    func lineEnd(from start: Int, to end: Int, fits: (Range<Int>) -> Bool) -> Int {
+        for tag in tags where tag.keepsTogether
+            && tag.range.lowerBound >= start && tag.range.lowerBound < end && tag.textEnd > end {
+            guard fits(tag.range.lowerBound..<tag.textEnd) else { continue }
+            return tag.range.lowerBound > start ? tag.range.lowerBound : tag.textEnd
+        }
+        return end
+    }
+
+    /// The widest text of a tag that keeps together and has no line break,
+    /// in `range`, as `width` measures it: such a tag is not cut where it
+    /// fits, so it counts as one word.
+    func widestKeptTag(in range: Range<Int>, width: (Range<Int>) -> CGFloat) -> CGFloat {
+        var widest: CGFloat = 0
+        for tag in tags where tag.keepsTogether && range.lowerBound <= tag.range.lowerBound && tag.textEnd <= range.upperBound
+            && tag.textEnd > tag.range.lowerBound {
+            widest = max(widest, width(tag.range.lowerBound..<tag.textEnd))
+        }
+        return widest
+    }
+
+    /// Whether a tag that keeps together starts at `offset` in `block`: a
+    /// line that starts there may depend on where the line before it ends.
+    /// A line that starts inside such a tag does not, since the tag already
+    /// breaks there and appended text cannot make it fit again.
+    static func keptTagStarts(at offset: Int, in block: TranscriptBlock) -> Bool {
+        block.spans.contains { $0.range.lowerBound == offset && $0.customTag?.decoration.keepsTogether == true }
     }
 
     /// Whether `inner` is `outer` or inside it.
@@ -255,12 +299,13 @@ final class LineDecorations: @unchecked Sendable {
             if let link = tag.tag.decoration.link, tag.leadingRoom > 0 {
                 links.append((rect, link))
             }
-            if let image = tag.tag.decoration.image, isStart, showsShapes {
+            if let image = tag.tag.decoration.image, isStart, showsShapes || image.showsDuringAnimation {
                 // Just before the text, centred on its cap height.
                 let capHeight = CTFontGetCapHeight(font)
                 let imageRect = CGRect(x: minX - image.gap - image.size.width, y: -capHeight / 2 - image.size.height / 2,
                                        width: image.size.width, height: image.size.height)
-                images.append((imageRect, image, key))
+                // One that shows during the animation is never left out.
+                images.append((imageRect, image, image.showsDuringAnimation ? nil : key))
                 inkTop = min(inkTop, imageRect.minY)
                 inkBottom = max(inkBottom, imageRect.maxY)
             }

@@ -7,6 +7,8 @@ import UIKit
 private let animationLog = Logger(subsystem: "TranscriptKit", category: "TagAnimations")
 /// Each tag animation as an interval in Instruments' Points of Interest.
 private let animationSignposter = OSSignposter(subsystem: "TranscriptKit", category: .pointsOfInterest)
+/// Where a block that scrolls sideways stops, at the debug level, like `animationLog`.
+private let sideScrollLog = Logger(subsystem: "TranscriptKit", category: "SideScroll")
 
 /// A read-only text view that draws a whole transcript with Core Text and
 /// exposes it to the system as one selectable document.
@@ -468,6 +470,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         case .ended:
             guard let target = sidePanTarget else { return }
             sidePanTarget = nil
+            logSideScroll(of: target.id, "Pan ended")
             startSideDeceleration(of: target.id, index: target.index, velocity: -pan.velocity(in: self).x)
         default:
             sidePanTarget = nil
@@ -504,8 +507,19 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     }
 
     private func stopSideDeceleration() {
-        sideDeceleration?.link.invalidate()
+        guard let moving = sideDeceleration else { return }
+        moving.link.invalidate()
         sideDeceleration = nil
+        logSideScroll(of: moving.id, "Stopped")
+    }
+
+    private func logSideScroll(of id: String, _ event: String) {
+        guard let index = currentLayout.entryIndex(ofBlock: id) else { return }
+        let block = currentLayout.entry(at: index).layout
+        let offset = sideScroll.offset(of: block)
+        let maximum = block.maximumScrollOffset
+        sideScrollLog.debug(
+            "\(event, privacy: .public): block \(id, privacy: .public) at \(offset, format: .fixed(precision: 1)) of \(maximum, format: .fixed(precision: 1)) points")
     }
 
     fileprivate func stepSideDeceleration(_ link: CADisplayLink) {

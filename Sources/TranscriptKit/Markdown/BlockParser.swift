@@ -9,6 +9,8 @@ import Foundation
 /// Each leaf becomes one block that records the containers it sits in.
 /// HTML comment blocks are dropped. Not supported: other raw HTML blocks
 /// (they read as paragraphs) and link reference definitions.
+/// A newline inside a paragraph is a space, as in CommonMark, or a line
+/// break if `State` has `newlinesAsLineBreaks`.
 enum BlockParser {
     enum Kind: Equatable {
         case paragraph
@@ -27,6 +29,9 @@ enum BlockParser {
         var kind: Kind
         let containers: [TranscriptBlock.Container]
         let marker: TranscriptBlock.ListMarker?
+        /// Paragraphs and headings: a newline between two lines is a line
+        /// break, not a space.
+        let newlinesAsLineBreaks: Bool
         /// Code blocks: the lines so far, joined by "\n".
         private(set) var code = ""
         private(set) var lineCount = 0
@@ -50,10 +55,12 @@ enum BlockParser {
         /// Where inline parsing of this block can resume.
         var checkpoint = InlineParser.Checkpoint()
 
-        init(kind: Kind, containers: [TranscriptBlock.Container], marker: TranscriptBlock.ListMarker?) {
+        init(kind: Kind, containers: [TranscriptBlock.Container], marker: TranscriptBlock.ListMarker?,
+             newlinesAsLineBreaks: Bool) {
             self.kind = kind
             self.containers = containers
             self.marker = marker
+            self.newlinesAsLineBreaks = newlinesAsLineBreaks
         }
 
         /// - Parameter units: `line` trimmed, as UTF-16, if the caller has it.
@@ -82,7 +89,8 @@ enum BlockParser {
                 lineCount += 1
             case .paragraph, .heading:
                 if let lastLine {
-                    committedSource += BlockParser.contributionWhenFollowed(lastLineUnits, of: lastLine)
+                    committedSource += BlockParser.contributionWhenFollowed(lastLineUnits, of: lastLine,
+                                                                            newlineIsLineBreak: newlinesAsLineBreaks)
                 }
                 lastLine = line
                 lastLineUnits = units ?? BlockParser.utf16(BlockParser.trimmingSpaceAndTab(Substring(line)))
@@ -157,6 +165,8 @@ enum BlockParser {
     struct State {
         /// The last block may still grow; the caller takes the others.
         var blocks: [RawBlock] = []
+        /// A newline inside a paragraph is a line break, not a space.
+        let newlinesAsLineBreaks: Bool
         private var containers: [OpenContainer] = []
         /// The last block is a paragraph with no blank line since.
         private var canContinue = false
@@ -170,6 +180,10 @@ enum BlockParser {
         /// continue, so items are numbered as CommonMark numbers them: from
         /// the first item's number, one up per item.
         private var lists: [ListCounter?] = []
+
+        init(newlinesAsLineBreaks: Bool = false) {
+            self.newlinesAsLineBreaks = newlinesAsLineBreaks
+        }
 
         private struct ListCounter {
             /// The bullet ("-", "+", "*") or the ordered delimiter ("." or ")").
@@ -218,7 +232,8 @@ enum BlockParser {
                 marker = containers[index].pendingMarker
                 containers[index].pendingMarker = nil
             }
-            var block = RawBlock(kind: kind, containers: containers.map(\.kind), marker: marker)
+            var block = RawBlock(kind: kind, containers: containers.map(\.kind), marker: marker,
+                                 newlinesAsLineBreaks: newlinesAsLineBreaks)
             if let line { block.addLine(line, units: units) }
             blocks.append(block)
             endLists(from: containers.count)
@@ -749,9 +764,11 @@ enum BlockParser {
     /// What a line adds to a block's inline source when another line
     /// follows it: its trimmed text and a space, or a line break if it ends
     /// in two spaces or a backslash (which is dropped, with the spaces
-    /// before it). `trimmed` is the line trimmed, as UTF-16; a line on its
-    /// own, with nothing after it, contributes just that.
-    fileprivate static func contributionWhenFollowed(_ trimmed: [UInt16], of line: String) -> [UInt16] {
+    /// before it), or if `newlineIsLineBreak` is true. `trimmed` is the line
+    /// trimmed, as UTF-16; a line on its own, with nothing after it,
+    /// contributes just that.
+    fileprivate static func contributionWhenFollowed(_ trimmed: [UInt16], of line: String,
+                                                     newlineIsLineBreak: Bool) -> [UInt16] {
         let bytes = line.utf8
         var units = trimmed
         var hardBreak = bytes.count >= 2 && bytes.suffix(2).elementsEqual([0x20, 0x20])
@@ -760,7 +777,7 @@ enum BlockParser {
             units.removeLast()
             while let last = units.last, last == space || last == tab { units.removeLast() }
         }
-        units.append(hardBreak ? newline : space)
+        units.append(hardBreak || newlineIsLineBreak ? newline : space)
         return units
     }
 

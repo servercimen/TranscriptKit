@@ -116,7 +116,7 @@ private func documentDifference(_ output: LayoutEngine.Output, scale: CGFloat) -
         context.translateBy(x: margin, y: -top)
         context.clip(to: band)
         layout.draw(in: context, dirtyRect: band, text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent,
-                    dark: false, hiding: hiding)
+                    dark: false, highContrast: false, hiding: hiding)
         context.restoreGState()
         return context
     }

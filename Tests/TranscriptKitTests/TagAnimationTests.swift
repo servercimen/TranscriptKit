@@ -194,7 +194,7 @@ private func render(_ layout: DocumentLayout, hiding: TagHiding = .none, sprites
     context.setFillColor(CGColor(gray: 1, alpha: 1))
     context.fill(all)
     layout.draw(in: context, dirtyRect: all, text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent,
-                dark: false, hiding: hiding)
+                dark: false, highContrast: false, hiding: hiding)
     // Sprites at rest, as their layers show them: upright, at their frames.
     for sprite in sprites {
         context.saveGState()
@@ -298,7 +298,7 @@ func spritesAtRestRedrawTheTagExactly(scale: CGFloat) throws {
     context.translateBy(x: TailRenderer.sideMargin, y: -tail.top)
     final.draw(in: context, dirtyRect: CGRect(x: -TailRenderer.sideMargin, y: tail.top, width: final.width + 2 * TailRenderer.sideMargin,
                                               height: TailRenderer.height),
-               text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent, dark: false, hiding: TagHiding(playing: [key]))
+               text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent, dark: false, highContrast: false, hiding: TagHiding(playing: [key]))
     let expected = Array(UnsafeRawBufferPointer(start: context.data!, count: width * height * 4))
     #expect(zip(pixels, expected).allSatisfy { abs(Int($0) - Int($1)) <= 2 })
 }

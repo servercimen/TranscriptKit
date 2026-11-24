@@ -119,7 +119,7 @@ private func imageIsDrawn(_ laidOut: DocumentLayout, hiding: TagHiding) throws -
     context.scaleBy(x: scale, y: -scale)
     laidOut.draw(in: context, dirtyRect: CGRect(x: 0, y: 0, width: laidOut.width, height: laidOut.height),
                  text: CGColor(gray: 0, alpha: 1), codeBackground: CGColor(gray: 0.9, alpha: 1),
-                 accent: CGColor(gray: 0.6, alpha: 1), dark: false, hiding: hiding)
+                 accent: CGColor(gray: 0.6, alpha: 1), dark: false, highContrast: false, hiding: hiding)
     let bytes = UnsafeRawBufferPointer(start: context.data!, count: width * height * 4)
     let x = Int(((line.frame.minX + start.midX) * scale).rounded())
     let y = Int(((laidOut.entry(at: 0).y + line.baseline + start.midY) * scale).rounded())

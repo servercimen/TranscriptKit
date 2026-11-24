@@ -143,9 +143,11 @@ enum InlineParser {
     }()
 
     /// Parses a whole string.
-    static func parse(_ source: String, open: Bool, tags: [String: TranscriptTag] = [:]) -> Result {
+    static func parse(_ source: String, open: Bool, tags: [String: TranscriptTag] = [:],
+                      newlinesAsLineBreaks: Bool = false) -> Result {
         var checkpoint = Checkpoint()
-        return parse(BlockParser.utf16(source), open: open, stableLength: 0, resumingFrom: &checkpoint, tags: tags)
+        return parse(BlockParser.utf16(source), open: open, stableLength: 0, resumingFrom: &checkpoint, tags: tags,
+                     newlinesAsLineBreaks: newlinesAsLineBreaks)
     }
 
     /// Parses `units`, resuming from `checkpoint` and advancing it.
@@ -157,8 +159,13 @@ enum InlineParser {
     ///     source, or a fresh one.
     ///   - tags: the app's custom tags, by name. The same in every call
     ///     made with this checkpoint.
+    ///   - newlinesAsLineBreaks: whether the block parser made each newline
+    ///     between two lines a line break, not only a hard break. Then a
+    ///     newline right after a `<br>` adds no second break, a newline in a
+    ///     code span is a space, and a built-in tag can go over two lines.
+    ///     The same in every call made with this checkpoint.
     static func parse(_ units: [UInt16], open: Bool, stableLength: Int, resumingFrom checkpoint: inout Checkpoint,
-                      tags: [String: TranscriptTag] = [:]) -> Result {
+                      tags: [String: TranscriptTag] = [:], newlinesAsLineBreaks: Bool = false) -> Result {
         let count = open ? visibleCount(of: units) : units.count
         if checkpoint.position > count {
             // Cannot happen if the caller keeps its promise; start over rather than misparse.
@@ -170,12 +177,14 @@ enum InlineParser {
         let emails = units[checkpoint.position..<count].contains(atSign)
         // Decisions that are final go into the checkpoint...
         while checkpoint.position < limit,
-              step(&checkpoint, units, count: count, open: open, limit: limit, emails: emails, tags: tags) {}
+              step(&checkpoint, units, count: count, open: open, limit: limit, emails: emails, tags: tags,
+                   newlinesAsLineBreaks: newlinesAsLineBreaks) {}
         checkpoint.settle()
         // ...and the rest is parsed on a copy, every time.
         var state = checkpoint
         while state.position < count {
-            _ = step(&state, units, count: count, open: open, limit: nil, emails: emails, tags: tags)
+            _ = step(&state, units, count: count, open: open, limit: nil, emails: emails, tags: tags,
+                     newlinesAsLineBreaks: newlinesAsLineBreaks)
         }
         if open { closeAtEnd(&state, count: count) }
         // An HTML tag left open styles the rest of the block, as in a browser.
@@ -383,7 +392,7 @@ enum InlineParser {
     /// would need to look at a unit at or past it is left unparsed and the
     /// result is false.
     private static func step(_ state: inout Checkpoint, _ units: [UInt16], count: Int, open: Bool, limit: Int?, emails: Bool,
-                             tags: [String: TranscriptTag]) -> Bool {
+                             tags: [String: TranscriptTag], newlinesAsLineBreaks: Bool) -> Bool {
         let i = state.position
         /// Whether a token whose decision looked at units up to `peek`
         /// (inclusive; `count` meaning it depended on where the text ends) may be taken.
@@ -450,6 +459,10 @@ enum InlineParser {
             if close != nil || open {
                 let contentEnd = close ?? count
                 var content = units[contentStart..<contentEnd]
+                if newlinesAsLineBreaks, content.contains(newline) {
+                    // As in CommonMark, a line end in a code span is a space.
+                    content = ArraySlice(content.map { $0 == newline ? space : $0 })
+                }
                 if close != nil, content.count >= 2, content.first == space, content.last == space,
                    content.contains(where: { $0 != space }) {
                     content = content.dropFirst().dropLast()
@@ -611,7 +624,7 @@ enum InlineParser {
             let opener = state.brackets.removeLast()
             if close != nil || open {
                 let raw = String(decoding: units[(i + 2)..<(close ?? count)], as: UTF16.self)
-                    .trimmingCharacters(in: .whitespaces)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
                 var destination = String(raw.prefix { !$0.isWhitespace })
                 if destination.hasPrefix("<"), destination.hasSuffix(">"), destination.count >= 2 {
                     destination = String(destination.dropFirst().dropLast())
@@ -678,7 +691,7 @@ enum InlineParser {
                     // Custom tag names may have hyphens.
                     while k < count, isASCIILetter(units[k]) || isASCIIDigit(units[k]) || units[k] == dash { k += 1 }
                     let nameEnd = k
-                    while k < count, units[k] == space { k += 1 }
+                    while k < count, isBuiltInTagSpace(units[k], newlinesAsLineBreaks) { k += 1 }
                     guard k < count, k - i < maximumTagLength else {
                         if k >= count, count - i < maximumTagLength { outcome = .pending(show: false); peek = count } else { peek = k }
                         break scan
@@ -726,11 +739,15 @@ enum InlineParser {
                     }
                     guard htmlTags[name] != nil || name == "br" else { break scan }
                     var k = j
-                    while k < count, units[k] == space { k += 1 }
+                    while k < count, isBuiltInTagSpace(units[k], newlinesAsLineBreaks) { k += 1 }
                     if k < count, units[k] == slash { k += 1 }
                     guard k < count else { outcome = .pending(show: false); peek = count; break scan }
                     peek = k
-                    if units[k] == greaterThan { outcome = .tag(name: name, closing: false, end: k + 1) }
+                    if units[k] == greaterThan {
+                        outcome = .tag(name: name, closing: false, end: k + 1)
+                        // Whether a newline follows a "<br>" decides if it adds a second break.
+                        if name == "br", newlinesAsLineBreaks { peek = k + 1 < count ? k + 1 : count }
+                    }
                     break scan
                 }
                 guard j - (i + 1) >= 2 else { break scan }
@@ -770,7 +787,8 @@ enum InlineParser {
                     let piece = state.appendSealedPiece(EmptyCollection<UInt16>())
                     state.tags.append(Tag(name: name, traits: traits, piece: piece))
                 }
-                state.position = end
+                let breakEndsLine = name == "br" && !closing && newlinesAsLineBreaks && end < count && units[end] == newline
+                state.position = breakEndsLine ? end + 1 : end
             case .customTag(let definition, let attributes, let end):
                 let decoration = definition.decoration(for: attributes)
                 let custom = InlineSpan.CustomTag(name: definition.name, attributes: attributes, decoration: decoration, isOpen: false)
@@ -957,6 +975,12 @@ enum InlineParser {
 
     private static func isTagSpace(_ unit: UInt16) -> Bool {
         unit == space || unit == tab || unit == newline
+    }
+
+    /// A space in a built-in tag such as `<br />`. A newline counts only
+    /// with `newlinesAsLineBreaks`, which keeps the default output as before.
+    private static func isBuiltInTagSpace(_ unit: UInt16, _ newlinesAsLineBreaks: Bool) -> Bool {
+        unit == space || (newlinesAsLineBreaks && unit == newline)
     }
 
     private static func isAttributeNameStart(_ unit: UInt16) -> Bool {

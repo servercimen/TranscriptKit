@@ -633,6 +633,31 @@ final class BlockLayout: @unchecked Sendable {
         return CGRect(x: x(forOffset: offset, in: line) - 1, y: line.frame.minY, width: 2, height: line.frame.height)
     }
 
+    /// Where a caret at `offset` goes when it moves one stop to the right,
+    /// or to the left, in a line with right-to-left text: to the nearest
+    /// caret on that side, else to the end of the line on that side. Nil in
+    /// other lines, where a stop is one character, or when the caret is at
+    /// that end of the line already.
+    func visualStep(from offset: Int, right: Bool) -> Int? {
+        guard offset >= 0, offset <= length else { return nil }
+        let index = lineIndex(forOffset: offset)
+        let line = lines[index]
+        guard !line.range.isEmpty, hasRightToLeftText(line) else { return nil }
+        // The end of a line that wraps is a caret on the next line.
+        let last = index == lines.count - 1 ? line.range.upperBound : line.range.upperBound - 1
+        let text = block.text as NSString
+        let x = self.x(forOffset: offset, in: line)
+        var best: (offset: Int, distance: CGFloat)?
+        for candidate in line.range.lowerBound...max(last, line.range.lowerBound) where candidate != offset {
+            if candidate < text.length, text.rangeOfComposedCharacterSequence(at: candidate).location != candidate { continue }
+            let distance = (self.x(forOffset: candidate, in: line) - x) * (right ? 1 : -1)
+            if distance > 0.5, best.map({ distance < $0.distance }) ?? true { best = (candidate, distance) }
+        }
+        if let best { return best.offset }
+        let end = right != isRightToLeft ? line.range.upperBound : line.range.lowerBound
+        return end == offset ? nil : end
+    }
+
     func closestOffset(to point: CGPoint) -> Int {
         guard let table else { return closestOffset(to: point, amongLines: 0..<lines.count) }
         // The cell under the point, or the nearest one.

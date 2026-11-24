@@ -145,3 +145,76 @@ private func expectLigatureParts(_ document: DocumentLayout, start: Int, count: 
         #expect(abs(left.maxX - right.minX) < 0.5)
     }
 }
+
+// MARK: Caret moves, first rect and copy
+
+@Test func leftAndRightMovesFollowTheScreen() {
+    // "abc" is drawn left to right at the left of a right-to-left line.
+    let mixed = layout("שלום abc")
+    #expect(mixed.offset(from: 6, movingRight: true) == 7)
+    #expect(mixed.offset(from: 6, movingRight: false) == 5)
+    #expect(mixed.offset(from: 2, movingRight: true) == 1)
+    #expect(mixed.offset(from: 2, movingRight: false) == 3)
+
+    let plain = layout("Hello world")
+    #expect(plain.offset(from: 2, movingRight: true) == 3)
+    #expect(plain.offset(from: 2, movingRight: false) == 1)
+    #expect(plain.offset(from: 2, movingRight: true, by: 3) == 5)
+    #expect(plain.offset(from: 2, movingRight: true, by: -1) == 1)
+    #expect(plain.offset(from: 0, movingRight: false) == 0)
+}
+
+@Test(arguments: ["Say שלום עולם to all", "שלום abc def עולם"])
+func rightMovesGoRightAcrossALineOfMixedText(text: String) {
+    let document = layout(text, width: 400)
+    let line = document.entry(at: 0).layout.lines[0]
+    // From the caret at the left end of the line.
+    var offset = (0...document.length).min { document.caretRect(at: $0).midX < document.caretRect(at: $1).midX }!
+    var visited = [offset]
+    while visited.count <= document.length {
+        let next = document.offset(from: offset, movingRight: true)
+        guard next != offset, document.caretRect(at: next).midX > document.caretRect(at: offset).midX + 0.5 else { break }
+        offset = next
+        visited.append(offset)
+    }
+    // Every caret stop of the line is visited, from left to right.
+    let stops = Set((0...document.length).map { document.caretRect(at: $0).midX.rounded() })
+    #expect(visited.count == stops.count, "visited \(visited)")
+    #expect(abs(document.caretRect(at: offset).midX - line.frame.maxX) < 2)
+}
+
+@Test func farthestEndOfARangeIsFoundOnTheScreen() {
+    let document = layout("שלום abc")
+    #expect(document.farthestOffset(in: 0..<4, right: true) == 0)
+    #expect(document.farthestOffset(in: 0..<4, right: false) == 4)
+    #expect(document.farthestOffset(in: 5..<7, right: true) == 7)
+    let plain = layout("Hello world")
+    #expect(plain.farthestOffset(in: 1..<4, right: true) == 4)
+    #expect(plain.farthestOffset(in: 1..<4, right: false) == 1)
+}
+
+@Test func firstLineRectCoversTheRectsOfTheFirstLine() {
+    let mixed = layout("Say שלום עולם to all", width: 400)
+    let segments = mixed.selectionSegments(for: 2..<8)
+    #expect(segments.count == 2)
+    #expect(mixed.firstLineRect(for: 2..<8) == segments[0].rect.union(segments[1].rect))
+
+    // The cells of a row start at the same height, but each has its own line.
+    let table = layout("| a | b |\n|---|---|\n| c | d |")
+    let block = table.entry(at: 0).layout
+    let row = block.table!.cellLines[1]
+    let range = block.lines[row[0].lowerBound].range.lowerBound..<block.lines[row[1].lowerBound].range.upperBound
+    let rects = table.selectionRects(for: range)
+    #expect(rects.count == 2)
+    #expect(table.firstLineRect(for: range) == rects[0])
+    #expect(table.firstLineRect(for: 0..<0) == nil)
+}
+
+@Test func copyGivesTheTextInTheOrderItWasWritten() {
+    let document = MarkdownStreamParser.document(from: "מרחבא [עולם](https://example.com) וכולם\n\nSay שלום to all\n\n- פריט\n- שני")
+    let all = 0..<(document.blocks.reduce(0) { $0 + $1.utf16Count + 1 } - 1)
+    #expect(document.text(in: all) == "מרחבא עולם וכולם\nSay שלום to all\nפריט\nשני")
+    #expect(document.copyText(in: all) == "מרחבא עולם וכולם\n\nSay שלום to all\n\n- פריט\n- שני")
+    // Part of a word in each direction.
+    #expect(document.text(in: 2..<8) == "חבא עו")
+}

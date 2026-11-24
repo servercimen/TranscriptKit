@@ -1345,22 +1345,11 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         return TranscriptTextPosition(offset: target)
     }
 
-    /// `.left` and `.right` swapped in a right-to-left paragraph, where the
-    /// text goes on to the left: then `.right` goes back in the text.
-    private func textDirection(_ direction: UITextLayoutDirection, at offset: Int) -> UITextLayoutDirection {
-        guard currentLayout.isRightToLeft(at: offset) else { return direction }
-        switch direction {
-        case .left: return .right
-        case .right: return .left
-        default: return direction
-        }
-    }
-
     public func position(from position: UITextPosition, in direction: UITextLayoutDirection, offset: Int) -> UITextPosition? {
         let start = self.offset(of: position)
-        switch textDirection(direction, at: start) {
-        case .left: return TranscriptTextPosition(offset: clamp(start - offset))
-        case .right: return TranscriptTextPosition(offset: clamp(start + offset))
+        switch direction {
+        case .left, .right:
+            return TranscriptTextPosition(offset: currentLayout.offset(from: clamp(start), movingRight: direction == .right, by: offset))
         case .up, .down:
             let caret = currentLayout.caretRect(at: start)
             let step = caret.height * CGFloat(offset) * (direction == .up ? -1 : 1)
@@ -1382,18 +1371,23 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     public func position(within range: UITextRange, farthestIn direction: UITextLayoutDirection) -> UITextPosition? {
         let range = self.range(of: range)
-        switch textDirection(direction, at: range.lowerBound) {
-        case .left, .up: return TranscriptTextPosition(offset: range.lowerBound)
-        case .right, .down: return TranscriptTextPosition(offset: range.upperBound)
+        switch direction {
+        case .left, .right:
+            return TranscriptTextPosition(offset: currentLayout.farthestOffset(in: range, right: direction == .right))
+        case .up: return TranscriptTextPosition(offset: range.lowerBound)
+        case .down: return TranscriptTextPosition(offset: range.upperBound)
         @unknown default: return nil
         }
     }
 
     public func characterRange(byExtending position: UITextPosition, in direction: UITextLayoutDirection) -> UITextRange? {
         let start = offset(of: position)
-        switch textDirection(direction, at: start) {
-        case .left, .up: return TranscriptTextRange(range: clamp(start - 1)..<start)
-        case .right, .down: return TranscriptTextRange(range: start..<clamp(start + 1))
+        switch direction {
+        case .left, .right:
+            let end = currentLayout.offset(from: clamp(start), movingRight: direction == .right)
+            return TranscriptTextRange(range: min(start, end)..<max(start, end))
+        case .up: return TranscriptTextRange(range: clamp(start - 1)..<start)
+        case .down: return TranscriptTextRange(range: start..<clamp(start + 1))
         @unknown default: return nil
         }
     }
@@ -1420,10 +1414,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     public func firstRect(for range: UITextRange) -> CGRect {
         let range = self.range(of: range)
-        let segments = currentLayout.selectionSegments(for: range)
-        guard let first = segments.first else { return currentLayout.caretRect(at: range.lowerBound) }
-        // All of the first line, which text of mixed direction splits into several rects.
-        return segments.prefix { $0.rect.minY == first.rect.minY }.reduce(first.rect) { $0.union($1.rect) }
+        return currentLayout.firstLineRect(for: range) ?? currentLayout.caretRect(at: range.lowerBound)
     }
 
     public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {

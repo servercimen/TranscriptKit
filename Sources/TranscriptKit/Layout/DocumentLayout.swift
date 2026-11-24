@@ -290,6 +290,57 @@ public final class DocumentLayout: @unchecked Sendable {
         return segments
     }
 
+    /// The rect of the first line of the selection of `range`: all of it,
+    /// though text of mixed direction splits it into several rects. Nil
+    /// when nothing is selected.
+    func firstLineRect(for range: Range<Int>) -> CGRect? {
+        guard !range.isEmpty, let first = entryIndex(forOffset: range.lowerBound) else { return nil }
+        for index in first..<entryCount {
+            let entry = entry(at: index)
+            if entry.start >= range.upperBound { break }
+            let lower = max(range.lowerBound - entry.start, 0)
+            let upper = min(range.upperBound - entry.start, entry.layout.length)
+            guard lower < upper else { continue }
+            let segments = entry.layout.selectionSegments(for: lower..<upper)
+            guard let line = segments.first?.line else { continue }
+            let rect = segments.filter { $0.line == line }.map(\.rect).reduce(CGRect.null) { $0.union($1) }
+            return rect.offsetBy(dx: 0, dy: entry.y)
+        }
+        return nil
+    }
+
+    /// Where a caret at `offset` goes when it moves `count` stops to the
+    /// right, or to the left. In a line with right-to-left text, a stop is
+    /// the next caret on that side of the screen. In other lines, it is one
+    /// character: forward in the text to the right, or to the left in a
+    /// right-to-left paragraph.
+    func offset(from offset: Int, movingRight right: Bool, by count: Int = 1) -> Int {
+        let right = count < 0 ? !right : right
+        var offset = offset
+        for _ in 0..<abs(count) {
+            guard let index = entryIndex(forOffset: offset) else { break }
+            let entry = entry(at: index)
+            if let step = entry.layout.visualStep(from: offset - entry.start, right: right) {
+                offset = entry.start + step
+            } else {
+                offset = min(max(right != entry.layout.isRightToLeft ? offset + 1 : offset - 1, 0), length)
+            }
+        }
+        return offset
+    }
+
+    /// The end of `range` that is farther to the right, or to the left: by
+    /// where their carets are when they are on one line, else by the
+    /// direction of the paragraph.
+    func farthestOffset(in range: Range<Int>, right: Bool) -> Int {
+        let lower = caretRect(at: range.lowerBound)
+        let upper = caretRect(at: range.upperBound)
+        if abs(lower.minY - upper.minY) < 0.5, abs(lower.midX - upper.midX) > 0.5 {
+            return (upper.midX > lower.midX) == right ? range.upperBound : range.lowerBound
+        }
+        return right != isRightToLeft(at: range.lowerBound) ? range.upperBound : range.lowerBound
+    }
+
     /// Whether the text at `offset` is in a right-to-left paragraph.
     /// `backward` asks about the character before `offset`.
     func isRightToLeft(at offset: Int, backward: Bool = false) -> Bool {

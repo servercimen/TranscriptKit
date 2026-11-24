@@ -22,7 +22,8 @@ text streaming in at hundreds of characters a second doesn't make scrolling stut
   - links, bare URLs and email addresses, and reference links;
   - images, drawn by a loader your app provides;
   - LaTeX math, drawn by a renderer your app provides;
-  - HTML entities and a few HTML tags.
+  - HTML entities and a few HTML tags;
+  - optionally, a single newline as a line break, as models often write it.
 - **Custom tags.** Define tags such as `<mention id="ana">@Ana</mention>` and how they look: font traits, colours, a
   link, padding, and shapes drawn behind or over the text. Pills and underlines (solid, dashed, dotted, wavy,
   marker) are built in, and you can draw shapes of your own, and animate a tag's letters and shapes when it
@@ -89,6 +90,20 @@ For text that is already complete, parse it once and pass the document:
 let document = MarkdownStreamParser.document(from: markdown)
 TranscriptText(document, style: style)
 ```
+
+### Line breaks
+
+The parser follows CommonMark: a single newline inside a paragraph is a space. Models often use a single newline as
+a line break. To show it as a line break, set `newlinesAsLineBreaks`:
+
+```swift
+let stream = TranscriptStream(newlinesAsLineBreaks: true)
+let document = MarkdownStreamParser.document(from: markdown, newlinesAsLineBreaks: true)
+```
+
+The option applies to paragraphs and headings, also inside lists and quotes. A blank line still starts a new
+paragraph. A line that ends in a backslash or two spaces also gives one line break, not two. Selected and copied
+text has a newline at each such line break.
 
 ### Custom tags
 

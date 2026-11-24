@@ -241,3 +241,49 @@ private func taskBoxes(_ layout: DocumentLayout) -> (checked: CGRect, unchecked:
     #expect(text.attribute(TranscriptStyle.backgroundKey, at: 0, effectiveRange: nil) as? TranscriptColor == yellow)
     #expect(text.attribute(TranscriptStyle.inlineCodeBackgroundKey, at: 0, effectiveRange: nil) == nil)
 }
+
+// MARK: Table headers
+
+@Test func tableHeadersTakeTheirWeight() throws {
+    let markdown = "| Name | Value |\n| --- | --- |\n| a | 1 |"
+    func headerFont(_ style: TranscriptStyle) -> CTFont {
+        let table = layout(markdown, style: style).entry(at: 0).layout
+        let run = (CTLineGetGlyphRuns(table.lines[0].ctLine) as! [CTRun])[0]
+        return (CTRunGetAttributes(run) as NSDictionary)[kCTFontAttributeName] as! CTFont
+    }
+    let plain = headerFont(TranscriptStyle())
+    #expect(CTFontGetSymbolicTraits(plain).contains(.traitBold))
+
+    var style = TranscriptStyle()
+    style.tableHeaderWeight = 0
+    let regular = headerFont(style)
+    #expect(!CTFontGetSymbolicTraits(regular).contains(.traitBold))
+    style.tableHeaderWeight = 0.23
+    let medium = headerFont(style)
+    let weights = [plain, regular, medium].map { font -> CGFloat in
+        let traits = CTFontCopyTraits(font) as NSDictionary
+        return CGFloat((traits[kCTFontWeightTrait] as? NSNumber)?.doubleValue ?? 0)
+    }
+    #expect(weights[1] < weights[2] && weights[2] < weights[0])
+
+    // The weight changes how wide the text is, so the columns are measured with it.
+    let bold = layout(markdown).entry(at: 0).layout.lines[0].frame.width
+    #expect(layout(markdown, style: style).entry(at: 0).layout.lines[0].frame.width < bold)
+}
+
+@Test func tableHeadersTakeTheirFill() throws {
+    let markdown = "| Name | Value |\n| --- | --- |\n| a | 1 |"
+    let plain = layout(markdown)
+    let table = try #require(plain.entry(at: 0).layout.table)
+    let header = CGRect(x: table.columnX[0] + 2, y: plain.entry(at: 0).y + table.rowY[0] + 2,
+                        width: table.columnX[1] - table.columnX[0] - 4, height: table.rowY[1] - table.rowY[0] - 4)
+    // Gray 0.9 is drawn as 232 in sRGB.
+    let before = Drawing(plain)
+    #expect(before.count(in: header, near: (232, 232, 232), tolerance: 4) > 100)
+
+    var style = TranscriptStyle()
+    style.tableHeaderBackgroundColor = TranscriptColor(red: 1, green: 0, blue: 0)
+    let after = Drawing(layout(markdown, style: style))
+    #expect(after.count(in: header, near: (232, 232, 232), tolerance: 4) == 0)
+    #expect(after.count(in: header, near: (255, 0, 0), tolerance: 8) > 100)
+}

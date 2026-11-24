@@ -498,7 +498,10 @@ public final class DocumentLayout: @unchecked Sendable {
             case .rule:
                 fill(CGRect(x: box.minX, y: frame.midY - 0.5, width: box.width, height: 1), radius: 0, color: accent)
             case .table:
-                if let table = layout.table { drawGrid(table, top: entry.y, in: context, header: codeBackground, lines: accent) }
+                if let table = layout.table {
+                    let header = style.tableHeaderBackgroundColor?.cgColor(dark: dark) ?? codeBackground
+                    drawGrid(table, top: entry.y, in: context, header: header, lines: accent)
+                }
             case .paragraph, .heading:
                 break
             }

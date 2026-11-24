@@ -365,8 +365,11 @@ final class BlockLayout: @unchecked Sendable {
 
         typealias Cell = (text: NSAttributedString, typesetter: CTTypesetter, range: Range<Int>)
         func makeCells(_ row: Int) -> [Cell] {
-            model.rows[row].prefix(columns).map { range in
-                let text = style.attributedString(for: block, range: range, extraTraits: row == 0 ? .bold : [], images: sizing,
+            let header = row == 0
+            let weight = header ? style.tableHeaderWeight : nil
+            let traits: InlineSpan.Traits = header && weight == nil ? .bold : []
+            return model.rows[row].prefix(columns).map { range in
+                let text = style.attributedString(for: block, range: range, extraTraits: traits, weight: weight, images: sizing,
                                                   definitions: definitions, kerns: decorated?.kerns ?? [:])
                 return (text, CTTypesetterCreateWithAttributedString(text), range)
             }

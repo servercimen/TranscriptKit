@@ -66,7 +66,8 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// The color of links and their underlines. A custom tag's color wins over it.
     public var linkColor = TranscriptColor(red: 0, green: 0.478, blue: 1)
     /// Behind code blocks, table headers and image placeholders. Nil uses the
-    /// system's secondary fill color.
+    /// system's secondary fill color. `tableHeaderBackgroundColor` wins over
+    /// it for table headers.
     public var codeBackgroundColor: TranscriptColor?
     /// Quote bars, thematic breaks and table lines. Nil uses the system's
     /// tertiary label color.
@@ -102,6 +103,14 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// The width of the bar at the left of a block quote. Keep it less than
     /// `quoteIndent`, or the bar covers the text.
     public var quoteBarWidth: CGFloat = 3
+    /// The fill behind the header row of a table. Nil uses
+    /// `codeBackgroundColor`.
+    public var tableHeaderBackgroundColor: TranscriptColor?
+    /// The weight of the text in the header row of a table, from -1 to 1 as
+    /// `TranscriptFont.weight`. Nil uses the bold body font. A named body font
+    /// has its own weight: a weight of 0.3 or more uses its bold face, and a
+    /// lower weight uses the font as it is.
+    public var tableHeaderWeight: CGFloat?
     /// The fill behind inline code. Nil draws no fill. A custom tag's
     /// highlight wins over it.
     public var inlineCodeBackgroundColor: TranscriptColor?
@@ -302,17 +311,18 @@ public struct TranscriptStyle: Equatable, Sendable {
         attributedString(for: block, range: start..<block.utf16Count, images: images, definitions: definitions, kerns: kerns)
     }
 
-    /// The styled text of `range` of `block`, with `extraTraits` added to all of it.
+    /// The styled text of `range` of `block`, with `extraTraits` added to all
+    /// of it, and in `weight` (as `TranscriptFont.weight`) if it is body text.
     /// A reference link is styled as a link once `definitions` has its label.
     /// `kerns` is extra advance after characters, by block offset: room for
     /// custom tags' padding (see `DecoratedTags`).
-    func attributedString(for block: TranscriptBlock, range: Range<Int>, extraTraits: InlineSpan.Traits = [],
+    func attributedString(for block: TranscriptBlock, range: Range<Int>, extraTraits: InlineSpan.Traits = [], weight: CGFloat? = nil,
                           images: ImageSizing? = nil, definitions: [String: String] = [:],
                           kerns: [Int: CGFloat] = [:]) -> NSAttributedString {
         let start = range.lowerBound
         let text = range == 0..<block.utf16Count ? block.text : (block.text as NSString).substring(with: NSRange(location: start, length: range.count))
-        var base = attributes(for: block.kind)
-        if !extraTraits.isEmpty { base[Self.fontKey] = font(for: block.kind, traits: extraTraits) }
+        var base = attributes(for: block.kind, weight: weight)
+        if !extraTraits.isEmpty { base[Self.fontKey] = font(for: block.kind, traits: extraTraits, weight: weight) }
         if let color = textColor(inside: block.containers) { base[Self.foregroundKey] = color }
         let result = NSMutableAttributedString(string: text, attributes: base)
         let length = result.length
@@ -367,7 +377,7 @@ public struct TranscriptStyle: Equatable, Sendable {
             }
             let range = NSRange(location: lower, length: upper - lower)
             if !traits.intersection(Self.fontTraits).isEmpty {
-                result.addAttribute(Self.fontKey, value: font(for: block.kind, traits: traits), range: range)
+                result.addAttribute(Self.fontKey, value: font(for: block.kind, traits: traits, weight: weight), range: range)
             }
             if traits.contains(.strikethrough) { result.addAttribute(Self.strikethroughKey, value: true, range: range) }
             if traits.contains(.underline) { result.addAttribute(Self.underlineKey, value: true, range: range) }

@@ -255,12 +255,13 @@ final class LineDecorations: @unchecked Sendable {
             if let link = tag.tag.decoration.link, tag.leadingRoom > 0 {
                 links.append((rect, link))
             }
-            if let image = tag.tag.decoration.image, isStart, showsShapes {
+            if let image = tag.tag.decoration.image, isStart, showsShapes || image.showsDuringAnimation {
                 // Just before the text, centred on its cap height.
                 let capHeight = CTFontGetCapHeight(font)
                 let imageRect = CGRect(x: minX - image.gap - image.size.width, y: -capHeight / 2 - image.size.height / 2,
                                        width: image.size.width, height: image.size.height)
-                images.append((imageRect, image, key))
+                // One that shows during the animation is never left out.
+                images.append((imageRect, image, image.showsDuringAnimation ? nil : key))
                 inkTop = min(inkTop, imageRect.minY)
                 inkBottom = max(inkBottom, imageRect.maxY)
             }

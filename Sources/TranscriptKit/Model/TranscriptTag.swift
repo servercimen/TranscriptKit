@@ -125,7 +125,8 @@ public struct TranscriptDecoration: Equatable, Sendable {
 
 /// A small image before a custom tag's text; see `TranscriptDecoration.image`.
 /// It is centred on the text's cap height. A tag with an animation shows its
-/// image when it shows its shapes: once the animation has played.
+/// image when it shows its shapes, once the animation has played, unless
+/// `showsDuringAnimation` is set.
 public struct TranscriptTagImage: Equatable, @unchecked Sendable {
     public var image: CGImage
     /// How large it is drawn, in points.
@@ -135,12 +136,18 @@ public struct TranscriptTagImage: Equatable, @unchecked Sendable {
     /// A color to fill the image's shape with, for a template image such as
     /// a symbol, or nil to draw the image's own colors.
     public var tint: TranscriptColor?
+    /// For a tag with an animation: whether the image shows from the start,
+    /// while the tag is open, while it waits for its animation and while the
+    /// animation plays. The animation does not move it. Off by default: the
+    /// image shows with the tag's shapes.
+    public var showsDuringAnimation: Bool
 
-    public init(_ image: CGImage, size: CGSize, gap: CGFloat = 4, tint: TranscriptColor? = nil) {
+    public init(_ image: CGImage, size: CGSize, gap: CGFloat = 4, tint: TranscriptColor? = nil, showsDuringAnimation: Bool = false) {
         self.image = image
         self.size = size
         self.gap = max(gap, 0)
         self.tint = tint
+        self.showsDuringAnimation = showsDuringAnimation
     }
 
     /// The space the image takes before the text.
@@ -148,6 +155,7 @@ public struct TranscriptTagImage: Equatable, @unchecked Sendable {
 
     public static func == (a: TranscriptTagImage, b: TranscriptTagImage) -> Bool {
         a.image === b.image && a.size == b.size && a.gap == b.gap && a.tint == b.tint
+            && a.showsDuringAnimation == b.showsDuringAnimation
     }
 }
 

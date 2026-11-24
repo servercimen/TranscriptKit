@@ -112,8 +112,9 @@ let stream = TranscriptStream(tags: tags)
 ```
 
 A tag can also show a small image before its text, such as an icon in a pill. The image takes room after the tag's
-padding, so the tag's shapes surround it, and it is centred on the text's cap height. A tint fills the shape of a
-template image, such as a symbol:
+padding, so the tag's shapes surround it, and it is centred on the text's cap height. A tag with an animation shows
+its image once the animation has played; with `showsDuringAnimation: true`, the image shows from the start, while
+the tag waits and while it plays. A tint fills the shape of a template image, such as a symbol:
 
 ```swift
 TranscriptTag("chip") { attributes in

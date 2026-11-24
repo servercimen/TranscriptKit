@@ -145,6 +145,21 @@ private func items(_ markdown: String, width: CGFloat = 300) -> [AccessibilityIt
     #expect(table.cells.allSatisfy { list[1].frame.insetBy(dx: -0.5, dy: -0.5).contains($0.frame) })
 }
 
+@Test func theCellsOfARightToLeftTableAreWhereTheirTextIs() throws {
+    let layout = DocumentLayout(document: MarkdownStreamParser.document(from: "| שם | ערך |\n| --- | --- |\n| א | ב |"), width: 300)
+    let block = layout.entry(at: 0).layout
+    #expect(block.isRightToLeft)
+    let grid = try #require(block.table)
+    let table = try #require(layout.accessibilityItems().first?.table)
+    #expect(table.cells.map(\.label) == ["שם", "ערך", "א", "ב"])
+    // The first column is the one on the right.
+    #expect(table.cells[0].frame.minX >= table.cells[1].frame.maxX - 0.5)
+    for cell in table.cells {
+        let line = block.lines[grid.cellLines[cell.row][cell.column].lowerBound]
+        #expect(cell.frame.minX <= line.frame.minX && line.frame.maxX <= cell.frame.maxX, "\(cell.label)")
+    }
+}
+
 @Test func aTableThatStreamsInChangesTheShapeWithEachCell() {
     var parser = MarkdownStreamParser()
     parser.append("| A | B |\n| - | - |\n| 1 |")

@@ -18,7 +18,7 @@ enum BlockParser {
         /// `fence` is nil for an indented code block.
         case code(language: String?, fence: Character?, fenceLength: Int, indent: Int, closed: Bool)
         case rule
-        case table(alignments: [TranscriptTable.Alignment])
+        case table(alignments: [TranscriptTable.Alignment], sided: Set<Int>)
         /// Display math that a line starting with `\[` or `$$` opened, until
         /// `closer` ends it. Its lines are kept as written.
         case math(closer: String, closed: Bool)
@@ -110,9 +110,9 @@ enum BlockParser {
         }
 
         /// Turns a one-line paragraph into a table with that line as its header.
-        mutating func becomeTable(alignments: [TranscriptTable.Alignment]) {
+        mutating func becomeTable(alignments: [TranscriptTable.Alignment], sided: Set<Int>) {
             let header = lastLine ?? ""
-            kind = .table(alignments: alignments)
+            kind = .table(alignments: alignments, sided: sided)
             committedSource = []
             lastLine = nil
             lastLineUnits = []
@@ -480,9 +480,9 @@ enum BlockParser {
                 return
             }
             if canContinue, sameContext, let last = blocks.last, last.couldBecomeTable,
-               let alignments = BlockParser.delimiterRow(leaf),
-               alignments.count == BlockParser.tableCells(last.lastLine ?? "").count {
-                blocks[blocks.count - 1].becomeTable(alignments: alignments)
+               let delimiters = BlockParser.delimiterRow(leaf),
+               delimiters.alignments.count == BlockParser.tableCells(last.lastLine ?? "").count {
+                blocks[blocks.count - 1].becomeTable(alignments: delimiters.alignments, sided: delimiters.sided)
                 canContinue = false
                 tableOpen = true
                 return
@@ -1074,18 +1074,21 @@ enum BlockParser {
     }
 
     /// The column alignments if `content` is a delimiter row such as
-    /// "| --- | :---: | ---: |".
-    static func delimiterRow(_ content: Substring) -> [TranscriptTable.Alignment]? {
+    /// "| --- | :---: | ---: |", and the columns with a colon on one side
+    /// only (see `TranscriptTable.sidedColumns`).
+    static func delimiterRow(_ content: Substring) -> (alignments: [TranscriptTable.Alignment], sided: Set<Int>)? {
         guard content.utf8.contains(UInt8(ascii: "-")), content.allSatisfy({ "|:- \t".contains($0) }) else { return nil }
         let cells = tableCells(String(content))
         var alignments: [TranscriptTable.Alignment] = []
+        var sided = Set<Int>()
         for cell in cells {
             let core = trimmingSpaceAndTab(Substring(cell))
             guard core.utf8.contains(UInt8(ascii: "-")), core.dropFirst().dropLast().allSatisfy({ $0 == "-" }) || core.count <= 2 else { return nil }
             let left = core.hasPrefix(":")
             let right = core.hasSuffix(":")
+            if left != right { sided.insert(alignments.count) }
             alignments.append(left && right ? .center : (right ? .trailing : .leading))
         }
-        return alignments.isEmpty ? nil : alignments
+        return alignments.isEmpty ? nil : (alignments, sided)
     }
 }

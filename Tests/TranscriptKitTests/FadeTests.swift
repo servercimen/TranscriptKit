@@ -187,6 +187,37 @@ func fadePiecesAndTheDrawingMakeUpTheText(chunk: Int, centered: Bool) {
     #expect(mismatches.isEmpty, "\(mismatches.joined(separator: "\n"))")
 }
 
+/// Fades in right-to-left text, and in a block that turns right to left
+/// when its first letter arrives, make up the text as it is drawn.
+@Test(arguments: [3, 8])
+func fadePiecesMakeUpRightToLeftText(chunk: Int) {
+    let markdown = """
+    # כותרת בעברית
+
+    שלום עולם, זה משפט ארוך בעברית עם **מילה מודגשת** שעובר לשורה הבאה ברוחב הזה.
+
+    > 2024: ציטוט ארוך בעברית שעובר לשורה השנייה
+
+    English, then עברית at the end of the line.
+
+    """
+    var checked = 0
+    var mismatches: [String] = []
+    var step = 0
+    streamFades(markdown, chunk: chunk) { output in
+        step += 1
+        guard step % 2 == 0 else { return }
+        let document = documentDifference(output, scale: 2)
+        let tail = tailDifference(output, scale: 2) ?? (0, 0)
+        if document.count + tail.count > 0, mismatches.count < 3 {
+            mismatches.append("step \(step), fading from \(output.hidden.fadingFrom.map(String.init) ?? "-"): document \(document), tail \(tail)")
+        }
+        checked += 1
+    }
+    #expect(checked > 10)
+    #expect(mismatches.isEmpty, "\(mismatches.joined(separator: "\n"))")
+}
+
 @Test func theFrontierMovesALineAtATimeAndItsRowsAreDrawnAgain() {
     var froms: [Int?] = []
     var redraws = 0

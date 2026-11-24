@@ -81,7 +81,8 @@ extension DocumentLayout {
                                                                                                definitions: definitions)
             words?.keep(made, for: key, layout: entry.layout)
             if let model = block.kind.table, let grid = entry.layout.table {
-                let table = Self.accessibilityTable(model, grid: grid, of: block, at: entry.y, words: made.cells,
+                let table = Self.accessibilityTable(model, grid: grid, of: block, at: entry.y,
+                                                    rightToLeft: entry.layout.isRightToLeft, words: made.cells,
                                                     position: positions[index].map(AccessibilityText.position))
                 guard !table.cells.isEmpty else { continue }
                 items.append(AccessibilityItem(key: key, frame: entry.frame, label: "", value: nil, isHeading: false,
@@ -142,12 +143,15 @@ extension DocumentLayout {
     }
 
     private static func accessibilityTable(_ model: TranscriptTable, grid: BlockLayout.Table, of block: TranscriptBlock, at y: CGFloat,
-                                           words: [AccessibilityWords.Words], position: String?) -> AccessibilityItem.Table {
+                                           rightToLeft: Bool, words: [AccessibilityWords.Words],
+                                           position: String?) -> AccessibilityItem.Table {
         var cells: [AccessibilityItem.Table.Cell] = []
         let (rowCount, columnCount) = accessibilityGridSize(model, grid: grid)
         for row in 0..<rowCount {
             for column in 0..<min(model.rows[row].count, columnCount) where cells.count < words.count {
-                let frame = CGRect(x: grid.columnX[column], y: y + grid.rowY[row], width: grid.columnX[column + 1] - grid.columnX[column],
+                // The column edges go from left to right, and a right-to-left table starts on the right.
+                let edge = rightToLeft ? grid.columnX.count - 2 - column : column
+                let frame = CGRect(x: grid.columnX[edge], y: y + grid.rowY[row], width: grid.columnX[edge + 1] - grid.columnX[edge],
                                    height: grid.rowY[row + 1] - grid.rowY[row])
                 let cell = words[cells.count]
                 let isFirst = cells.isEmpty

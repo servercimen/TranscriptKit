@@ -30,6 +30,8 @@ text streaming in at hundreds of characters a second doesn't make scrolling stut
   marker) are built in, and you can draw shapes of your own, and animate a tag's letters and shapes when it
   finishes arriving.
 - **Fade-in.** Optionally, text fades in as it streams in. Core Animation plays the fades.
+- **Right-to-left text.** Paragraphs in Arabic, Hebrew and other right-to-left scripts start at the right edge, and
+  selection follows the glyphs in text of mixed direction.
 - **SwiftUI and UIKit.** `TranscriptText` for SwiftUI, `TranscriptTextView` for UIKit.
 
 ## Requirements
@@ -434,6 +436,26 @@ TranscriptText(document)
 
 The same values are `lineLimit` and `textAlignment` on `TranscriptStyle`. The alignment moves paragraphs and headings;
 lists, quotes, code and tables stay at the leading edge. A table is shown whole or not at all.
+
+### Right-to-left text
+
+Each block takes its direction from its first strong character, such as a letter. Digits, punctuation and spaces do
+not count. So a paragraph that starts with a word in Arabic or Hebrew is right to left, and a paragraph that starts with
+an English word is left to right, also when it holds words in other scripts.
+
+In a right-to-left block, the leading edge is on the right. Lines start there, and `textAlignment` counts from there:
+`.trailing` puts the lines at the left. The indents of lists and quotes, list markers and quote bars are on the right,
+and a table puts its first column on the right. A table column with no colon in its delimiter cell (`---`) starts at
+the leading edge. A colon on one side (`:---` or `---:`) puts the column's text at the left or at the right, in both
+directions. Code blocks are always left to right.
+
+A custom tag takes the direction of its first strong character. A right-to-left tag starts at the right: its padding
+and its image before the text are on the right, and the built-in shapes are open on the correct side where the tag
+wraps. `TranscriptFragment.isRightToLeft` tells a shape of your own the same.
+
+A selection follows the glyphs. In text of mixed direction, one line can have several selection rects. In a line with
+right-to-left text, the left and right arrow keys move the caret to the next caret on that side of the screen. Copy
+gives the text in the order it was written.
 
 ### Styling
 

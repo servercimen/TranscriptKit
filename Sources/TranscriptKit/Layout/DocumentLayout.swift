@@ -178,6 +178,29 @@ public final class DocumentLayout: @unchecked Sendable {
         return range.lowerBound..<document.utf16Count
     }
 
+    /// The quote bars drawn beside the block at `index`, one for each quote
+    /// it is in: on the left, or on the right of right-to-left text. A bar
+    /// runs on through the gap from the block above when that block is in
+    /// the same quote.
+    func quoteBars(at index: Int) -> [CGRect] {
+        let entry = entry(at: index)
+        let layout = entry.layout
+        let above = index > 0 ? self.entry(at: index - 1) : nil
+        let width = max(style.quoteBarWidth, 0)
+        var bars: [CGRect] = []
+        var x: CGFloat = 0
+        for (depth, container) in layout.block.containers.enumerated() {
+            if container == .quote {
+                var top = entry.y
+                if let above, Self.shareQuote(above.layout.block, layout.block, at: depth) { top = above.frame.maxY }
+                bars.append(CGRect(x: layout.isRightToLeft ? layout.width - x - width : x, y: top, width: width,
+                                   height: entry.frame.maxY - top))
+            }
+            x += style.width(of: container)
+        }
+        return bars
+    }
+
     // MARK: Offsets and geometry
 
     /// The last entry whose `key` is at most `value`, by binary search;
@@ -310,7 +333,9 @@ public final class DocumentLayout: @unchecked Sendable {
             .first
     }
 
-    /// One rect per line covered by `range`, across as many blocks as it spans.
+    /// One rect per line covered by `range`, across as many blocks as it
+    /// spans. A line with right-to-left text can have several: one for each
+    /// stretch of glyphs that go the same way.
     public func selectionRects(for range: Range<Int>) -> [CGRect] {
         selectionRects(for: range, scroll: .none)
     }
@@ -319,29 +344,110 @@ public final class DocumentLayout: @unchecked Sendable {
     /// `scroll`. In a block that scrolls, the rects are cut to its box; a rect
     /// outside the box becomes an empty one at its edge.
     func selectionRects(for range: Range<Int>, scroll: SideScroll) -> [CGRect] {
+        selectionSegments(for: range, scroll: scroll).map(\.rect)
+    }
+
+    /// The parts of the selection of `range`, line by line, with their
+    /// direction, and with blocks scrolled sideways by `scroll` as in
+    /// `selectionRects(for:scroll:)`. One holds the start of the range, and
+    /// one the end.
+    func selectionSegments(for range: Range<Int>, scroll: SideScroll = .none) -> [BlockLayout.SelectionSegment] {
         guard !range.isEmpty, let first = entryIndex(forOffset: range.lowerBound) else { return [] }
-        var rects: [CGRect] = []
+        var segments: [BlockLayout.SelectionSegment] = []
+        var start: Int?
+        var end: Int?
         for index in first..<entryCount {
             let entry = entry(at: index)
             if entry.start >= range.upperBound { break }
             let lower = max(range.lowerBound - entry.start, 0)
             let upper = min(range.upperBound - entry.start, entry.layout.length)
             guard lower < upper else { continue }
-            let scrolls = entry.layout.maximumScrollOffset > 0
-            let dx = scroll.offset(of: entry.layout)
-            let box = entry.layout.scrollBox
-            for rect in entry.layout.selectionRects(for: lower..<upper) {
-                var shifted = rect.offsetBy(dx: -dx, dy: entry.y)
-                if scrolls {
-                    let minX = min(max(shifted.minX, box.minX), box.maxX)
-                    let maxX = min(max(shifted.maxX, box.minX), box.maxX)
-                    shifted.origin.x = minX
-                    shifted.size.width = maxX - minX
-                }
-                rects.append(shifted)
+            for var segment in entry.layout.selectionSegments(for: lower..<upper) {
+                segment.rect = shown(segment.rect, in: entry, scroll: scroll)
+                segment.characters = (segment.characters.lowerBound + entry.start)...(segment.characters.upperBound + entry.start)
+                if segment.containsStart, start == nil { start = segments.count }
+                if segment.containsEnd { end = segments.count }
+                segment.containsStart = false
+                segment.containsEnd = false
+                segments.append(segment)
             }
         }
-        return rects
+        if let start { segments[start].containsStart = true }
+        if let end { segments[end].containsEnd = true }
+        return segments
+    }
+
+    /// `rect`, of a line of `entry`'s block, in the document, with the block
+    /// scrolled sideways by `scroll`. In a block that scrolls, it is cut to
+    /// the block's box.
+    private func shown(_ rect: CGRect, in entry: Entry, scroll: SideScroll) -> CGRect {
+        var shifted = rect.offsetBy(dx: -scroll.offset(of: entry.layout), dy: entry.y)
+        guard entry.layout.maximumScrollOffset > 0 else { return shifted }
+        let box = entry.layout.scrollBox
+        let minX = min(max(shifted.minX, box.minX), box.maxX)
+        let maxX = min(max(shifted.maxX, box.minX), box.maxX)
+        shifted.origin.x = minX
+        shifted.size.width = maxX - minX
+        return shifted
+    }
+
+    /// The rect of the first line of the selection of `range`: all of it,
+    /// though text of mixed direction splits it into several rects. Nil
+    /// when nothing is selected. Blocks are scrolled sideways by `scroll` as
+    /// in `selectionRects(for:scroll:)`.
+    func firstLineRect(for range: Range<Int>, scroll: SideScroll = .none) -> CGRect? {
+        guard !range.isEmpty, let first = entryIndex(forOffset: range.lowerBound) else { return nil }
+        for index in first..<entryCount {
+            let entry = entry(at: index)
+            if entry.start >= range.upperBound { break }
+            let lower = max(range.lowerBound - entry.start, 0)
+            let upper = min(range.upperBound - entry.start, entry.layout.length)
+            guard lower < upper else { continue }
+            let segments = entry.layout.selectionSegments(for: lower..<upper)
+            guard let line = segments.first?.line else { continue }
+            let rect = segments.filter { $0.line == line }.map(\.rect).reduce(CGRect.null) { $0.union($1) }
+            return shown(rect, in: entry, scroll: scroll)
+        }
+        return nil
+    }
+
+    /// Where a caret at `offset` goes when it moves `count` stops to the
+    /// right, or to the left. In a line with right-to-left text, a stop is
+    /// the next caret on that side of the screen. In other lines, it is one
+    /// character: forward in the text to the right, or to the left in a
+    /// right-to-left paragraph.
+    func offset(from offset: Int, movingRight right: Bool, by count: Int = 1) -> Int {
+        let right = count < 0 ? !right : right
+        var offset = offset
+        for _ in 0..<abs(count) {
+            guard let index = entryIndex(forOffset: offset) else { break }
+            let entry = entry(at: index)
+            if let step = entry.layout.visualStep(from: offset - entry.start, right: right) {
+                offset = entry.start + step
+            } else {
+                offset = min(max(right != entry.layout.isRightToLeft ? offset + 1 : offset - 1, 0), length)
+            }
+        }
+        return offset
+    }
+
+    /// The end of `range` that is farther to the right, or to the left: by
+    /// where their carets are when they are on one line, else by the
+    /// direction of the paragraph.
+    func farthestOffset(in range: Range<Int>, right: Bool) -> Int {
+        let lower = caretRect(at: range.lowerBound)
+        let upper = caretRect(at: range.upperBound)
+        if abs(lower.minY - upper.minY) < 0.5, abs(lower.midX - upper.midX) > 0.5 {
+            return (upper.midX > lower.midX) == right ? range.upperBound : range.lowerBound
+        }
+        return right != isRightToLeft(at: range.lowerBound) ? range.upperBound : range.lowerBound
+    }
+
+    /// Whether the text at `offset` is in a right-to-left paragraph.
+    /// `backward` asks about the character before `offset`.
+    func isRightToLeft(at offset: Int, backward: Bool = false) -> Bool {
+        guard let index = entryIndex(forOffset: backward ? max(offset - 1, 0) : offset) else { return false }
+        return entry(at: index).layout.isRightToLeft
     }
 
     /// The top of the first line that differs between `earlier` and this
@@ -389,6 +495,8 @@ public final class DocumentLayout: @unchecked Sendable {
                 index += 1
                 continue
             }
+            // The marker and the quote bars, which reach into the gap, moved to the other side.
+            if new.layout.isRightToLeft != old.layout.isRightToLeft { return min(gapAbove(index, in: self), gapAbove(index, in: earlier)) }
             if new.layout.table != nil || old.layout.table != nil {
                 return new.y + Self.firstChangedY(in: new.layout, since: old.layout)
             }
@@ -575,20 +683,9 @@ public final class DocumentLayout: @unchecked Sendable {
             let layout = entry.layout
             let block = layout.block
 
-            // Quote bars, run on through the gap from the block above when it
-            // is in the same quote.
-            let above = index > 0 ? self.entry(at: index - 1) : nil
+            // Quote bars. Square ends, so that segments of one bar meet cleanly.
             let bar = style.quoteBarColor?.cgColor(dark: dark, highContrast: highContrast) ?? accent
-            var x: CGFloat = 0
-            for (depth, container) in block.containers.enumerated() {
-                if container == .quote {
-                    var top = frame.minY
-                    if let above, Self.shareQuote(above.layout.block, block, at: depth) { top = above.frame.maxY }
-                    // Square ends, so that segments of one bar meet cleanly.
-                    fill(CGRect(x: x, y: top, width: max(style.quoteBarWidth, 0), height: frame.maxY - top), radius: 0, color: bar)
-                }
-                x += style.width(of: container)
-            }
+            for rect in quoteBars(at: index) { fill(rect, radius: 0, color: bar) }
             if frame.minY - overhang > dirtyRect.maxY { break }
 
             let box = CGRect(x: layout.contentLeading, y: frame.minY, width: max(frame.width - layout.contentLeading, 0), height: frame.height)

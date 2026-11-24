@@ -85,7 +85,7 @@ final class FadeRenderer {
         func pixel(_ value: CGFloat, _ rule: FloatingPointRoundingRule) -> CGFloat { (value * scale).rounded(rule) / scale }
 
         let lines = layout.lines(from: from)
-        let rightToLeft = lines.map { Self.hasRightToLeftText($0.line.ctLine) }
+        let rightToLeft = lines.map { $0.line.hasRightToLeftRuns }
         let definitions = layout.document.linkDefinitions.count
         var pieces: [FadeFrame.Piece] = []
         for fade in fades {
@@ -167,9 +167,5 @@ final class FadeRenderer {
                                   hidden: hidden.map { ($0.lowerBound - line.indexBase)..<($0.upperBound - line.indexBase) },
                                   in: context, text: colors.text, dark: colors.dark, highContrast: colors.highContrast)
         return context.makeImage()
-    }
-
-    private static func hasRightToLeftText(_ line: CTLine) -> Bool {
-        (CTLineGetGlyphRuns(line) as! [CTRun]).contains { CTRunGetStatus($0).contains(.rightToLeft) }
     }
 }

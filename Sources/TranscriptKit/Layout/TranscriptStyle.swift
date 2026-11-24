@@ -63,9 +63,11 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// Spacing above a list item that follows other list content.
     public var listItemSpacing: CGFloat = 6
     public var codePadding: CGFloat = 12
-    /// Indent added by each list item; the marker sits inside it.
+    /// Indent added by each list item; the marker sits inside it, on the
+    /// right of right-to-left text.
     public var listIndent: CGFloat = 24
-    /// Indent added by each block quote; its bar sits at the left of it.
+    /// Indent added by each block quote; its bar sits at the left of it, or
+    /// at the right of right-to-left text.
     public var quoteIndent: CGFloat = 14
     /// Space between a table cell's border and its text.
     public var tableCellPadding: CGFloat = 8
@@ -141,7 +143,8 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// are shown whole or not at all.
     public var lineLimit: Int?
     /// Where the lines of paragraphs and headings sit in their column. Lists,
-    /// quotes, code and tables stay at the leading edge.
+    /// quotes, code and tables stay at the leading edge. The leading edge is
+    /// the left edge, or the right edge of a right-to-left paragraph.
     public var textAlignment: TranscriptTextAlignment = .leading
     /// Whether the lines of code blocks wrap at the width of the text column.
     /// On by default. Off, a line of code breaks only where its text has a
@@ -392,6 +395,7 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// The fill behind inline code, a `TranscriptColor`, drawn like a highlight.
     static let inlineCodeBackgroundKey = NSAttributedString.Key("TranscriptKit.inlineCodeBackground")
     private static let kernKey = NSAttributedString.Key(kCTKernAttributeName as String)
+    static let paragraphStyleKey = NSAttributedString.Key(kCTParagraphStyleAttributeName as String)
 
     func attributes(for kind: TranscriptBlock.Kind, weight: CGFloat? = nil) -> [NSAttributedString.Key: Any] {
         var attributes: [NSAttributedString.Key: Any] = [
@@ -405,23 +409,27 @@ public struct TranscriptStyle: Equatable, Sendable {
 
     /// The styled text of `block` from UTF-16 offset `start` to its end.
     func attributedString(for block: TranscriptBlock, from start: Int = 0, images: ImageSizing? = nil,
-                          definitions: [String: String] = [:], kerns: [Int: CGFloat] = [:]) -> NSAttributedString {
-        attributedString(for: block, range: start..<block.utf16Count, images: images, definitions: definitions, kerns: kerns)
+                          definitions: [String: String] = [:], kerns: [Int: CGFloat] = [:],
+                          direction: WritingDirection? = nil) -> NSAttributedString {
+        attributedString(for: block, range: start..<block.utf16Count, images: images, definitions: definitions, kerns: kerns,
+                         direction: direction)
     }
 
     /// The styled text of `range` of `block`, with `extraTraits` added to all
     /// of it, and in `weight` (as `TranscriptFont.weight`) if it is body text.
     /// A reference link is styled as a link once `definitions` has its label.
     /// `kerns` is extra advance after characters, by block offset: room for
-    /// custom tags' padding (see `DecoratedTags`).
+    /// custom tags' padding (see `DecoratedTags`). `direction` is the base
+    /// direction of the block's text, or nil for Core Text's natural one.
     func attributedString(for block: TranscriptBlock, range: Range<Int>, extraTraits: InlineSpan.Traits = [], weight: CGFloat? = nil,
                           images: ImageSizing? = nil, definitions: [String: String] = [:],
-                          kerns: [Int: CGFloat] = [:]) -> NSAttributedString {
+                          kerns: [Int: CGFloat] = [:], direction: WritingDirection? = nil) -> NSAttributedString {
         let start = range.lowerBound
         let text = range == 0..<block.utf16Count ? block.text : (block.text as NSString).substring(with: NSRange(location: start, length: range.count))
         var base = attributes(for: block.kind, weight: weight)
         if !extraTraits.isEmpty { base[Self.fontKey] = font(for: block.kind, traits: extraTraits, weight: weight) }
         if let color = textColor(inside: block.containers) { base[Self.foregroundKey] = color }
+        if let direction { base[Self.paragraphStyleKey] = direction.paragraphStyle }
         let result = NSMutableAttributedString(string: text, attributes: base)
         let length = result.length
         if case .code(let language) = block.kind, let store = images?.store {

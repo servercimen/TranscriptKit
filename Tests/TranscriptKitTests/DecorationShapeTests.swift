@@ -465,3 +465,117 @@ private func linesHolding(_ layout: DocumentLayout, tagAt offset: Int) -> [Range
     #expect(try lineCount("whole") == 1)
     #expect(try lineCount("pill") > 1)
 }
+
+// MARK: Right-to-left text
+
+@Test func rightToLeftPaddingMakesRoomAndPillsGetTheirBox() throws {
+    let padded = layout("שאל <pill id=ana>אנה</pill> עכשיו")
+    let plain = layout("שאל אנה עכשיו")
+    let line = padded.entry(at: 0).layout.lines[0]
+    let plainLine = plain.entry(at: 0).layout.lines[0]
+    #expect(abs(line.frame.width - plainLine.frame.width - 12) < 0.01)
+    let decorations = try #require(line.decorations)
+    #expect(decorations.behind.count == 2)
+    let box = decorations.behind[0].path.boundingBoxOfPath
+    // Without padding, the name is from the caret after it, on the left,
+    // to the caret before it, on the right.
+    let left = CTLineGetOffsetForStringIndex(plainLine.ctLine, 7, nil)
+    let right = CTLineGetOffsetForStringIndex(plainLine.ctLine, 4, nil)
+    #expect(abs(box.minX - left) <= 1)
+    #expect(abs(box.maxX - (right + 12)) <= 1)
+    let y = line.frame.midY
+    #expect(padded.link(at: CGPoint(x: line.frame.minX + box.minX + 1, y: y)) == "app://ana")
+    #expect(padded.link(at: CGPoint(x: line.frame.minX + box.maxX - 1, y: y)) == "app://ana")
+}
+
+@Test func rightToLeftTagInLeftToRightTextGetsRoomOnBothSides() throws {
+    let padded = layout("Ask <pill id=ana>אנה</pill> now")
+    let plain = layout("Ask אנה now")
+    let line = padded.entry(at: 0).layout.lines[0]
+    let plainLine = plain.entry(at: 0).layout.lines[0]
+    #expect(abs(line.frame.width - plainLine.frame.width - 12) < 0.01)
+    let box = try #require(line.decorations).behind[0].path.boundingBoxOfPath
+    // The glyphs of the name in the line without padding.
+    var glyphs: [CGFloat] = []
+    for run in CTLineGetGlyphRuns(plainLine.ctLine) as! [CTRun] {
+        let count = CTRunGetGlyphCount(run)
+        var indices = [CFIndex](repeating: 0, count: count)
+        var positions = [CGPoint](repeating: .zero, count: count)
+        var advances = [CGSize](repeating: .zero, count: count)
+        CTRunGetStringIndices(run, CFRange(location: 0, length: 0), &indices)
+        CTRunGetPositions(run, CFRange(location: 0, length: 0), &positions)
+        CTRunGetAdvances(run, CFRange(location: 0, length: 0), &advances)
+        for glyph in 0..<count where (4..<7).contains(indices[glyph]) {
+            glyphs += [positions[glyph].x, positions[glyph].x + advances[glyph].width]
+        }
+    }
+    let name = try #require(glyphs.min()).rounded()...(try #require(glyphs.max())).rounded()
+    #expect(abs(box.minX - name.lowerBound) <= 1)
+    #expect(abs(box.maxX - (name.upperBound + 12)) <= 1)
+}
+
+@Test func aRightToLeftPillThatWrapsIsOpenWhereItBreaks() throws {
+    let words = String(repeating: "מילה ", count: 30)
+    let layout = layout("פתח <probe>\(words)סוף</probe> זנב", width: 200)
+    let lines = layout.entry(at: 0).layout.lines.filter { $0.decorations != nil }
+    try #require(lines.count >= 3)
+    let rects = lines.map { $0.decorations!.behind[0].path.boundingBoxOfPath }
+    let fills = lines.compactMap { $0.decorations!.behind[0].fill }
+    #expect(fills.first == FragmentProbe.start)
+    #expect(fills.last == FragmentProbe.end)
+    // The tag starts at the right of its first line and goes on to its left end.
+    #expect(rects[0].minX < 1)
+    #expect(rects[0].maxX < lines[0].frame.width - 20)
+    // It ends on the last line, from the right end of the line.
+    #expect(abs(rects[rects.count - 1].maxX - lines[lines.count - 1].frame.width) < 1)
+    #expect(rects[rects.count - 1].minX > 20)
+}
+
+@Test func pillsCloseTheSideWhereARightToLeftTagStarts() {
+    let rect = CGRect(x: 0, y: -14, width: 40, height: 18)
+    func fragment(rightToLeft: Bool) -> TranscriptFragment {
+        TranscriptFragment(textRect: rect, rect: rect, isStart: true, isEnd: false, ascent: 14, descent: 4, xHeight: 8,
+                           capHeight: 11, underlineOffset: 2, underlineThickness: 1, seed: 1, isRightToLeft: rightToLeft)
+    }
+    #expect(fragment(rightToLeft: false).closesLeft && !fragment(rightToLeft: false).closesRight)
+    #expect(fragment(rightToLeft: true).closesRight && !fragment(rightToLeft: true).closesLeft)
+    let pill = TranscriptDecoration.Shape.pill(fill: indigo)
+    let ltr = pill.paths(for: fragment(rightToLeft: false))[0].path
+    let rtl = pill.paths(for: fragment(rightToLeft: true))[0].path
+    // The closed end is round: its corner is not filled.
+    #expect(!ltr.contains(CGPoint(x: 0.5, y: -13.5)) && ltr.contains(CGPoint(x: 39.5, y: -13.5)))
+    #expect(!rtl.contains(CGPoint(x: 39.5, y: -13.5)) && rtl.contains(CGPoint(x: 0.5, y: -13.5)))
+}
+
+private let hebrewWords = String(repeating: "מילה ", count: 20)
+private let streamedTags: [String] = [
+    "פתח <pill>\(hebrewWords)סוף</pill> זנב ועוד מילים",
+    "Lead <pill>\(hebrewWords)סוף</pill> tail",
+    "פתח <probe>abc \(hebrewWords)</probe> זנב",
+]
+
+@Test(arguments: streamedTags)
+func streamedRightToLeftTagsAreLaidOutAsAWhole(markdown: String) {
+    var parser = MarkdownStreamParser(idPrefix: "d", tags: shapeTags)
+    var layout: DocumentLayout?
+    var text = Substring(markdown)
+    while !text.isEmpty {
+        parser.append(String(text.prefix(5)))
+        text = text.dropFirst(5)
+        layout = DocumentLayout(document: parser.document, width: 200, reusing: layout)
+    }
+    let fresh = DocumentLayout(document: parser.document, width: 200)
+    func summary(_ layout: DocumentLayout) -> [String] {
+        layout.entry(at: 0).layout.lines.map { line in
+            "\(line.range) \(line.frame) " + (line.decorations?.behind.map { "\($0.path.boundingBoxOfPath)" } ?? []).joined()
+        }
+    }
+    #expect(summary(layout!) == summary(fresh))
+}
+
+@Test func aTagWithTextInBothDirectionsKeepsItsShapes() throws {
+    let layout = layout("שלום <pill>abc אבג</pill> וכולם")
+    let decorations = try #require(layout.entry(at: 0).layout.lines[0].decorations)
+    #expect(!decorations.behind.isEmpty)
+    #expect(decorations.behind[0].path.boundingBoxOfPath.width > 20)
+}

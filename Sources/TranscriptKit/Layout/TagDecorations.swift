@@ -13,6 +13,8 @@ struct DecoratedTags {
         let tag: InlineSpan.CustomTag
         /// Its place among the block's spans, where outer tags come first.
         let order: Int
+        /// Whether its text is right to left: it starts at the right.
+        let isRightToLeft: Bool
 
         /// It keeps together and has no line break in its text, so it can
         /// stay on one line.
@@ -30,20 +32,30 @@ struct DecoratedTags {
     /// line break), and its padding after it on its last character. Kept
     /// even while the tag is open, so its end acts like a wider last glyph:
     /// only the word being written can wrap because of it.
+    ///
+    /// Core Text puts the extra advance of a character on its right, also
+    /// in right-to-left text. So in a block with right-to-left text, a
+    /// right-to-left tag has the padding before it on its first character,
+    /// and the character to the left of a tag gets the padding on that side.
     let kerns: [Int: CGFloat]
     /// The padding of the tags that start at an offset, added up: a line
     /// that starts there is moved right by it, since there is no character
-    /// before it on the line to carry it.
+    /// before it on the line to carry it. Not in a right-to-left paragraph.
     let startPadding: [Int: CGFloat]
+    /// Whether the block has right-to-left text.
+    let hasRightToLeftText: Bool
 
     /// Whether any of the block's tags take padding or draw shapes.
     static func appear(in block: TranscriptBlock) -> Bool {
         block.spans.contains { $0.customTag?.shapesText == true }
     }
 
-    /// - Parameter start: only tags that reach this offset or past it are
-    ///   kept: a streaming update lays out only the lines from there on.
-    init?(_ block: TranscriptBlock, from start: Int = 0) {
+    /// - Parameters:
+    ///   - start: only tags that reach this offset or past it are kept: a
+    ///     streaming update lays out only the lines from there on.
+    ///   - direction: the direction that the block is typeset with. A tag
+    ///     takes the direction of its first strong character, or this one.
+    init?(_ block: TranscriptBlock, from start: Int = 0, direction: WritingDirection? = nil) {
         guard Self.appear(in: block) else { return nil }
         let text = block.text as NSString
         var tags: [Tag] = []
@@ -55,9 +67,30 @@ struct DecoratedTags {
             while textEnd > span.range.lowerBound, text.character(at: textEnd - 1) == 0x0A { textEnd -= 1 }
             let keepsTogether = custom.decoration.keepsTogether
                 && !(span.range.lowerBound..<textEnd).contains { [0x0A, 0x0D, 0x2028, 0x2029].contains(text.character(at: $0)) }
-            let tag = Tag(range: span.range, textEnd: textEnd, tag: custom, order: order, keepsTogether: keepsTogether)
+            var isRightToLeft = false
+            if let direction {
+                let tagText = text.substring(with: NSRange(location: span.range.lowerBound, length: span.range.count))
+                isRightToLeft = (DirectionScan(tagText).firstStrong ?? direction) == .rightToLeft
+            }
+            let tag = Tag(range: span.range, textEnd: textEnd, tag: custom, order: order, isRightToLeft: isRightToLeft,
+                          keepsTogether: keepsTogether)
             tags.append(tag)
             guard tag.leadingRoom > 0 else { continue }
+            if let direction {
+                // The room on the right of the tag goes on its rightmost
+                // character. The room on its left goes on the character to
+                // its left: the one after it in a right-to-left paragraph.
+                let rightRoom = isRightToLeft ? tag.leadingRoom : tag.padding
+                let leftRoom = isRightToLeft ? tag.padding : tag.leadingRoom
+                let rightmost = isRightToLeft ? span.range.lowerBound : textEnd - 1
+                let leftNeighbor = direction == .rightToLeft ? textEnd : span.range.lowerBound - 1
+                if textEnd > span.range.lowerBound, rightRoom > 0 { kerns[rightmost, default: 0] += rightRoom }
+                if leftRoom > 0, leftNeighbor >= 0, leftNeighbor < text.length, text.character(at: leftNeighbor) != 0x0A {
+                    kerns[leftNeighbor, default: 0] += leftRoom
+                }
+                if direction == .leftToRight, leftRoom > 0 { startPadding[span.range.lowerBound, default: 0] += leftRoom }
+                continue
+            }
             let before = span.range.lowerBound - 1
             if before >= 0, text.character(at: before) != 0x0A { kerns[before, default: 0] += tag.leadingRoom }
             if textEnd > span.range.lowerBound, tag.padding > 0 { kerns[textEnd - 1, default: 0] += tag.padding }
@@ -66,6 +99,7 @@ struct DecoratedTags {
         self.tags = tags
         self.kerns = kerns
         self.startPadding = startPadding
+        hasRightToLeftText = direction != nil
     }
 
     /// Where a line that starts at block offset `start` and would end at
@@ -244,14 +278,31 @@ final class LineDecorations: @unchecked Sendable {
             guard end > start, start - textBase >= 0, start - textBase < text.length else { continue }
             let isStart = tag.range.lowerBound >= range.lowerBound
             let isEnd = tag.textEnd <= range.upperBound
-            // From the glyphs: Core Text puts the caret halfway through
-            // spacing added after a character, which is where padding is.
-            let minX = glyphs.start(at: start - indexBase) ?? CTLineGetOffsetForStringIndex(line, start - indexBase, nil)
-            // At the tag's end, the spacing after its last character is padding, not text.
-            let maxX = isEnd
-                ? (glyphs.end(through: end - 1 - indexBase) ?? CTLineGetOffsetForStringIndex(line, end - indexBase, nil))
-                    - (tags.kerns[end - 1] ?? 0)
-                : visibleWidth
+            var minX: CGFloat
+            var maxX: CGFloat
+            if tag.isRightToLeft {
+                // The glyphs of its text, without the spacing on its first
+                // character, which is padding. Whitespace at the end of the line is left out.
+                guard let extent = glyphs.extent(of: (start - indexBase)..<(end - indexBase)) else { continue }
+                minX = max(extent.minX, 0)
+                maxX = min(extent.maxX - (tags.kerns[start] ?? 0), visibleWidth)
+            } else {
+                // From the glyphs: Core Text puts the caret halfway through
+                // spacing added after a character, which is where padding is.
+                minX = glyphs.start(at: start - indexBase) ?? CTLineGetOffsetForStringIndex(line, start - indexBase, nil)
+                // At the tag's end, the spacing after its last character is padding, not text.
+                maxX = isEnd
+                    ? (glyphs.end(through: end - 1 - indexBase) ?? CTLineGetOffsetForStringIndex(line, end - indexBase, nil))
+                        - (tags.kerns[end - 1] ?? 0)
+                    : visibleWidth
+                // A tag with text in both directions: its first and last
+                // characters can be anywhere in it.
+                if maxX <= minX, tags.hasRightToLeftText,
+                   let extent = glyphs.extent(of: (start - indexBase)..<(end - indexBase)) {
+                    minX = max(extent.minX, 0)
+                    maxX = min(extent.maxX, visibleWidth)
+                }
+            }
             guard maxX > minX else { continue }
             // The tag's own font, which a fallback font for an emoji doesn't change.
             let font = text.attribute(TranscriptStyle.fontKey, at: start - textBase, effectiveRange: nil).map { $0 as! CTFont }
@@ -259,8 +310,10 @@ final class LineDecorations: @unchecked Sendable {
             let ascent = CTFontGetAscent(font)
             let descent = CTFontGetDescent(font)
             let textRect = CGRect(x: minX, y: -ascent, width: maxX - minX, height: ascent + descent)
-            let left = minX - (isStart ? tags.startPadding(of: tag) : 0)
-            let right = maxX + (isEnd ? tags.endPadding(of: tag) : 0)
+            let startPadding = isStart ? tags.startPadding(of: tag) : 0
+            let endPadding = isEnd ? tags.endPadding(of: tag) : 0
+            let left = minX - (tag.isRightToLeft ? endPadding : startPadding)
+            let right = maxX + (tag.isRightToLeft ? startPadding : endPadding)
             let rect = CGRect(x: left, y: -ascent, width: right - left, height: ascent + descent)
             // An animated tag shows its shapes once it has closed, when its
             // animation brings them in; until then it is plain text.
@@ -279,7 +332,7 @@ final class LineDecorations: @unchecked Sendable {
                 ascent: ascent, descent: descent, xHeight: CTFontGetXHeight(font), capHeight: CTFontGetCapHeight(font),
                 underlineOffset: -CTFontGetUnderlinePosition(font), underlineThickness: CTFontGetUnderlineThickness(font),
                 seed: stableHash(tag.tag.name, tag.range.lowerBound, start),
-                visibleRect: visible, glyphs: glyphBoxes
+                visibleRect: visible, glyphs: glyphBoxes, isRightToLeft: tag.isRightToLeft
             )
             let showsShapes = animation == nil || !tag.tag.isOpen
             if let animation, let key, showsShapes {
@@ -302,7 +355,8 @@ final class LineDecorations: @unchecked Sendable {
             if let image = tag.tag.decoration.image, isStart, showsShapes || image.showsDuringAnimation {
                 // Just before the text, centred on its cap height.
                 let capHeight = CTFontGetCapHeight(font)
-                let imageRect = CGRect(x: minX - image.gap - image.size.width, y: -capHeight / 2 - image.size.height / 2,
+                let imageX = tag.isRightToLeft ? maxX + image.gap : minX - image.gap - image.size.width
+                let imageRect = CGRect(x: imageX, y: -capHeight / 2 - image.size.height / 2,
                                        width: image.size.width, height: image.size.height)
                 // One that shows during the animation is never left out.
                 images.append((imageRect, image, image.showsDuringAnimation ? nil : key))
@@ -372,6 +426,18 @@ private struct GlyphTable {
             found.append((bounds, indices[glyph], GlyphSource(run: run, index: glyph - runStarts[runIndex])))
         }
         return found.sorted { $0.stringIndex < $1.stringIndex }
+    }
+
+    /// The left edge of the leftmost glyph for a string index in `range`,
+    /// and the right edge of the rightmost one, its advance included.
+    func extent(of range: Range<Int>) -> (minX: CGFloat, maxX: CGFloat)? {
+        var result: (minX: CGFloat, maxX: CGFloat)?
+        for glyph in indices.indices where range.contains(indices[glyph]) {
+            let minX = positions[glyph]
+            let maxX = positions[glyph] + advances[glyph]
+            result = result.map { (min($0.minX, minX), max($0.maxX, maxX)) } ?? (minX, maxX)
+        }
+        return result
     }
 
     /// The left edge of the first glyph for string index `index` or later.

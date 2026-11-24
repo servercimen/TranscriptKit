@@ -348,8 +348,11 @@ In UIKit, use `onSelectionChange`, `selectedRange` and `selectsAllWhenShown` on 
 
 ### Waiting for the final content
 
-Plain text is laid out at once, but layouts of later updates, images, formulas and code colors come back on later
-turns of the main run loop. A snapshot or a test that does not wait for them shows the text without them.
+The view lays out plain text at once only when it shows no layout yet. A style or a renderer that the app sets before
+the document, on a view that has a width, makes the view lay out the empty text first. The text of the document then
+shows on a later turn of the main run loop, as in the example below. Layouts of later updates, images, formulas and
+code colors also come back on later turns. A snapshot or a test that does not wait for them can show no text, or the
+text without them.
 `contentSettled()` on `TranscriptTextView` returns when the view shows its final content. Then no layout, stream
 parse, image load, formula or code colors are pending, the last layout is on screen, and its tiles are drawn:
 

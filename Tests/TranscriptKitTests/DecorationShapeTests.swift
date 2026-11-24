@@ -152,6 +152,13 @@ private let streamedShapes = [
     "Some words before it and <whole>a pill that keeps together until it grows wider than one whole line</whole> after.\n\n"
         + "Then <word>two words</word> at the end of <whole>a line</whole> and <whole>one<br>with a break</whole> too.\n",
     "| A | B |\n| --- | --- |\n| x | some text then <whole>a kept pill</whole> in a narrow cell |\n",
+    // The same without padding.
+    "Some words before it and <word>a bold run that keeps together until it grows wider than one whole line</word> after.\n",
+    // The padding after an open pill sends its last word down a line,
+    // and the line above takes it back when the next word starts.
+    "Some words before it and <pill>a pill that keeps together until it grows wider than one whole line</pill> after.\n",
+    // Text without a space after the tag.
+    "Some words to fill a line, then <whole>a long pill</whole>gluedOnAfterItWithoutASpace and more words.\n",
 ]
 
 /// Every line's geometry and shapes, to compare two layouts.
@@ -426,4 +433,35 @@ private func linesHolding(_ layout: DocumentLayout, tagAt offset: Int) -> [Range
     }
     // Without the option, the pill breaks at one of these widths at least.
     #expect(split > 0)
+}
+
+/// Text that follows a tag without a space does not make a tag that fits
+/// look wider than a line.
+@Test func aTagThatKeepsTogetherStaysWholeBeforeTextWithoutASpace() {
+    let text = "Some words to fill a line, then <whole>a long pill</whole>gluedOnAfterIt here."
+    var moved = 0
+    for width: CGFloat in [170, 200, 230, 260, 300] {
+        let kept = layout(text, width: width)
+        let keptLines = linesHolding(kept, tagAt: 32)
+        #expect(keptLines.count == 1, "\(width): \(keptLines)")
+        if keptLines.first?.lowerBound == 32 { moved += 1 }
+    }
+    #expect(moved > 0)
+    // A line that starts with the tag holds all of it.
+    let alone = layout("<whole>a long pill</whole>gluedOnAfterItAndLongerThanTheLine", width: 120)
+    #expect(linesHolding(alone, tagAt: 0).count == 1)
+}
+
+/// A column is at least as wide as a tag in it that keeps together, as it
+/// is at least as wide as its longest word.
+@Test func aTableColumnMakesRoomForATagThatKeepsTogether() throws {
+    let long = "a cell with many more words than fit in this table"
+    let markdown = "| A | B |\n| --- | --- |\n| <TAG>a kept pill</TAG> | \(long) |\n| x | \(long) |\n"
+    func lineCount(_ name: String) throws -> Int {
+        let block = layout(markdown.replacingOccurrences(of: "TAG", with: name), width: 220).entry(at: 0).layout
+        let span = try #require(block.block.spans.first { $0.customTag?.name == name })
+        return block.lines.filter { $0.range.overlaps(span.range) }.count
+    }
+    #expect(try lineCount("whole") == 1)
+    #expect(try lineCount("pill") > 1)
 }

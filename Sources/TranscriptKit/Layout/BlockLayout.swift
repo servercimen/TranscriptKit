@@ -169,10 +169,20 @@ final class BlockLayout: @unchecked Sendable {
                     line.range.allSatisfy { text.character(at: $0) == 0x0A }
                 }
                 while keep > 0, holdsOnlyLineBreaks(previous.lines[keep]) { keep -= 1 }
+                // The padding after a tag that runs to the end of the text,
+                // as an open one does, is on the last character, so the word
+                // written last may have gone down a line for it alone. Once
+                // more text comes, the padding moves on, and the line above
+                // may take that word back.
+                let previousLength = previous.block.utf16Count
+                let endsInPadding = previous.block.spans.contains { span in
+                    span.range.upperBound == previousLength && (span.customTag?.decoration.padding ?? 0) > 0
+                }
+                if keep > 0, endsInPadding { keep -= 1 }
                 // A tag that keeps together may have gone down a line, and
-                // may no longer fit on a line of its own: its lines and the
-                // line above them are laid out again.
-                while keep > 0, DecoratedTags.keepsTogether(at: previous.lines[keep].range.lowerBound, in: block) { keep -= 1 }
+                // may no longer fit on a line of its own: the line above it
+                // is laid out again.
+                while keep > 0, DecoratedTags.keptTagStarts(at: previous.lines[keep].range.lowerBound, in: block) { keep -= 1 }
             }
             if keep > 0 {
                 lines = previous.lines.prefix(keep)
@@ -225,8 +235,7 @@ final class BlockLayout: @unchecked Sendable {
                 var count = max(CTTypesetterSuggestLineBreak(typesetter, local, Double(available - leading)), 1)
                 if let decorated, start + count < length {
                     count = decorated.lineEnd(from: start, to: start + count) { range in
-                        CTTypesetterSuggestLineBreak(typesetter, range.lowerBound - restart, Double(available - room(at: range.lowerBound)))
-                            >= range.count
+                        Self.width(of: range.lowerBound - restart, count: range.count, in: typesetter) <= available - room(at: range.lowerBound)
                     } - start
                 }
                 let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: local, length: count))
@@ -240,6 +249,13 @@ final class BlockLayout: @unchecked Sendable {
             add(empty, range: length..<length, indexBase: length)
         }
         return (lines, y - gap + insets.vertical)
+    }
+
+    /// How wide `count` characters from `start` are on one line, without
+    /// the space at their end.
+    private static func width(of start: Int, count: Int, in typesetter: CTTypesetter) -> CGFloat {
+        let line = CTTypesetterCreateLine(typesetter, CFRange(location: start, length: count))
+        return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil) - CTLineGetTrailingWhitespaceWidth(line))
     }
 
     /// Line metrics made `height` tall, with the text centred, when the app
@@ -408,6 +424,12 @@ final class BlockLayout: @unchecked Sendable {
                     }
                     start += count
                 }
+                if let decorated {
+                    let base = cell.range.lowerBound
+                    longestWord = max(longestWord, decorated.widestKeptTag(in: cell.range) { range in
+                        Self.width(of: range.lowerBound - base, count: range.count, in: cell.typesetter)
+                    })
+                }
                 natural.append(ceil(widest) + padding * 2)
                 minimum.append(ceil(longestWord) + padding * 2)
             }
@@ -508,7 +530,7 @@ final class BlockLayout: @unchecked Sendable {
                     if let decorated, start + count < cell.text.length {
                         let base = cell.range.lowerBound
                         count = decorated.lineEnd(from: base + start, to: base + start + count) { range in
-                            CTTypesetterSuggestLineBreak(cell.typesetter, range.lowerBound - base, Double(textWidth)) >= range.count
+                            Self.width(of: range.lowerBound - base, count: range.count, in: cell.typesetter) <= textWidth
                         } - base - start
                     }
                     let ctLine = CTTypesetterCreateLine(cell.typesetter, CFRange(location: start, length: count))

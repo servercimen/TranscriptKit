@@ -152,3 +152,15 @@ private func boldTextStyle(_ configure: (inout TranscriptStyle) -> Void = { _ in
     #expect(!style.withBoldText(true).usesBoldText)
     #expect(style.withBoldText(true) == style)
 }
+
+@Test func boldTextKeepsAFontThatIsAlreadyHeavyEnough() {
+    var style = TranscriptStyle()
+    style.usesBoldText = true
+    let source = TranscriptFont(size: 17)
+    let semibold = TranscriptFont(size: 17, weight: 0.3).makeFont()
+    #expect(style.adjustedForBoldText(semibold, source: source, defaultWeight: 0, traits: []) === semibold)
+    let regular = source.makeFont()
+    #expect(abs(weight(style.adjustedForBoldText(regular, source: source, defaultWeight: 0, traits: [])) - 0.3) < 0.05)
+    let heavy = TranscriptFont(size: 17, weight: 0.56).makeFont()
+    #expect(style.adjustedForBoldText(heavy, source: nil, defaultWeight: 0, traits: .bold) === heavy)
+}

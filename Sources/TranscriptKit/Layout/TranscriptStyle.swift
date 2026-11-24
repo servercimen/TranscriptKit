@@ -185,10 +185,14 @@ public struct TranscriptStyle: Equatable, Sendable {
         if !symbolic.isEmpty, let styled = CTFontCreateCopyWithSymbolicTraits(font, 0, nil, symbolic, symbolic) {
             font = styled
         }
-        var isCode = traits.contains(.code)
-        if case .code = kind { isCode = true }
         let source = traits.contains(.code) ? codeFont : customFont(for: kind)
-        return adjustedForBoldText(font, source: source, isCode: isCode, italic: traits.contains(.italic))
+        let defaultWeight: CGFloat? = switch kind {
+        case _ where traits.contains(.code): nil
+        case .paragraph, .rule, .table: 0
+        case .heading: 0.4
+        case .code: nil
+        }
+        return adjustedForBoldText(font, source: source, defaultWeight: defaultWeight, traits: traits)
     }
 
     /// The style that layout uses when the Bold Text setting is `isOn`.
@@ -203,20 +207,23 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// - Parameters:
     ///   - source: the app's font that `font` was made from, or nil for a
     ///     default one.
-    ///   - isCode: a default font is the fixed-pitch one, not the system font.
-    func adjustedForBoldText(_ font: CTFont, source: TranscriptFont?, isCode: Bool, italic: Bool) -> CTFont {
+    ///   - defaultWeight: the weight of the default system font, or nil if
+    ///     the default is the fixed-pitch font.
+    func adjustedForBoldText(_ font: CTFont, source: TranscriptFont?, defaultWeight: CGFloat?,
+                             traits: InlineSpan.Traits) -> CTFont {
         guard usesBoldText else { return font }
-        let weight = Self.weight(of: font)
-        let target = TranscriptFont.boldTextWeight(weight)
-        // A font that is already as heavy, for instance because the system
-        // made it so, is not made heavier again.
-        guard weight < target - 0.01 else { return font }
         if let source, source.name != nil { return font }
-        if source == nil, isCode {
+        guard let declared = source?.weight ?? defaultWeight else {
+            if CTFontGetSymbolicTraits(font).contains(.traitBold) { return font }
             return CTFontCreateCopyWithSymbolicTraits(font, 0, nil, .traitBold, .traitBold) ?? font
         }
+        // From the weight asked for, not the weight measured: the system
+        // may already give a heavier font for Bold Text, and that font is
+        // then kept as it is.
+        let target = TranscriptFont.boldTextWeight(traits.contains(.bold) ? max(declared, 0.4) : declared)
+        guard Self.weight(of: font) < target - 0.01 else { return font }
         var heavier = TranscriptFont(size: CTFontGetSize(font), weight: target, monospaced: source?.monospaced ?? false).makeFont()
-        if italic, let styled = CTFontCreateCopyWithSymbolicTraits(heavier, 0, nil, .traitItalic, .traitItalic) {
+        if traits.contains(.italic), let styled = CTFontCreateCopyWithSymbolicTraits(heavier, 0, nil, .traitItalic, .traitItalic) {
             heavier = styled
         }
         return heavier
@@ -388,7 +395,7 @@ final class ImageAttachment: @unchecked Sendable {
         } else {
             let size = CTFontGetSize(font) * 0.85
             let code = style.adjustedForBoldText(style.codeFont?.makeFont(size: size) ?? CTFontCreateUIFontForLanguage(.userFixedPitch, size, nil)!,
-                                                 source: style.codeFont, isCode: true, italic: false)
+                                                 source: style.codeFont, defaultWeight: nil, traits: [])
             let attributes: [NSAttributedString.Key: Any] = [
                 TranscriptStyle.fontKey: code,
                 NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String): true,

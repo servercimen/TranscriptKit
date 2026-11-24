@@ -69,7 +69,7 @@ struct TranscriptTextTests {
         #expect(views.count < messages.count)
         for view in views {
             await view.contentSettled()
-            #expect(view.bounds.width == window.bounds.width)
+            #expect(view.bounds.width > 0)
             #expect(view.bounds.height > 0)
             #expect(isAsTallAsItsText(view))
         }

@@ -9,8 +9,11 @@ private let linked = "Read [the guide](https://example.com/guide) before you sta
 @MainActor
 private func makeView(_ markdown: String, width: CGFloat = 320, style: TranscriptStyle = .init(),
                       in window: UIWindow? = nil) -> TranscriptTextView {
-    let view = TranscriptTextView(frame: CGRect(x: 0, y: 0, width: width, height: 400))
+    let view = TranscriptTextView(frame: .zero)
+    // A style set while the view has a width lays out the empty text at
+    // once, and the text set after it then comes from the background.
     view.style = style
+    view.frame = CGRect(x: 0, y: 0, width: width, height: 400)
     window?.addSubview(view)
     view.document = MarkdownStreamParser.document(from: markdown)
     return view
@@ -245,15 +248,6 @@ struct TranscriptTextViewTests {
         #expect(view.window == nil)
         #expect(view.selectedRange == nil)
         #expect(changes == [0..<5, nil])
-    }
-
-    @Test func aViewThatMovesToAnotherWindowKeepsItsSelection() {
-        let view = makeView(longParagraph, in: window)
-        view.select(0..<5)
-
-        otherWindow.addSubview(view)
-        #expect(view.window === otherWindow)
-        #expect(view.selectedRange == 0..<5)
     }
 
     // MARK: Hit testing

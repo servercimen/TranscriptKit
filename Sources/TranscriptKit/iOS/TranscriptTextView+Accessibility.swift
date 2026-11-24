@@ -62,7 +62,9 @@ extension TranscriptTextView {
 
 /// The text and frame of a block or a table cell. Assistive technologies
 /// can ask for them from any thread, so they are kept here, and the
-/// getters read them on the main thread (see `onMainThread`).
+/// getters read them on the main thread (see `onMainThread`). A getter
+/// first brings the elements up to date, because a client can keep an
+/// element while text streams in.
 class TextAccessibilityElement: UIAccessibilityElement {
     private var label: String?
     private var value: String?
@@ -98,29 +100,39 @@ class TextAccessibilityElement: UIAccessibilityElement {
     }
 
     nonisolated override var accessibilityLabel: String? {
-        get { onMainThread { label } }
+        get { onMainThread { current.label } }
         set { onMainThread { label = newValue } }
     }
 
     nonisolated override var accessibilityValue: String? {
-        get { onMainThread { value } }
+        get { onMainThread { current.value } }
         set { onMainThread { value = newValue } }
     }
 
     nonisolated override var accessibilityTraits: UIAccessibilityTraits {
-        get { onMainThread { traits } }
+        get { onMainThread { current.traits } }
         set { onMainThread { traits = newValue } }
     }
 
     /// From the view: a table cell's container is the table's element, not a view.
     nonisolated override var accessibilityFrame: CGRect {
-        get { onMainThread { view.map { UIAccessibility.convertToScreenCoordinates(frameInView, in: $0) } ?? .zero } }
+        get { onMainThread { current.screenFrame } }
         set {}
     }
 
     nonisolated override var accessibilityCustomActions: [UIAccessibilityCustomAction]? {
-        get { onMainThread { actions } }
+        get { onMainThread { current.actions } }
         set { onMainThread { actions = newValue } }
+    }
+
+    /// This element, once the elements are up to date.
+    private var current: TextAccessibilityElement {
+        view?.updateAccessibilityElements()
+        return self
+    }
+
+    private var screenFrame: CGRect {
+        view.map { UIAccessibility.convertToScreenCoordinates(frameInView, in: $0) } ?? .zero
     }
 }
 
@@ -168,25 +180,35 @@ final class TableAccessibilityElement: UIAccessibilityElement, UIAccessibilityCo
     }
 
     nonisolated override var accessibilityElements: [Any]? {
-        get { onMainThread { cells } }
+        get { onMainThread { current.cells } }
         set {}
     }
 
     nonisolated override var accessibilityFrame: CGRect {
-        get { onMainThread { view.map { UIAccessibility.convertToScreenCoordinates(frameInView, in: $0) } ?? .zero } }
+        get { onMainThread { current.screenFrame } }
         set {}
     }
 
     nonisolated func accessibilityDataTableCellElement(forRow row: Int, column: Int) -> (any UIAccessibilityContainerDataTableCell)? {
-        onMainThread { cells.first { $0.row == row && $0.column == column } }
+        onMainThread { current.cells.first { $0.row == row && $0.column == column } }
     }
 
-    nonisolated func accessibilityRowCount() -> Int { onMainThread { rowCount } }
+    nonisolated func accessibilityRowCount() -> Int { onMainThread { current.rowCount } }
 
-    nonisolated func accessibilityColumnCount() -> Int { onMainThread { columnCount } }
+    nonisolated func accessibilityColumnCount() -> Int { onMainThread { current.columnCount } }
 
     nonisolated func accessibilityHeaderElements(forColumn column: Int) -> [any UIAccessibilityContainerDataTableCell]? {
-        onMainThread { cells.first { $0.row == 0 && $0.column == column }.map { [$0] } }
+        onMainThread { current.cells.first { $0.row == 0 && $0.column == column }.map { [$0] } }
+    }
+
+    /// This element, once the elements are up to date.
+    private var current: TableAccessibilityElement {
+        view?.updateAccessibilityElements()
+        return self
+    }
+
+    private var screenFrame: CGRect {
+        view.map { UIAccessibility.convertToScreenCoordinates(frameInView, in: $0) } ?? .zero
     }
 }
 

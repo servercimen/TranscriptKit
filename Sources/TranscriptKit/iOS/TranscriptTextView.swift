@@ -1225,6 +1225,13 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// The elements, made when an assistive technology first asks for them.
     var accessibilityCache: AccessibilityCache?
 
+    /// Brings the elements up to date with the layout on screen, for an
+    /// element that an assistive technology kept from an earlier request.
+    func updateAccessibilityElements() {
+        guard accessibilityCache != nil else { return }
+        _ = accessibilityElements(for: currentLayout)
+    }
+
     /// A container: VoiceOver reads its blocks (see `accessibilityElements(for:)`).
     nonisolated public override var isAccessibilityElement: Bool {
         get { false }

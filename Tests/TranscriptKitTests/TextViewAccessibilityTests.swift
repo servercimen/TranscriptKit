@@ -47,6 +47,20 @@ private func elements(of view: TranscriptTextView) -> [UIAccessibilityElement] {
 }
 
 @MainActor
+@Test func anElementThatAClientHoldsShowsTheNewText() async {
+    let view = TranscriptTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 400))
+    let parser = { (markdown: String) in MarkdownStreamParser.document(from: markdown, idPrefix: "t") }
+    view.document = parser("# Title\n\nFirst words")
+    view.layoutIfNeeded()
+    let held = elements(of: view)[1]
+    let length = (view.endOfDocument as? TranscriptTextPosition)?.offset ?? 0
+    view.document = parser("# Title\n\nFirst words and more")
+    // Waits for the new layout without asking the view for its elements.
+    await wait { ((view.endOfDocument as? TranscriptTextPosition)?.offset ?? 0) > length }
+    #expect(held.accessibilityLabel == "First words and more")
+}
+
+@MainActor
 @Test func aTableIsADataTableOfCells() throws {
     let view = TranscriptTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 400))
     view.document = MarkdownStreamParser.document(from: "- One\n- Two\n\n| A | B |\n| - | - |\n| 1 | 2 |")

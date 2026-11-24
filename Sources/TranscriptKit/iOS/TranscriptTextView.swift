@@ -103,6 +103,10 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     }
 
     private func styleChanged() {
+        emptyLayout = DocumentLayout(document: TranscriptDocument(), width: 1, style: layoutStyle)
+        if bounds.width == 0, unsizedWidth > 0 {
+            engine.layOutUntilPlaced(width: unsizedWidth, style: layoutStyle)
+        }
         relayoutNow()
         updateTailStyle()
         updateFadeDuration()
@@ -376,6 +380,13 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         registerForTraitChanges([UITraitLegibilityWeight.self]) { (view: TranscriptTextView, previous: UITraitCollection) in
             guard view.style.withBoldText(previous.legibilityWeight == .bold) != view.layoutStyle else { return }
             view.styleChanged()
+            // Later: the trait can change during a SwiftUI update, which must
+            // not change SwiftUI state.
+            if view.bounds.width == 0, view.unsizedWidth > 0 {
+                DispatchQueue.main.async { [weak view] in
+                    MainActor.assumeIsolated { view?.onHeightChangeWhileUnsized?() }
+                }
+            }
         }
     }
 
@@ -1212,7 +1223,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     public override func sizeThatFits(_ size: CGSize) -> CGSize {
         let width = size.width.isFinite && size.width > 0 ? size.width : max(bounds.width, 1)
-        if let installed, installed.width == width {
+        if let installed, installed.width == width, installed.style == layoutStyle {
             return CGSize(width: width, height: ceil(installed.height))
         }
         // Kept by the engine, so the relayout when the view takes this width is free.

@@ -345,7 +345,7 @@ public final class DocumentLayout: @unchecked Sendable {
     ///   above the text instead (their glyphs and shapes are left out), or
     ///   waiting to play (their shapes are left out).
     func draw(in context: CGContext, dirtyRect: CGRect, text: CGColor, codeBackground: CGColor, accent: CGColor,
-              dark: Bool, highContrast: Bool = false, hiding: TagHiding) {
+              dark: Bool, highContrast: Bool, hiding: TagHiding) {
         context.saveGState()
         defer { context.restoreGState() }
         // Core Text draws y-up; flip glyphs so they are upright in a y-down context.

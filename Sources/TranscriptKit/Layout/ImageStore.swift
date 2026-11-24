@@ -115,53 +115,69 @@ final class TranscriptImageStore: @unchecked Sendable {
 
     // MARK: Formulas
 
-    private struct FormulaKey: Hashable {
-        let math: TranscriptMath
-        /// The font size, to half a point.
-        let size: Int
-    }
-
     private var mathRenderer: TranscriptMathRenderer?
+    private var mathCache: TranscriptMathCache
     private var mathGeneration = 0
-    private var formulas: [FormulaKey: TranscriptMathImage] = [:]
-    private var formulasRequested: Set<FormulaKey> = []
+    private var formulasRequested: Set<TranscriptMathCache.Key> = []
+
+    /// - Parameter mathCache: where drawn formulas are kept. A store has a
+    ///   cache of its own unless it is given one that views share.
+    init(mathCache: TranscriptMathCache = TranscriptMathCache()) {
+        self.mathCache = mathCache
+    }
 
     var hasMathRenderer: Bool { lock.withLock { mathRenderer != nil } }
 
-    /// Sets the math renderer. Formulas drawn by an earlier one are dropped,
-    /// and the revision goes up so that they are laid out again.
+    /// Sets the math renderer. Formulas are asked for again, and the revision
+    /// goes up so that they are laid out again. The cache keeps what it has,
+    /// because views that share it set their renderers one by one.
     func setMathRenderer(_ renderer: TranscriptMathRenderer?) {
         lock.withLock {
             mathRenderer = renderer
             mathGeneration += 1
             _revision += 1
-            formulas = [:]
+            formulasRequested = []
+        }
+    }
+
+    /// Sets where drawn formulas are kept, and lays them out again.
+    func setMathCache(_ cache: TranscriptMathCache) {
+        lock.withLock {
+            guard cache !== mathCache else { return }
+            mathCache = cache
+            mathGeneration += 1
+            _revision += 1
             formulasRequested = []
         }
     }
 
     /// The drawn formula if it has arrived. Starts drawing it if not.
     func formula(for math: TranscriptMath, fontSize: CGFloat) -> TranscriptMathImage? {
-        let key = FormulaKey(math: math, size: Int((fontSize * 2).rounded()))
-        let (formula, render, generation): (TranscriptMathImage?, TranscriptMathRenderer?, Int) = lock.withLock {
-            if let formula = formulas[key] { return (formula, nil, mathGeneration) }
-            guard let mathRenderer, !formulasRequested.contains(key) else { return (nil, nil, mathGeneration) }
+        let key = TranscriptMathCache.Key(math: math, fontSize: fontSize)
+        let (formula, start): (TranscriptMathImage?, (TranscriptMathRenderer, TranscriptMathCache, Int)?) = lock.withLock {
+            guard let mathRenderer else { return (nil, nil) }
+            switch mathCache.result(for: key) {
+            case .drawn(let formula)?: return (formula, nil)
+            case .failed?: return (nil, nil)
+            case nil: break
+            }
+            guard !formulasRequested.contains(key) else { return (nil, nil) }
             formulasRequested.insert(key)
-            return (nil, mathRenderer, mathGeneration)
+            return (nil, (mathRenderer, mathCache, mathGeneration))
         }
-        if let render {
-            Task.detached { [weak self] in
-                let drawn = await render(math, CGFloat(key.size) / 2)?.withAlphaAsMask()
-                self?.finishFormula(key, drawn, generation: generation)
+        if let (renderer, cache, generation) = start {
+            cache.draw(key, with: renderer) { [weak self] result in
+                self?.finishFormula(key, result, generation: generation)
             }
         }
         return formula
     }
 
-    private func finishFormula(_ key: FormulaKey, _ formula: TranscriptMathImage?, generation: Int) {
+    private func finishFormula(_ key: TranscriptMathCache.Key, _ result: TranscriptMathCache.Result, generation: Int) {
         let handler: (@Sendable () -> Void)? = lock.withLock {
-            guard generation == mathGeneration, let formula else { return nil }
-            formulas[key] = formula
+            guard generation == mathGeneration else { return nil }
+            formulasRequested.remove(key)
+            guard case .drawn = result else { return nil }
             _revision += 1
             return onChange
         }

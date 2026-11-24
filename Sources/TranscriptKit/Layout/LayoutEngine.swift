@@ -78,7 +78,8 @@ final class LayoutEngine: @unchecked Sendable {
 
     let queue = DispatchQueue(label: "TranscriptKit.layout", qos: .userInitiated)
     /// Pictures for the documents' images, if the view was given a loader.
-    let images = TranscriptImageStore()
+    /// Formulas are kept in the cache that views share.
+    let images = TranscriptImageStore(mathCache: .shared)
 
     // Guarded by `lock`.
     private let lock = NSLock()

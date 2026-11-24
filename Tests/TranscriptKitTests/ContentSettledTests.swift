@@ -333,6 +333,12 @@ private func picture() -> CGImage? {
 }
 
 @MainActor
+private final class FlushRecord {
+    var waitersBefore = -1
+    var drawsAfter = -1
+}
+
+@MainActor
 @Test(.timeLimit(.minutes(1))) func aFlushDoesNotSettleInsideTheCall() async {
     let host = Host()
     let stream = TranscriptStream()
@@ -341,16 +347,21 @@ private func picture() -> CGImage? {
     await host.waiters.wait()
     let draws = host.draws
 
+    let flush = FlushRecord()
+    // In the main queue before the append starts the frame timer, so the
+    // frame cannot parse the text before the flush.
+    DispatchQueue.main.async {
+        MainActor.assumeIsolated {
+            flush.waitersBefore = host.waiters.count
+            stream.flush()
+            flush.drawsAfter = host.draws
+        }
+    }
     // Text that the parser holds back starts no layout work.
     stream.append("\n\n#")
-    let waiting = Task { @MainActor in await host.waiters.wait() }
-    for _ in 0..<100 where host.waiters.count == 0 {
-        await Task.yield()
-    }
-    #expect(host.waiters.count == 1)
-    stream.flush()
-    #expect(host.draws == draws)
-    await waiting.value
+    await host.waiters.wait()
+    #expect(flush.waitersBefore == 1)
+    #expect(flush.drawsAfter == draws)
     #expect(host.draws == draws + 1)
 }
 

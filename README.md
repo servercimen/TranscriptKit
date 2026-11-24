@@ -362,8 +362,10 @@ let image = UIGraphicsImageRenderer(bounds: view.bounds).image { view.layer.rend
 ```
 
 While a stream that has not finished goes on, `contentSettled()` returns at the first moment when nothing is pending.
-A cancelled task returns at once. An image or a formula that comes back as nil counts as done. Fades and tag
-animations that play are not waited for, so turn off `textFadeInDuration` and `animatesTags` to compare pixels.
+A cancelled task returns at once. An image or a formula that comes back as nil counts as done. A load, a formula or
+a highlight that never ends holds back `contentSettled()`, so use a timeout or cancel the task. Give the view its size
+before the call: a view with no width lays out nothing and settles at once. Fades and tag animations that play are not
+waited for, so turn off `textFadeInDuration` and `animatesTags` to compare pixels.
 
 ## In this repository
 

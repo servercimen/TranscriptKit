@@ -190,9 +190,13 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// does not hold it back: it returns at the first moment when nothing
     /// is pending. A cancelled task returns at once. An image that the
     /// loader returns nil for, and a formula that the renderer returns nil
-    /// for, count as done. Fades and tag animations that play are not
-    /// waited for: to compare pixels, turn off `textFadeInDuration` and
-    /// `animatesTags`.
+    /// for, count as done. A load, a formula or a highlight that never ends
+    /// holds it back: use a timeout, or cancel the task. Fades and tag
+    /// animations that play are not waited for: to compare pixels, turn off
+    /// `textFadeInDuration` and `animatesTags`.
+    ///
+    /// Give the view its size before the call. A view with no width lays
+    /// out nothing, so it settles at once with no content.
     public func contentSettled() async {
         await settledWaiters.wait()
     }

@@ -149,11 +149,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// Fetch only from sources you trust.
     public var imageLoader: (@Sendable (TranscriptImage) async -> CGImage?)? {
         didSet {
-            engine.images.setLoader(imageLoader) { [weak self] in
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
-                }
-            }
+            engine.images.setLoader(imageLoader, onChange: imagesChanged)
             relayoutNow()
         }
     }
@@ -165,11 +161,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// arrive. Not set by default.
     public var codeHighlighter: TranscriptCodeHighlighter? {
         didSet {
-            engine.images.setOnChange { [weak self] in
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
-                }
-            }
+            engine.images.setOnChange(imagesChanged)
             engine.images.setHighlighter(codeHighlighter)
             relayoutNow()
         }
@@ -183,17 +175,26 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// default.
     public var mathRenderer: TranscriptMathRenderer? {
         didSet {
-            engine.images.setOnChange { [weak self] in
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
-                }
-            }
+            engine.images.setOnChange(imagesChanged)
             engine.images.setMathRenderer(mathRenderer)
             relayoutNow()
         }
     }
 
     private let engine = LayoutEngine()
+
+    /// Lays out again on main when a picture, a formula or code colors
+    /// arrive. Any thread.
+    private var imagesChanged: @Sendable () -> Void {
+        let work = engine.work
+        return { [weak self] in
+            work.begin()
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
+                work.end()
+            }
+        }
+    }
 
     /// Holds the tiles, and the tail layer above them, below the system's
     /// selection views.

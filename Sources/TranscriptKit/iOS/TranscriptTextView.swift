@@ -362,7 +362,8 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         linkTap.delegate = self
         addGestureRecognizer(linkTap)
         self.linkTap = linkTap
-        registerForTraitChanges([UITraitUserInterfaceStyle.self, UITraitDisplayScale.self]) { (view: TranscriptTextView, _) in
+        let colorTraits: [UITrait] = [UITraitUserInterfaceStyle.self, UITraitAccessibilityContrast.self, UITraitDisplayScale.self]
+        registerForTraitChanges(colorTraits) { (view: TranscriptTextView, _) in
             // The tiles take over everything, in the new colours; the tail
             // starts again, in them too, with the next append. Animations,
             // drawn in the old ones, end.

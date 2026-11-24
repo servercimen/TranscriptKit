@@ -163,11 +163,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// Fetch only from sources you trust.
     public var imageLoader: (@Sendable (TranscriptImage) async -> CGImage?)? {
         didSet {
-            engine.images.setLoader(imageLoader) { [weak self] in
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
-                }
-            }
+            engine.images.setLoader(imageLoader, onChange: imagesChanged)
             relayoutNow()
         }
     }
@@ -179,11 +175,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// arrive. Not set by default.
     public var codeHighlighter: TranscriptCodeHighlighter? {
         didSet {
-            engine.images.setOnChange { [weak self] in
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
-                }
-            }
+            engine.images.setOnChange(imagesChanged)
             engine.images.setHighlighter(codeHighlighter)
             relayoutNow()
         }
@@ -191,23 +183,80 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     /// Draws LaTeX formulas: `\( … \)` inline, and `\[ … \]` and `$$ … $$`
     /// as display math. It is called off the main thread, once for each formula
-    /// and font size. Only the alpha of the image it returns is used: the
-    /// formula is drawn in the text color. A formula shows its LaTeX as
-    /// written until it is drawn, or if the renderer returns nil. Not set by
-    /// default.
+    /// and font size in `mathCache`. Only the alpha of the image it returns is
+    /// used: the formula is drawn in the text color. Not set by default.
+    ///
+    /// Until a formula is drawn, it is empty space of about its size. While
+    /// the LaTeX of a formula changes, as when an app closes an open formula
+    /// in each new snapshot of the text, the formula keeps its last image
+    /// until the new one is drawn, and only its newest LaTeX waits to be
+    /// drawn. If the renderer returns nil, the formula shows its LaTeX as
+    /// written once that LaTeX stays the same for a second: LaTeX that is
+    /// not complete yet can fail while it streams in.
+    ///
+    /// Views share `TranscriptMathCache.shared` by default, and a formula
+    /// that one view drew shows in the others without a call to their
+    /// renderers. Setting this property does not empty the cache. Give views
+    /// whose renderers draw a formula differently a `mathCache` each, and
+    /// call `removeAll()` on the cache when the renderer changes how it draws.
     public var mathRenderer: TranscriptMathRenderer? {
         didSet {
-            engine.images.setOnChange { [weak self] in
-                DispatchQueue.main.async {
-                    MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
-                }
-            }
+            engine.images.setOnChange(imagesChanged)
             engine.images.setMathRenderer(mathRenderer)
             relayoutNow()
         }
     }
 
+    /// Keeps the formulas that `mathRenderer` draws, so that views that share
+    /// a cache draw each formula once. `TranscriptMathCache.shared` by default.
+    /// Give views whose renderers draw a formula differently a cache each.
+    public var mathCache: TranscriptMathCache = .shared {
+        didSet {
+            guard mathCache !== oldValue else { return }
+            engine.images.setMathCache(mathCache)
+            relayoutNow()
+        }
+    }
+
+    /// Waits until the view shows its final content: no layout, stream
+    /// parse, image load, formula or code colors are pending, the last
+    /// layout is on screen, and its tiles are drawn. Use it before a
+    /// snapshot, or in a test.
+    ///
+    /// Work that keeps arriving, such as a stream that has not finished,
+    /// does not hold it back: it returns at the first moment when nothing
+    /// is pending. A cancelled task returns at once. An image that the
+    /// loader returns nil for counts as done. A formula that the renderer
+    /// returns nil for counts as done when it shows its LaTeX as written,
+    /// about a second later. A load, a formula or a highlight that never ends
+    /// holds it back: use a timeout, or cancel the task. Fades and tag
+    /// animations that play are not waited for: to compare pixels, turn off
+    /// `textFadeInDuration` and `animatesTags`.
+    ///
+    /// Give the view its size before the call. A view with no width lays
+    /// out nothing, so it settles at once with no content.
+    public func contentSettled() async {
+        await settledWaiters.wait()
+    }
+
     private let engine = LayoutEngine()
+    private lazy var settledWaiters = makeSettledWaiters()
+
+    private func makeSettledWaiters() -> ContentSettledWaiters {
+        let waiters = ContentSettledWaiters(work: engine.work)
+        waiters.stream = { [weak self] in self?.stream }
+        waiters.layOut = { [weak self] in self?.layoutIfNeeded() }
+        waiters.draw = { [weak self] in self?.drawTilesNow() }
+        return waiters
+    }
+
+    /// Lays out again when pictures, formulas or code colors arrive. The
+    /// image store calls it on main.
+    private var imagesChanged: @Sendable () -> Void {
+        { [weak self] in
+            MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
+        }
+    }
 
     /// Holds the tiles, and the tail layer above them, below the system's
     /// selection views.
@@ -617,6 +666,14 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             }
         }
         trimSpareTiles()
+    }
+
+    /// Draws now the tiles that wait for the next commit. They take back
+    /// the tail first, so that they hold all of the text.
+    private func drawTilesNow() {
+        handTailToTiles()
+        if canvasCheckScheduled { updateCanvas() }
+        for tile in tiles.values { tile.layer.displayIfNeeded() }
     }
 
     private func makeTile() -> CanvasView {

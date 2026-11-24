@@ -9,6 +9,26 @@ public enum TranscriptTextAlignment: Hashable, Sendable {
     case trailing
 }
 
+/// How a list item's number is written; see `TranscriptStyle.listNumberFormat`.
+public enum TranscriptListNumberFormat: Hashable, Sendable {
+    /// The number, then "." or ")" as the Markdown wrote it.
+    case asWritten
+    /// The number between `prefix` and `suffix`, such as "(" and ")".
+    case custom(prefix: String, suffix: String)
+
+    /// The number, then ".", whatever the Markdown wrote.
+    public static let period = custom(prefix: "", suffix: ".")
+    /// The number, then ")", whatever the Markdown wrote.
+    public static let parenthesis = custom(prefix: "", suffix: ")")
+
+    /// The text of the marker that the Markdown wrote as `written`, such as "3.".
+    func text(for written: String) -> String {
+        guard case .custom(let prefix, let suffix) = self else { return written }
+        let number = written.prefix { $0.isASCII && $0.isNumber }
+        return prefix + number + suffix
+    }
+}
+
 /// Typography and spacing for a transcript.
 public struct TranscriptStyle: Equatable, Sendable {
     /// The font of paragraphs, list items, quotes and tables. Nil uses the
@@ -57,11 +77,60 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// The color of links and their underlines. A custom tag's color wins over it.
     public var linkColor = TranscriptColor(red: 0, green: 0.478, blue: 1)
     /// Behind code blocks, table headers and image placeholders. Nil uses the
-    /// system's secondary fill color.
+    /// system's secondary fill color. `tableHeaderBackgroundColor` wins over
+    /// it for table headers.
     public var codeBackgroundColor: TranscriptColor?
     /// Quote bars, thematic breaks and table lines. Nil uses the system's
-    /// tertiary label color.
+    /// tertiary label color. `quoteBarColor` wins over it for quote bars.
     public var accentColor: TranscriptColor?
+
+    /// How the numbers of ordered list items are written.
+    public var listNumberFormat: TranscriptListNumberFormat = .asWritten
+    /// The weight of the numbers of ordered list items, from -1 to 1 as
+    /// `TranscriptFont.weight`. Nil uses the weight of the body text. A named
+    /// body font has its own weight: a weight of 0.3 or more uses its bold
+    /// face, and a lower weight uses the font as it is.
+    public var listNumberWeight: CGFloat?
+    /// The color of the numbers of ordered list items. Nil uses the text
+    /// color, or `quoteTextColor` in a block quote.
+    public var listNumberColor: TranscriptColor?
+    /// The bullets of unordered list items: the first for level 1, the
+    /// second for level 2, and so on. Levels past the end use the last one.
+    /// Empty uses "•", "◦" and "▪".
+    public var bullets: [String] = TranscriptStyle.defaultBullets
+    /// The colors of the bullets, by level as `bullets`. Empty uses the text
+    /// color, or `quoteTextColor` in a block quote.
+    public var bulletColors: [TranscriptColor] = []
+    /// The fill of a task box that is checked. Nil uses a system-like blue.
+    public var taskCheckedColor: TranscriptColor?
+    /// The check mark in a task box that is checked. Nil uses white.
+    public var taskCheckmarkColor: TranscriptColor?
+    /// The outline of a task box that is not checked. Nil uses the text color,
+    /// or `quoteTextColor` in a block quote, at 45% opacity.
+    public var taskUncheckedColor: TranscriptColor?
+    /// The color of the bar at the left of a block quote. Nil uses
+    /// `accentColor`.
+    public var quoteBarColor: TranscriptColor?
+    /// The width of the bar at the left of a block quote. Keep it less than
+    /// `quoteIndent`, or the bar covers the text.
+    public var quoteBarWidth: CGFloat = 3
+    /// The color of the text in block quotes. Nil uses the text color. Links,
+    /// code colors and custom tags' colors win over it.
+    public var quoteTextColor: TranscriptColor?
+    /// The fill behind inline code. Nil draws no fill. A custom tag's
+    /// highlight wins over it.
+    public var inlineCodeBackgroundColor: TranscriptColor?
+    /// The corner radius of the fill behind inline code.
+    public var inlineCodeCornerRadius: CGFloat = 4
+    /// The fill behind the header row of a table. Nil uses
+    /// `codeBackgroundColor`.
+    public var tableHeaderBackgroundColor: TranscriptColor?
+    /// The weight of the text in the header row of a table, from -1 to 1 as
+    /// `TranscriptFont.weight`. Nil uses the bold body font. A named body font
+    /// has its own weight: a weight of 0.3 or more uses its bold face, and a
+    /// lower weight uses the font as it is. Inline code in the header row uses
+    /// its bold face at a weight of 0.3 or more.
+    public var tableHeaderWeight: CGFloat?
 
     public init() {}
 
@@ -86,6 +155,22 @@ public struct TranscriptStyle: Equatable, Sendable {
         }
     }
 
+    /// The color of text inside `containers`, outermost first: the quote text
+    /// color when one of them is a block quote, or else nil for the text color.
+    func textColor<Containers: Collection>(inside containers: Containers) -> TranscriptColor?
+        where Containers.Element == TranscriptBlock.Container {
+        containers.contains(.quote) ? quoteTextColor : nil
+    }
+
+    static let defaultBullets = ["•", "◦", "▪"]
+
+    /// The bullet of a list item at `level`, from 1, and its color.
+    func bullet(at level: Int) -> (text: String, color: TranscriptColor?) {
+        let shapes = bullets.isEmpty ? Self.defaultBullets : bullets
+        let color = bulletColors.isEmpty ? nil : bulletColors[min(max(level, 1), bulletColors.count) - 1]
+        return (shapes[min(max(level, 1), shapes.count) - 1], color)
+    }
+
     /// Where the block's own box starts: after the indents of its containers.
     func contentLeading(for containers: [TranscriptBlock.Container]) -> CGFloat {
         containers.reduce(0) { $0 + width(of: $1) }
@@ -108,6 +193,7 @@ public struct TranscriptStyle: Equatable, Sendable {
             var role: Int
             var size: CGFloat
             var traits: Int
+            var weight: CGFloat?
             var font: TranscriptFont?
             var code: TranscriptFont?
             var boldText: Bool
@@ -131,24 +217,31 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// The traits that change the font; the others are drawn.
     private static let fontTraits: InlineSpan.Traits = [.bold, .italic, .code]
 
-    func font(for kind: TranscriptBlock.Kind, traits: InlineSpan.Traits = []) -> CTFont {
+    /// - Parameter weight: for body text, a weight as `TranscriptFont.weight`
+    ///   instead of the body font's own.
+    func font(for kind: TranscriptBlock.Kind, traits: InlineSpan.Traits = [], weight: CGFloat? = nil) -> CTFont {
         let traits = traits.intersection(Self.fontTraits)
+        var weight = weight
         let role: Int
         switch kind {
         case .paragraph, .rule, .table: role = 0
-        case .heading(let level): role = min(max(level, 1), 6)
-        case .code: role = 7
+        case .heading(let level):
+            role = min(max(level, 1), 6)
+            weight = nil
+        case .code:
+            role = 7
+            weight = nil
         }
-        let key = FontCache.Key(role: role, size: bodySize, traits: traits.rawValue, font: customFont(for: kind),
+        let key = FontCache.Key(role: role, size: bodySize, traits: traits.rawValue, weight: weight, font: customFont(for: kind),
                                 code: traits.contains(.code) ? codeFont : nil, boldText: isBoldTextOn,
                                 followsBoldText: followsBoldText)
-        return Self.fontCache.font(for: key) { makeFont(for: kind, traits: traits) }
+        return Self.fontCache.font(for: key) { makeFont(for: kind, traits: traits, weight: weight) }
     }
 
     /// The font that a formula's LaTeX is shown in until it is drawn: the
     /// code font at `size`.
     func mathFallbackFont(size: CGFloat) -> CTFont {
-        let key = FontCache.Key(role: 8, size: size, traits: 0, font: nil, code: codeFont, boldText: isBoldTextOn,
+        let key = FontCache.Key(role: 8, size: size, traits: 0, weight: nil, font: nil, code: codeFont, boldText: isBoldTextOn,
                                 followsBoldText: followsBoldText)
         return Self.fontCache.font(for: key) {
             adjustedForBoldText(codeFont?.makeFont(size: size) ?? CTFontCreateUIFontForLanguage(.userFixedPitch, size, nil)!,
@@ -175,9 +268,23 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// The size of body text: the body font's, or `bodySize`.
     var effectiveBodySize: CGFloat { bodyFont?.size ?? bodySize }
 
-    private func makeFont(for kind: TranscriptBlock.Kind, traits: InlineSpan.Traits) -> CTFont {
+    private func makeFont(for kind: TranscriptBlock.Kind, traits: InlineSpan.Traits, weight: CGFloat?) -> CTFont {
         var font: CTFont
-        if let custom = customFont(for: kind) {
+        var traits = traits
+        var source = customFont(for: kind)
+        if let weight {
+            if let custom = customFont(for: kind), custom.name != nil {
+                font = custom.makeFont()
+                if weight >= 0.3 { traits.insert(.bold) }
+            } else {
+                var custom = customFont(for: kind) ?? TranscriptFont(size: bodySize)
+                custom.weight = weight
+                font = custom.makeFont()
+                source = custom
+                // The code font below replaces this font and its weight.
+                if weight >= 0.3, traits.contains(.code) { traits.insert(.bold) }
+            }
+        } else if let custom = customFont(for: kind) {
             font = custom.makeFont()
         } else {
             switch kind {
@@ -200,7 +307,7 @@ public struct TranscriptStyle: Equatable, Sendable {
         if !symbolic.isEmpty, let styled = CTFontCreateCopyWithSymbolicTraits(font, 0, nil, symbolic, symbolic) {
             font = styled
         }
-        let source = traits.contains(.code) ? codeFont : customFont(for: kind)
+        if traits.contains(.code) { source = codeFont }
         let defaultWeight: CGFloat? = switch kind {
         case _ where traits.contains(.code): nil
         case .paragraph, .rule, .table: 0
@@ -266,11 +373,13 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// resolved for light or dark when drawn, by `DocumentLayout`.
     static let foregroundKey = NSAttributedString.Key("TranscriptKit.foreground")
     static let backgroundKey = NSAttributedString.Key("TranscriptKit.background")
+    /// The fill behind inline code, a `TranscriptColor`, drawn like a highlight.
+    static let inlineCodeBackgroundKey = NSAttributedString.Key("TranscriptKit.inlineCodeBackground")
     private static let kernKey = NSAttributedString.Key(kCTKernAttributeName as String)
 
-    func attributes(for kind: TranscriptBlock.Kind) -> [NSAttributedString.Key: Any] {
+    func attributes(for kind: TranscriptBlock.Kind, weight: CGFloat? = nil) -> [NSAttributedString.Key: Any] {
         var attributes: [NSAttributedString.Key: Any] = [
-            Self.fontKey: font(for: kind),
+            Self.fontKey: font(for: kind, weight: weight),
             // Text takes the context's fill color, so the view controls light/dark.
             Self.colorFromContextKey: true,
         ]
@@ -284,17 +393,19 @@ public struct TranscriptStyle: Equatable, Sendable {
         attributedString(for: block, range: start..<block.utf16Count, images: images, definitions: definitions, kerns: kerns)
     }
 
-    /// The styled text of `range` of `block`, with `extraTraits` added to all of it.
+    /// The styled text of `range` of `block`, with `extraTraits` added to all
+    /// of it, and in `weight` (as `TranscriptFont.weight`) if it is body text.
     /// A reference link is styled as a link once `definitions` has its label.
     /// `kerns` is extra advance after characters, by block offset: room for
     /// custom tags' padding (see `DecoratedTags`).
-    func attributedString(for block: TranscriptBlock, range: Range<Int>, extraTraits: InlineSpan.Traits = [],
+    func attributedString(for block: TranscriptBlock, range: Range<Int>, extraTraits: InlineSpan.Traits = [], weight: CGFloat? = nil,
                           images: ImageSizing? = nil, definitions: [String: String] = [:],
                           kerns: [Int: CGFloat] = [:]) -> NSAttributedString {
         let start = range.lowerBound
         let text = range == 0..<block.utf16Count ? block.text : (block.text as NSString).substring(with: NSRange(location: start, length: range.count))
-        var base = attributes(for: block.kind)
-        if !extraTraits.isEmpty { base[Self.fontKey] = font(for: block.kind, traits: extraTraits) }
+        var base = attributes(for: block.kind, weight: weight)
+        if !extraTraits.isEmpty { base[Self.fontKey] = font(for: block.kind, traits: extraTraits, weight: weight) }
+        if let color = textColor(inside: block.containers) { base[Self.foregroundKey] = color }
         let result = NSMutableAttributedString(string: text, attributes: base)
         let length = result.length
         if case .code(let language) = block.kind, let store = images?.store {
@@ -328,11 +439,12 @@ public struct TranscriptStyle: Equatable, Sendable {
             cuts.insert(span.range.upperBound)
         }
         let sorted = cuts.sorted()
+        var mathStarts: [Int]?
         for (lower, upper) in zip(sorted, sorted.dropFirst()) {
             var traits = extraTraits
             var isLink = false
             var image: TranscriptImage?
-            var math: TranscriptMath?
+            var math: (math: TranscriptMath, start: Int)?
             // Spans are sorted with outer ones first, so an inner tag's colors win.
             var foreground: TranscriptColor?
             var background: TranscriptColor?
@@ -340,7 +452,7 @@ public struct TranscriptStyle: Equatable, Sendable {
                 traits.formUnion(span.traits)
                 if span.link != nil || span.reference.map({ definitions[$0] != nil }) == true { isLink = true }
                 if let spanImage = span.image { image = spanImage }
-                if let spanMath = span.math { math = spanMath }
+                if let spanMath = span.math { math = (spanMath, span.range.lowerBound + start) }
                 if let decoration = span.customTag?.decoration {
                     if let color = decoration.foreground { foreground = color }
                     if let color = decoration.background { background = color }
@@ -348,7 +460,7 @@ public struct TranscriptStyle: Equatable, Sendable {
             }
             let range = NSRange(location: lower, length: upper - lower)
             if !traits.intersection(Self.fontTraits).isEmpty {
-                result.addAttribute(Self.fontKey, value: font(for: block.kind, traits: traits), range: range)
+                result.addAttribute(Self.fontKey, value: font(for: block.kind, traits: traits, weight: weight), range: range)
             }
             if traits.contains(.strikethrough) { result.addAttribute(Self.strikethroughKey, value: true, range: range) }
             if traits.contains(.underline) { result.addAttribute(Self.underlineKey, value: true, range: range) }
@@ -359,11 +471,18 @@ public struct TranscriptStyle: Equatable, Sendable {
                 // Resolved for light or dark when drawn, like a tag's color.
                 result.addAttribute(Self.foregroundKey, value: linkColor, range: range)
             }
-            if let background { result.addAttribute(Self.backgroundKey, value: background, range: range) }
+            if let background {
+                result.addAttribute(Self.backgroundKey, value: background, range: range)
+            } else if traits.contains(.code), let fill = inlineCodeBackgroundColor {
+                result.addAttribute(Self.inlineCodeBackgroundKey, value: fill, range: range)
+            }
             if image != nil || math != nil, range.length == 1 {
                 let font = result.attribute(Self.fontKey, at: lower, effectiveRange: nil).map { $0 as! CTFont } ?? self.font(for: block.kind)
-                let attachment = math.map { ImageAttachment(math: $0, sizing: images, font: font, style: self) }
-                    ?? ImageAttachment(image: image!, sizing: images, font: font, style: self)
+                let attachment = math.map { math -> ImageAttachment in
+                    if mathStarts == nil { mathStarts = Self.mathStarts(in: block) }
+                    let slot = Self.mathSlot(in: block, at: math.start, starts: mathStarts!)
+                    return ImageAttachment(math: math.math, slot: slot, sizing: images, font: font, style: self)
+                } ?? ImageAttachment(image: image!, sizing: images, font: font, style: self)
                 result.addAttribute(Self.imageKey, value: attachment, range: range)
                 result.addAttribute(Self.runDelegateKey, value: attachment.makeRunDelegate(), range: range)
             }
@@ -377,6 +496,30 @@ public struct TranscriptStyle: Equatable, Sendable {
     }
 }
 
+extension TranscriptStyle {
+    /// The slot of the formula that starts at UTF-16 offset `start` of
+    /// `block`: it is the same whichever part of the block is laid out.
+    static func mathSlot(in block: TranscriptBlock, at start: Int) -> TranscriptImageStore.MathSlot {
+        mathSlot(in: block, at: start, starts: mathStarts(in: block))
+    }
+
+    /// The same, with the block's `mathStarts`.
+    static func mathSlot(in block: TranscriptBlock, at start: Int, starts: [Int]) -> TranscriptImageStore.MathSlot {
+        var low = 0
+        var high = starts.count
+        while low < high {
+            let middle = (low + high) / 2
+            if starts[middle] < start { low = middle + 1 } else { high = middle }
+        }
+        return TranscriptImageStore.MathSlot(block: block.id, index: low)
+    }
+
+    /// Where the block's formulas start, in order.
+    static func mathStarts(in block: TranscriptBlock) -> [Int] {
+        block.spans.compactMap { $0.math != nil ? $0.range.lowerBound : nil }.sorted()
+    }
+}
+
 /// What layout needs to know to size images: the loaded ones, and the width
 /// they must fit in.
 struct ImageSizing {
@@ -385,7 +528,8 @@ struct ImageSizing {
 }
 
 /// An image in laid-out text: the loaded picture, or a placeholder showing
-/// the alt text when there is none.
+/// the alt text when there is none. A formula that is being drawn has
+/// neither: it is empty space.
 final class ImageAttachment: @unchecked Sendable {
     let image: TranscriptImage
     let picture: CGImage?
@@ -398,19 +542,25 @@ final class ImageAttachment: @unchecked Sendable {
     let math: TranscriptMath?
     var isMask: Bool { math != nil && picture != nil }
 
-    /// A formula, drawn by the store's math renderer, or its LaTeX as written
-    /// until it is (or if it is not).
-    init(math: TranscriptMath, sizing: ImageSizing?, font: CTFont, style: TranscriptStyle) {
+    /// A formula, drawn by the store's math renderer. Until it is, it is empty
+    /// space of about its size. Without a renderer, or if the renderer cannot
+    /// draw it, it is its LaTeX as written.
+    init(math: TranscriptMath, slot: TranscriptImageStore.MathSlot, sizing: ImageSizing?, font: CTFont, style: TranscriptStyle) {
         self.image = TranscriptImage(source: "", alt: math.tex)
         self.math = math
         let maximumWidth = max(sizing?.maximumWidth ?? 320, 20)
-        if let formula = sizing?.store?.formula(for: math, fontSize: CTFontGetSize(font)) {
+        let formula = sizing?.store?.formula(for: math, fontSize: CTFontGetSize(font), in: slot) ?? .asWritten
+        if case .drawn(let formula) = formula {
             let natural = CGSize(width: max(formula.size.width, 1), height: max(formula.size.height, 1))
             let scale = min(1, maximumWidth / natural.width)
             self.picture = formula.image
             self.label = nil
             self.size = CGSize(width: ceil(natural.width * scale), height: ceil(natural.height * scale))
             self.ascent = size.height - formula.baseline * scale
+        } else if case .pending = formula {
+            self.picture = nil
+            self.label = nil
+            (self.size, self.ascent) = Self.reservedSpace(for: math, font: font, maximumWidth: maximumWidth)
         } else {
             let size = CTFontGetSize(font) * 0.85
             let code = style.mathFallbackFont(size: size)
@@ -431,6 +581,23 @@ final class ImageAttachment: @unchecked Sendable {
             self.size = CGSize(width: min(width, maximumWidth), height: ceil(CTFontGetAscent(font) + CTFontGetDescent(font)) + 4)
             self.ascent = ceil(CTFontGetAscent(font)) + 2
         }
+    }
+
+    /// Room for a formula that is not drawn yet, so that the text around it
+    /// moves less when it is: about as wide as its symbols, and one line
+    /// tall for inline math. Display math gets a line for each of its rows,
+    /// and two when it has a fraction, a sum or an integral.
+    static func reservedSpace(for math: TranscriptMath, font: CTFont, maximumWidth: CGFloat) -> (size: CGSize, ascent: CGFloat) {
+        let fontSize = CTFontGetSize(font)
+        let ascent = ceil(CTFontGetAscent(font))
+        let lineHeight = ceil(CTFontGetAscent(font) + CTFontGetDescent(font))
+        let shape = LatexShape(math.tex)
+        let rows = math.isDisplay ? shape.rows : 1
+        let symbolsInARow = (shape.symbols + rows - 1) / rows
+        let width = min(max(CGFloat(symbolsInARow) * fontSize * 0.55, fontSize).rounded(), maximumWidth)
+        guard math.isDisplay else { return (CGSize(width: width, height: lineHeight), ascent) }
+        let height = lineHeight * CGFloat(rows) * (shape.isTall ? 2 : 1)
+        return (CGSize(width: width, height: height), height - (lineHeight - ascent))
     }
 
     init(image: TranscriptImage, sizing: ImageSizing?, font: CTFont, style: TranscriptStyle) {
@@ -479,5 +646,54 @@ final class ImageAttachment: @unchecked Sendable {
             getWidth: { Unmanaged<ImageAttachment>.fromOpaque($0).takeUnretainedValue().size.width }
         )
         return CTRunDelegateCreate(&callbacks, Unmanaged.passRetained(self).toOpaque())!
+    }
+}
+
+/// A rough count of what a formula draws, read from its LaTeX.
+struct LatexShape: Equatable {
+    /// Letters, digits, operators and symbol commands such as `\alpha`.
+    var symbols = 0
+    /// Rows, which `\\` separates.
+    var rows = 1
+    /// It has a fraction, a sum, an integral or a product, which are about
+    /// twice as tall as a line.
+    var isTall = false
+
+    private static let layoutCommands: Set<Substring> = [
+        "frac", "dfrac", "tfrac", "left", "right", "mathrm", "mathbf", "mathit", "mathsf", "text", "textrm",
+        "operatorname", "displaystyle", "textstyle", "limits",
+    ]
+    private static let tallCommands: Set<Substring> = ["frac", "dfrac", "sum", "int", "iint", "oint", "prod", "coprod", "binom"]
+
+    init(_ tex: String) {
+        let units = Substring(tex)
+        var index = units.startIndex
+        while index < units.endIndex {
+            let character = units[index]
+            index = units.index(after: index)
+            guard character == "\\" else {
+                if !(character.isWhitespace || "{}^_&~".contains(character)) { symbols += 1 }
+                continue
+            }
+            let name = units[index...].prefix { $0.isLetter }
+            guard !name.isEmpty else {
+                // An escaped character, `\\` between rows, or a space such as `\,`.
+                guard index < units.endIndex else { break }
+                let escaped = units[index]
+                if escaped == "\\" { rows += 1 } else if "{}|%$#".contains(escaped) { symbols += 1 }
+                index = units.index(after: index)
+                continue
+            }
+            index = name.endIndex
+            if Self.tallCommands.contains(name) { isTall = true }
+            if name == "begin" || name == "end" {
+                // The environment's name is not drawn.
+                if index < units.endIndex, units[index] == "{", let close = units[index...].firstIndex(of: "}") {
+                    index = units.index(after: close)
+                }
+            } else if !Self.layoutCommands.contains(name) {
+                symbols += 1
+            }
+        }
     }
 }

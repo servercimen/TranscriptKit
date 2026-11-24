@@ -184,3 +184,12 @@ private func boldTextStyle(_ configure: (inout TranscriptStyle) -> Void = { _ in
     #expect(weight(bold) > weight(code) + 0.15)
     #expect(weight(styles.on.font(for: .paragraph, traits: [.bold, .code])) > weight(styles.on.font(for: .paragraph, traits: .code)) + 0.15)
 }
+
+@Test func boldTextStartsFromTheWeightOfListNumbersAndTableHeaders() {
+    let styles = boldTextStyle()
+    #expect(abs(weight(styles.on.font(for: .paragraph, weight: 0.4)) - 0.56) < 0.05)
+    #expect(abs(weight(styles.on.font(for: .paragraph, weight: 0.23)) - 0.4) < 0.05)
+    #expect(abs(weight(styles.off.font(for: .paragraph, weight: 0.4)) - 0.4) < 0.05)
+    let named = boldTextStyle { $0.bodyFont = TranscriptFont(name: "Courier", size: 20) }
+    #expect(postScriptName(named.on.font(for: .paragraph, weight: 0.4)) == postScriptName(named.off.font(for: .paragraph, weight: 0.4)))
+}

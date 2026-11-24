@@ -286,3 +286,30 @@ private final class Flag: @unchecked Sendable {
     #expect(changed.isRaised)
     #expect(stream.unplacedHeight.revision == before &+ 1)
 }
+
+@MainActor
+@Test func aStreamIsIdleOnceItsTextIsParsed() async {
+    let stream = TranscriptStream()
+    #expect(stream.isIdle)
+    var idle = 0
+    stream.whenIdle { idle += 1 }
+    stream.append("Some **text")
+    #expect(!stream.isIdle)
+    for _ in 0..<200 where idle == 0 { try? await Task.sleep(for: .milliseconds(10)) }
+    #expect(idle == 1)
+    #expect(stream.isIdle)
+    #expect(stream.document.block(at: 0).text.hasPrefix("Some"))
+
+    // Held-back text changes nothing visible, and still ends.
+    stream.whenIdle { idle += 1 }
+    stream.append("\n\n#")
+    for _ in 0..<200 where idle == 1 { try? await Task.sleep(for: .milliseconds(10)) }
+    #expect(idle == 2)
+
+    stream.whenIdle { idle += 1 }
+    stream.finish()
+    #expect(!stream.isIdle)
+    stream.flush()
+    #expect(stream.isIdle)
+    #expect(idle == 3)
+}

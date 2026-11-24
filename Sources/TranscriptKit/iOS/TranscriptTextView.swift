@@ -807,10 +807,11 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         let signpost = replacementSignposter.beginInterval("Replace document")
         relayoutNow()
         replacementSignposter.endInterval("Replace document", signpost)
-        guard installed !== shown, duration > 0, window != nil, UIView.areAnimationsEnabled else { return }
+        guard installed !== shown, duration > 0, window != nil else { return }
         // The render server fades from the canvas as the last commit showed
         // it to the canvas as this commit shows it, with the tiles that the
-        // new layout draws in this commit.
+        // new layout draws in this commit. It is a layer animation, so
+        // `UIView.performWithoutAnimation` does not stop it.
         let transition = CATransition()
         transition.type = .fade
         transition.duration = duration

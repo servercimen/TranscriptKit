@@ -63,6 +63,8 @@ final class LayoutEngine: @unchecked Sendable {
         var fade: FadeFrame?
         /// The request's `isFinished`.
         var isFinished = false
+        /// How far blocks were scrolled sideways when `tail` and `fade` were drawn.
+        var scroll: SideScroll = .none
 
         /// `later`, measured against what `earlier` was measured against:
         /// for installing `later` when `earlier` was never installed.
@@ -72,7 +74,7 @@ final class LayoutEngine: @unchecked Sendable {
                           isAppend: earlier.isAppend && later.isAppend, changedTop: top,
                           restyled: earlier.restyled + later.restyled, tail: later.tail,
                           started: earlier.started + later.started, waiting: earlier.waiting + later.waiting,
-                          hidden: later.hidden, fade: later.fade, isFinished: later.isFinished)
+                          hidden: later.hidden, fade: later.fade, isFinished: later.isFinished, scroll: later.scroll)
         }
     }
 
@@ -108,6 +110,9 @@ final class LayoutEngine: @unchecked Sendable {
     private var hiding = TagHiding()
     /// How long appended text takes to fade in, or nil for no fade.
     private var fadeDuration: CFTimeInterval?
+    /// How far blocks are scrolled sideways in the view: the tail and the
+    /// fading text are drawn with it.
+    private var sideScroll = SideScroll()
     /// Appended text from `hiding.fadingFrom` on, oldest first: still fading
     /// in, or done but on the line the oldest still fades on.
     private var fades: [Fade] = []
@@ -161,6 +166,12 @@ final class LayoutEngine: @unchecked Sendable {
     /// fade. Any thread.
     func setFadeDuration(_ duration: CFTimeInterval?) {
         lock.withLock { fadeDuration = duration.flatMap { $0 > 0 ? $0 : nil } }
+    }
+
+    /// How far blocks are scrolled sideways, for the tails and fades drawn
+    /// from now on. Any thread.
+    func setSideScroll(_ scroll: SideScroll) {
+        lock.withLock { sideScroll = scroll }
     }
 
     /// Ends every fade, for when the view draws the text at rest. Returns
@@ -322,16 +333,17 @@ final class LayoutEngine: @unchecked Sendable {
         }
         let (fading, moved) = updateFades(layout: layout, appendedTo: isAppend ? previous : nil, tagsStarted: !started.isEmpty)
         if let moved { restyled.append(insideTail(moved)) }
-        let hidden = lock.withLock { hiding }
-        let tail = drawTail(of: layout, changedTop: changedTop, restyled: restyled, hiding: hidden)
+        let (hidden, scroll) = lock.withLock { (hiding, sideScroll) }
+        let tail = drawTail(of: layout, changedTop: changedTop, restyled: restyled, hiding: hidden, scroll: scroll)
         var fade: FadeFrame?
         if !fading.isEmpty, let from = hidden.fadingFrom, let style = lock.withLock({ tailStyle }) {
-            fade = fadeRenderer.render(layout, from: from, fades: fading, colors: style.colors, scale: style.scale, playing: hidden.playing)
+            fade = fadeRenderer.render(layout, from: from, fades: fading, colors: style.colors, scale: style.scale, playing: hidden.playing,
+                                       scroll: scroll)
             TranscriptDiagnostics.count(\.fadeFrames)
         }
         post(Output(layout: layout, source: request.source, base: previous, isAppend: isAppend, changedTop: changedTop,
                     restyled: restyled, tail: tail, started: started, waiting: waiting, hidden: hidden, fade: fade,
-                    isFinished: request.isFinished))
+                    isFinished: request.isFinished, scroll: scroll))
     }
 
     /// Starts a fade for the text that `layout` appends to `previous`, and
@@ -403,21 +415,23 @@ final class LayoutEngine: @unchecked Sendable {
             let (fading, band) = updateFades(layout: layout, appendedTo: layout, tagsStarted: false)
             guard let band else { return }
             let moved = insideTail(band)
-            let hidden = lock.withLock { hiding }
-            let tail = tailActive ? drawTail(of: layout, changedTop: layout.height, restyled: [moved], hiding: hidden) : nil
+            let (hidden, scroll) = lock.withLock { (hiding, sideScroll) }
+            let tail = tailActive ? drawTail(of: layout, changedTop: layout.height, restyled: [moved], hiding: hidden, scroll: scroll) : nil
             var fade: FadeFrame?
             if !fading.isEmpty, let from = hidden.fadingFrom, let style = lock.withLock({ tailStyle }) {
-                fade = fadeRenderer.render(layout, from: from, fades: fading, colors: style.colors, scale: style.scale, playing: hidden.playing)
+                fade = fadeRenderer.render(layout, from: from, fades: fading, colors: style.colors, scale: style.scale, playing: hidden.playing,
+                                           scroll: scroll)
                 TranscriptDiagnostics.count(\.fadeFrames)
             }
             post(Output(layout: layout, source: latestSource, base: layout, isAppend: true, changedTop: layout.height,
-                        restyled: [moved], tail: tail, hidden: hidden, fade: fade, isFinished: latestFinished))
+                        restyled: [moved], tail: tail, hidden: hidden, fade: fade, isFinished: latestFinished, scroll: scroll))
         }
     }
 
     /// Draws `layout`'s tail if text is being appended. The first append
     /// starts the tail; it stays on for every output until settled.
-    private func drawTail(of layout: DocumentLayout, changedTop: CGFloat?, restyled: [CGRect], hiding: TagHiding) -> TailRenderer.Frame? {
+    private func drawTail(of layout: DocumentLayout, changedTop: CGFloat?, restyled: [CGRect], hiding: TagHiding,
+                          scroll: SideScroll) -> TailRenderer.Frame? {
         let fadingTop = hiding.fadingFrom.flatMap { layout.lines(from: $0).first }.map { $0.entry.y + $0.line.inkTop }
         guard let style = lock.withLock({ tailStyle }) else {
             tailActive = false
@@ -434,7 +448,8 @@ final class LayoutEngine: @unchecked Sendable {
         }
         if changedTop != nil { tailActive = true }
         guard tailActive, let tailRenderer else { return nil }
-        guard let frame = tailRenderer.render(layout, changedTop: changedTop, restyled: restyled, hiding: hiding, fadingTop: fadingTop) else {
+        guard let frame = tailRenderer.render(layout, changedTop: changedTop, restyled: restyled, hiding: hiding, fadingTop: fadingTop,
+                                              scroll: scroll) else {
             // No surface free: the view draws the tail itself until the next append.
             tailActive = false
             tailRenderer.reset()

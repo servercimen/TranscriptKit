@@ -184,6 +184,23 @@ public final class DocumentLayout: @unchecked Sendable {
         lastEntryIndex(where: { CGFloat($0.start) }, isAtMost: CGFloat(offset))
     }
 
+    /// The index of the entry of the block with `id`. `hint` is where it was
+    /// last, which is checked first.
+    func entryIndex(ofBlock id: String, hint: Int? = nil) -> Int? {
+        if let hint, hint >= 0, hint < entryCount, entry(at: hint).layout.block.id == id { return hint }
+        return (0..<entryCount).last { entry(at: $0).layout.block.id == id }
+    }
+
+    /// The index of the entry whose block scrolls sideways at `point`: its
+    /// lines are wider than its box, and the point is inside the box.
+    func sideScrollingEntryIndex(at point: CGPoint) -> Int? {
+        guard let index = lastEntryIndex(where: { $0.y }, isAtMost: point.y) else { return nil }
+        let entry = entry(at: index)
+        guard entry.layout.maximumScrollOffset > 0, point.y < entry.frame.maxY else { return nil }
+        let box = entry.layout.scrollBox
+        return point.x >= box.minX && point.x < box.maxX ? index : nil
+    }
+
     /// The lines with text at or after `offset`, in order, with their blocks.
     func lines(from offset: Int) -> [(entry: Entry, line: BlockLayout.Line)] {
         guard let first = entryIndex(forOffset: offset) else { return [] }
@@ -198,15 +215,31 @@ public final class DocumentLayout: @unchecked Sendable {
     }
 
     public func caretRect(at offset: Int) -> CGRect {
+        caretRect(at: offset, scroll: .none)
+    }
+
+    /// The caret at `offset` with blocks scrolled sideways by `scroll`. In a
+    /// block that scrolls, a caret outside the block's box is moved to its edge.
+    func caretRect(at offset: Int, scroll: SideScroll) -> CGRect {
         guard let index = entryIndex(forOffset: offset) else {
             return CGRect(x: 0, y: 0, width: 2, height: style.effectiveBodySize * 1.2)
         }
         let entry = entry(at: index)
         let local = min(max(offset - entry.start, 0), entry.layout.length)
-        return entry.layout.caretRect(atOffset: local).offsetBy(dx: 0, dy: entry.y)
+        let rect = entry.layout.caretRect(atOffset: local).offsetBy(dx: 0, dy: entry.y)
+        guard entry.layout.maximumScrollOffset > 0 else { return rect }
+        let box = entry.layout.scrollBox
+        var shifted = rect.offsetBy(dx: -scroll.offset(of: entry.layout), dy: 0)
+        shifted.origin.x = min(max(shifted.minX, box.minX), box.maxX - shifted.width)
+        return shifted
     }
 
     public func closestOffset(to point: CGPoint) -> Int {
+        closestOffset(to: point, scroll: .none)
+    }
+
+    /// The offset nearest to `point`, with blocks scrolled sideways by `scroll`.
+    func closestOffset(to point: CGPoint, scroll: SideScroll) -> Int {
         guard var index = lastEntryIndex(where: { $0.y }, isAtMost: point.y) else { return 0 }
         // A point in the gap below a block goes to whichever block is nearer.
         if index + 1 < entryCount {
@@ -215,16 +248,26 @@ public final class DocumentLayout: @unchecked Sendable {
             if point.y >= (current.frame.maxY + next.y) / 2 { index += 1 }
         }
         let entry = entry(at: index)
-        let local = entry.layout.closestOffset(to: CGPoint(x: point.x, y: point.y - entry.y))
+        let local = entry.layout.closestOffset(to: CGPoint(x: point.x + scroll.offset(of: entry.layout), y: point.y - entry.y))
         return entry.start + local
     }
 
     /// The destination of the link drawn under `point`, if any.
     public func link(at point: CGPoint) -> String? {
+        link(at: point, scroll: .none)
+    }
+
+    /// The destination of the link drawn under `point`, with blocks scrolled
+    /// sideways by `scroll`. In a block that scrolls, only its box shows links.
+    func link(at point: CGPoint, scroll: SideScroll) -> String? {
         guard let index = lastEntryIndex(where: { $0.y }, isAtMost: point.y) else { return nil }
         let entry = entry(at: index)
         guard entry.frame.contains(point) else { return nil }
-        let local = CGPoint(x: point.x, y: point.y - entry.y)
+        if entry.layout.maximumScrollOffset > 0 {
+            let box = entry.layout.scrollBox
+            guard point.x >= box.minX, point.x < box.maxX else { return nil }
+        }
+        let local = CGPoint(x: point.x + scroll.offset(of: entry.layout), y: point.y - entry.y)
         if let link = entry.layout.decorationLink(at: local) { return link }
         guard let offset = entry.layout.characterOffset(at: local) else { return nil }
         // A reference link's destination may have been defined further down.
@@ -236,6 +279,13 @@ public final class DocumentLayout: @unchecked Sendable {
 
     /// One rect per line covered by `range`, across as many blocks as it spans.
     public func selectionRects(for range: Range<Int>) -> [CGRect] {
+        selectionRects(for: range, scroll: .none)
+    }
+
+    /// One rect per line covered by `range`, with blocks scrolled sideways by
+    /// `scroll`. In a block that scrolls, the rects are cut to its box; a rect
+    /// outside the box becomes an empty one at its edge.
+    func selectionRects(for range: Range<Int>, scroll: SideScroll) -> [CGRect] {
         guard !range.isEmpty, let first = entryIndex(forOffset: range.lowerBound) else { return [] }
         var rects: [CGRect] = []
         for index in first..<entryCount {
@@ -244,8 +294,18 @@ public final class DocumentLayout: @unchecked Sendable {
             let lower = max(range.lowerBound - entry.start, 0)
             let upper = min(range.upperBound - entry.start, entry.layout.length)
             guard lower < upper else { continue }
+            let scrolls = entry.layout.maximumScrollOffset > 0
+            let dx = scroll.offset(of: entry.layout)
+            let box = entry.layout.scrollBox
             for rect in entry.layout.selectionRects(for: lower..<upper) {
-                rects.append(rect.offsetBy(dx: 0, dy: entry.y))
+                var shifted = rect.offsetBy(dx: -dx, dy: entry.y)
+                if scrolls {
+                    let minX = min(max(shifted.minX, box.minX), box.maxX)
+                    let maxX = min(max(shifted.maxX, box.minX), box.maxX)
+                    shifted.origin.x = minX
+                    shifted.size.width = maxX - minX
+                }
+                rects.append(shifted)
             }
         }
         return rects
@@ -343,8 +403,10 @@ public final class DocumentLayout: @unchecked Sendable {
     /// - Parameter hiding: animated tags whose animation is playing, drawn
     ///   above the text instead (their glyphs and shapes are left out), or
     ///   waiting to play (their shapes are left out).
+    /// - Parameter scroll: how far blocks that scroll sideways are scrolled.
+    ///   Their lines are drawn moved left by it, inside their box.
     func draw(in context: CGContext, dirtyRect: CGRect, text: CGColor, codeBackground: CGColor, accent: CGColor,
-              dark: Bool, hiding: TagHiding) {
+              dark: Bool, hiding: TagHiding, scroll: SideScroll = .none) {
         context.saveGState()
         defer { context.restoreGState() }
         // Core Text draws y-up; flip glyphs so they are upright in a y-down context.
@@ -523,11 +585,26 @@ public final class DocumentLayout: @unchecked Sendable {
                 visible = first..<end
             }
 
+            // The lines of a block that scrolls sideways, moved by its offset
+            // and cut to its box.
+            let scrolls = layout.maximumScrollOffset > 0
+            let dx = scroll.offset(of: layout)
+            func inScrolledBox(_ body: () -> Void) {
+                guard scrolls else { return body() }
+                context.saveGState()
+                context.clip(to: CGRect(x: box.minX, y: frame.minY - overhang, width: box.width, height: frame.height + 2 * overhang))
+                context.translateBy(x: -dx, y: 0)
+                body()
+                context.restoreGState()
+            }
+
             // Behind the text: tags' shapes, so that none covers a glyph of
             // the line above; then the text; then shapes over it.
-            for index in visible {
-                drawShapes(of: lines[index], in: entry, over: false)
-                drawTagImages(of: lines[index], in: entry)
+            inScrolledBox {
+                for index in visible {
+                    drawShapes(of: lines[index], in: entry, over: false)
+                    drawTagImages(of: lines[index], in: entry)
+                }
             }
 
             switch layout.marker {
@@ -539,23 +616,25 @@ public final class DocumentLayout: @unchecked Sendable {
                 break
             }
 
-            for index in visible where !lines[index].range.isEmpty {
-                let line = lines[index]
-                var hidden = line.decorations?.hiddenRanges(hiding.playing) ?? []
-                if let from = hiding.fadingFrom, entry.start + line.range.upperBound > from {
-                    hidden.append(max(from - entry.start, line.range.lowerBound)..<line.range.upperBound)
+            inScrolledBox {
+                for index in visible where !lines[index].range.isEmpty {
+                    let line = lines[index]
+                    var hidden = line.decorations?.hiddenRanges(hiding.playing) ?? []
+                    if let from = hiding.fadingFrom, entry.start + line.range.upperBound > from {
+                        hidden.append(max(from - entry.start, line.range.lowerBound)..<line.range.upperBound)
+                    }
+                    drawLine(line.ctLine, at: CGPoint(x: line.frame.minX, y: entry.y + line.baseline),
+                             hidden: hidden.map { ($0.lowerBound - line.indexBase)..<($0.upperBound - line.indexBase) })
                 }
-                drawLine(line.ctLine, at: CGPoint(x: line.frame.minX, y: entry.y + line.baseline),
-                         hidden: hidden.map { ($0.lowerBound - line.indexBase)..<($0.upperBound - line.indexBase) })
-            }
 
-            for attachment in layout.attachments {
-                let rect = attachment.rect.offsetBy(dx: 0, dy: entry.y)
-                guard rect.intersects(dirtyRect) else { continue }
-                drawImage(attachment.attachment, in: rect, context: context, text: text, background: codeBackground)
-            }
+                for attachment in layout.attachments {
+                    let rect = attachment.rect.offsetBy(dx: 0, dy: entry.y)
+                    guard rect.offsetBy(dx: -dx, dy: 0).intersects(dirtyRect) else { continue }
+                    drawImage(attachment.attachment, in: rect, context: context, text: text, background: codeBackground)
+                }
 
-            for index in visible { drawShapes(of: lines[index], in: entry, over: true) }
+                for index in visible { drawShapes(of: lines[index], in: entry, over: true) }
+            }
         }
     }
 

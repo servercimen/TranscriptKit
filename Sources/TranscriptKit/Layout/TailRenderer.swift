@@ -112,8 +112,11 @@ final class TailRenderer {
     /// - Parameter fadingTop: the top of the text that fades in. A strip that
     ///   moves down starts no lower, while it can hold the text, so the tail
     ///   and not the tiles draws that text when it stops fading.
+    /// - Parameter scroll: how far blocks that scroll sideways are scrolled.
+    ///   A change of it is not drawn by itself: the view then draws the tail
+    ///   in its tiles until the next one starts.
     func render(_ layout: DocumentLayout, changedTop: CGFloat?, restyled: [CGRect] = [], hiding: TagHiding = .none,
-                fadingTop: CGFloat? = nil) -> Frame? {
+                fadingTop: CGFloat? = nil, scroll: SideScroll = .none) -> Frame? {
         if layout.width != width || context == nil {
             guard makeContext(width: layout.width) else { return nil }
             top = nil
@@ -160,7 +163,7 @@ final class TailRenderer {
             context.clip(to: band)
             context.clear(band)
             layout.draw(in: context, dirtyRect: band, text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent,
-                        dark: colors.dark, hiding: hiding)
+                        dark: colors.dark, hiding: hiding, scroll: scroll)
             context.restoreGState()
         }
         let firstRow = max(0, min(pixelHeight, Int(((start - currentTop) * scale).rounded(.down))))

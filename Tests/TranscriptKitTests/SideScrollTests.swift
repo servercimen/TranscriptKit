@@ -152,3 +152,179 @@ private func mathBlock(_ markdown: String, formulaWidth: Int, width: CGFloat = 3
     #expect(whole.maximumScrollOffset > 0)
     #expect(whole.lines[0].frame.minX == 0)
 }
+
+// MARK: Scrolled geometry and drawing
+
+/// The no-wrap code layout, the index of its code block, and the offset of the long line's last character.
+private func scrolledCode() -> (layout: DocumentLayout, block: BlockLayout, end: Int) {
+    let layout = DocumentLayout(document: codeDocument(), width: 300, style: noWrap())
+    let entry = layout.entry(at: 1)
+    let end = entry.start + entry.layout.lines[1].range.upperBound - 1
+    return (layout, entry.layout, end)
+}
+
+@Test func anOffsetIsCutToWhatTheBlockCanScroll() {
+    let (layout, block, _) = scrolledCode()
+    var scroll = SideScroll()
+    scroll["c"] = 10_000
+    #expect(scroll.offset(of: block) == block.maximumScrollOffset)
+    scroll["c"] = -5
+    #expect(scroll.isEmpty)
+    scroll["p"] = 40
+    #expect(scroll.offset(of: layout.entry(at: 0).layout) == 0)
+}
+
+@Test func onlyTheBoxOfABlockThatScrollsTakesASidewaysPan() {
+    let (layout, _, _) = scrolledCode()
+    let code = layout.entry(at: 1)
+    #expect(layout.sideScrollingEntryIndex(at: CGPoint(x: 150, y: code.frame.midY)) == 1)
+    #expect(layout.sideScrollingEntryIndex(at: CGPoint(x: 150, y: layout.entry(at: 0).frame.midY)) == nil)
+    #expect(layout.sideScrollingEntryIndex(at: CGPoint(x: 150, y: code.frame.maxY + 2)) == nil)
+    let wrapped = DocumentLayout(document: codeDocument(), width: 300)
+    #expect(wrapped.sideScrollingEntryIndex(at: CGPoint(x: 150, y: wrapped.entry(at: 1).frame.midY)) == nil)
+    #expect(layout.entryIndex(ofBlock: "c") == 1)
+    #expect(layout.entryIndex(ofBlock: "c", hint: 1) == 1)
+    #expect(layout.entryIndex(ofBlock: "x") == nil)
+}
+
+@Test func caretsMoveWithTheOffsetAndStayInTheBox() {
+    let (layout, block, end) = scrolledCode()
+    let code = layout.entry(at: 1)
+    // Unscrolled, the end of the long line is past the box: its caret waits at the edge.
+    let unscrolled = layout.caretRect(at: end, scroll: .none)
+    #expect(unscrolled.maxX == 300)
+    var scroll = SideScroll()
+    scroll["c"] = block.maximumScrollOffset
+    let scrolled = layout.caretRect(at: end, scroll: scroll)
+    #expect(abs(scrolled.minX - (block.caretRect(atOffset: end - code.start).minX - block.maximumScrollOffset)) < 0.01)
+    #expect(scrolled.maxX < 300)
+    // The first character has moved out of the box, to the left.
+    let start = layout.entry(at: 1).start + block.lines[1].range.lowerBound
+    #expect(layout.caretRect(at: start, scroll: scroll).minX == 0)
+    // A block that does not scroll is not moved.
+    #expect(layout.caretRect(at: 3, scroll: scroll) == layout.caretRect(at: 3))
+}
+
+@Test func hitTestingFollowsTheOffset() {
+    let (layout, block, end) = scrolledCode()
+    var scroll = SideScroll()
+    scroll["c"] = block.maximumScrollOffset
+    let caret = layout.caretRect(at: end, scroll: scroll)
+    #expect(layout.closestOffset(to: CGPoint(x: caret.midX, y: caret.midY), scroll: scroll) == end)
+    #expect(layout.closestOffset(to: CGPoint(x: caret.midX, y: caret.midY)) != end)
+}
+
+@Test func selectionRectsAreCutToTheBox() {
+    let (layout, block, _) = scrolledCode()
+    let code = layout.entry(at: 1)
+    let range = code.start..<(code.start + block.length)
+    let wide = block.selectionRects(for: 0..<block.length)
+    #expect(wide.contains { $0.maxX > 300 })
+    let cut = layout.selectionRects(for: range, scroll: .none)
+    #expect(cut.count == wide.count)
+    #expect(cut.allSatisfy { $0.minX >= 0 && $0.maxX <= 300 })
+    var scroll = SideScroll()
+    scroll["c"] = block.maximumScrollOffset
+    // The first line is short: scrolled out of the box, its rect is empty at the leading edge.
+    let scrolled = layout.selectionRects(for: range, scroll: scroll)
+    #expect(scrolled[0].minX == 0 && scrolled[0].width == 0)
+    #expect(scrolled[1].minX == 0 && scrolled[1].width > 250)
+}
+
+@Test func aLinkInABlockThatScrollsIsFoundAtItsScrolledPlace() {
+    let text = String(repeating: "x", count: 60) + " link"
+    let span = InlineSpan(range: 61..<65, link: "https://example.com")
+    let document = TranscriptDocument(blocks: [TranscriptBlock(id: "c", kind: .code(), text: text, spans: [span])])
+    let layout = DocumentLayout(document: document, width: 300, style: noWrap())
+    let block = layout.entry(at: 0).layout
+    var scroll = SideScroll()
+    scroll["c"] = block.maximumScrollOffset
+    let caret = layout.caretRect(at: 63, scroll: scroll)
+    let point = CGPoint(x: caret.midX, y: caret.midY)
+    #expect(layout.link(at: point, scroll: scroll) == "https://example.com")
+    #expect(layout.link(at: point, scroll: .none) == nil)
+    // Past the edge of the box, the link is not shown, so it is not there.
+    let hidden = block.caretRect(atOffset: 63)
+    #expect(hidden.minX > 300)
+    #expect(layout.link(at: CGPoint(x: hidden.midX, y: hidden.midY), scroll: .none) == nil)
+}
+
+private func drawn(_ layout: DocumentLayout, scroll: SideScroll, scale: CGFloat = 2) -> (bytes: [UInt8], width: Int) {
+    let width = Int(layout.width * scale)
+    let height = Int((layout.height * scale).rounded(.up))
+    let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    context.translateBy(x: 0, y: CGFloat(height))
+    context.scaleBy(x: scale, y: -scale)
+    layout.draw(in: context, dirtyRect: CGRect(x: 0, y: 0, width: layout.width, height: layout.height),
+                text: CGColor(gray: 0, alpha: 1), codeBackground: CGColor(gray: 0.9, alpha: 1), accent: CGColor(gray: 0.6, alpha: 1),
+                dark: false, hiding: .none, scroll: scroll)
+    return (Array(UnsafeRawBufferPointer(start: context.data!, count: width * height * 4)), width)
+}
+
+@Test func theDrawingFollowsTheOffsetInsideTheBox() {
+    let (layout, _, _) = scrolledCode()
+    let code = layout.entry(at: 1)
+    var scroll = SideScroll()
+    scroll["c"] = 40
+    let still = drawn(layout, scroll: .none)
+    let moved = drawn(layout, scroll: scroll)
+    let scale = 2
+    let shift = 40 * scale
+    // Inside the box, each pixel is the one 40 points to its right before.
+    var mismatches = 0
+    var ink = 0
+    let rows = Int((code.y + code.layout.lines[1].frame.minY) * 2)..<Int((code.y + code.layout.lines[1].frame.maxY) * 2)
+    for row in rows {
+        for column in 0..<(still.width - shift) {
+            let a = (row * still.width + column) * 4
+            let b = (row * still.width + column + shift) * 4
+            if moved.bytes[a] != still.bytes[b] { mismatches += 1 }
+            if moved.bytes[a + 3] == 255 && moved.bytes[a] < 100 { ink += 1 }
+        }
+    }
+    #expect(mismatches == 0)
+    #expect(ink > 100)
+    // The text around the block does not move.
+    let paragraph = Int((layout.entry(at: 0).frame.midY) * 2) * still.width * 4
+    #expect(moved.bytes[paragraph..<(paragraph + still.width * 4)] == still.bytes[paragraph..<(paragraph + still.width * 4)])
+}
+
+@Test func theTailIsDrawnWithTheOffset() {
+    // The long line is the last one, so the tail starts at it.
+    let document = TranscriptDocument(blocks: [TranscriptBlock(id: "c", kind: .code(), text: "let a = 1\n" + longLine)])
+    let layout = DocumentLayout(document: document, width: 300, style: noWrap())
+    var scroll = SideScroll()
+    scroll["c"] = 40
+    let colors = TailRenderer.Colors(text: CGColor(gray: 0, alpha: 1), codeBackground: CGColor(gray: 0.9, alpha: 1),
+                                     accent: CGColor(gray: 0.6, alpha: 1))
+    let plain = TailRenderer(colors: colors, scale: 2)
+    let moved = TailRenderer(colors: colors, scale: 2)
+    _ = plain.render(layout, changedTop: nil)
+    _ = moved.render(layout, changedTop: nil, scroll: scroll)
+    #expect(plain.currentPixels() != moved.currentPixels())
+    let again = TailRenderer(colors: colors, scale: 2)
+    _ = again.render(layout, changedTop: nil, scroll: scroll)
+    #expect(again.currentPixels() == moved.currentPixels())
+}
+
+@Test func fadingTextInABlockThatScrollsIsCutToTheBox() {
+    let (layout, block, _) = scrolledCode()
+    let code = layout.entry(at: 1)
+    let colors = TailRenderer.Colors(text: CGColor(gray: 0, alpha: 1), codeBackground: CGColor(gray: 0.9, alpha: 1),
+                                     accent: CGColor(gray: 0.6, alpha: 1))
+    let fade = Fade(id: 1, range: code.start..<layout.length, start: 0)
+    func inCode(_ frame: FadeFrame?) -> [FadeFrame.Piece] {
+        (frame?.pieces ?? []).filter { $0.frame.midY < code.frame.maxY }
+    }
+    let plain = inCode(FadeRenderer().render(layout, from: code.start, fades: [fade], colors: colors, scale: 2, playing: []))
+    #expect(plain.count == 4)
+    #expect(plain.allSatisfy { $0.frame.minX >= 0 && $0.frame.maxX <= 300 })
+    var scroll = SideScroll()
+    scroll["c"] = block.maximumScrollOffset
+    let pieces = inCode(FadeRenderer().render(layout, from: code.start, fades: [fade], colors: colors, scale: 2, playing: [],
+                                              scroll: scroll))
+    #expect(pieces.allSatisfy { $0.frame.minX >= 0 && $0.frame.maxX <= 300 })
+    // The long line starts out of the box, to the left, and its end is in the box now.
+    #expect(pieces.contains { $0.frame.minX == 0 && $0.frame.maxX > 280 })
+}

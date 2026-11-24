@@ -165,3 +165,43 @@ private func taskBoxes(_ layout: DocumentLayout) -> (checked: CGRect, unchecked:
     #expect(after.count(in: styledBoxes.checked, near: (0, 255, 0)) > 4)
     #expect(after.count(in: styledBoxes.unchecked, near: (0, 0, 255)) > 10)
 }
+
+// MARK: Quotes
+
+@Test func quoteTextTakesTheQuoteTextColor() throws {
+    var style = TranscriptStyle()
+    let gray = TranscriptColor(red: 0.5, green: 0.5, blue: 0.5)
+    style.quoteTextColor = gray
+    let blocks = MarkdownStreamParser.document(from: "Outside.\n\n> Inside [a link](https://x.y).\n> - item").blocks
+    let outside = style.attributedString(for: blocks[0])
+    #expect(outside.attribute(TranscriptStyle.foregroundKey, at: 0, effectiveRange: nil) == nil)
+    let inside = style.attributedString(for: blocks[1])
+    #expect(inside.attribute(TranscriptStyle.foregroundKey, at: 0, effectiveRange: nil) as? TranscriptColor == gray)
+    let link = (inside.string as NSString).range(of: "a link")
+    #expect(inside.attribute(TranscriptStyle.foregroundKey, at: link.location, effectiveRange: nil) as? TranscriptColor == style.linkColor)
+
+    let drawn = DocumentLayout(document: MarkdownStreamParser.document(from: "> - item\n\n- > not quoted marker"), width: 300, style: style)
+    let quotedBullet = try #require(textMarker(drawn, at: 0))
+    #expect(color(of: quotedBullet.attributes) == gray)
+    let plainBullet = try #require(textMarker(drawn, at: 1))
+    #expect(color(of: plainBullet.attributes) == nil)
+}
+
+@Test func quoteBarsTakeTheirColorAndWidth() {
+    let markdown = "> quoted text"
+    let plain = layout(markdown)
+    let before = Drawing(plain)
+    let frame = plain.entry(at: 0).frame
+    // One row of pixels across the bar.
+    let row = CGRect(x: 0, y: frame.midY, width: 10, height: 0.5)
+    // The bar of today: 3 points wide, in the accent gray (gray 0.6, drawn as 169 in sRGB).
+    #expect(before.count(in: row, near: (169, 169, 169), tolerance: 8) == 6)
+
+    var style = TranscriptStyle()
+    style.quoteBarColor = TranscriptColor(red: 1, green: 0, blue: 0)
+    style.quoteBarWidth = 6
+    let styled = layout(markdown, style: style)
+    let after = Drawing(styled)
+    #expect(after.count(in: row, near: (169, 169, 169), tolerance: 8) == 0)
+    #expect(after.count(in: row, near: (255, 0, 0), tolerance: 8) == 12)
+}

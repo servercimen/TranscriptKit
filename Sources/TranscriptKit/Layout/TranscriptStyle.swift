@@ -96,6 +96,15 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// The outline of a task box that is not checked. Nil uses the text color
     /// at 45% opacity.
     public var taskUncheckedColor: TranscriptColor?
+    /// The color of the bar at the left of a block quote. Nil uses
+    /// `accentColor`.
+    public var quoteBarColor: TranscriptColor?
+    /// The width of the bar at the left of a block quote. Keep it less than
+    /// `quoteIndent`, or the bar covers the text.
+    public var quoteBarWidth: CGFloat = 3
+    /// The color of the text in block quotes. Nil uses the text color. Links,
+    /// code colors and custom tags' colors win over it.
+    public var quoteTextColor: TranscriptColor?
 
     public init() {}
 
@@ -118,6 +127,13 @@ public struct TranscriptStyle: Equatable, Sendable {
         case .quote: return quoteIndent
         case .listItem: return listIndent
         }
+    }
+
+    /// The color of text inside `containers`, outermost first: the quote text
+    /// color when one of them is a block quote, or else nil for the text color.
+    func textColor<Containers: Collection>(inside containers: Containers) -> TranscriptColor?
+        where Containers.Element == TranscriptBlock.Container {
+        containers.contains(.quote) ? quoteTextColor : nil
     }
 
     /// The bullet of a list item at `level`, from 1, and its color.
@@ -290,6 +306,7 @@ public struct TranscriptStyle: Equatable, Sendable {
         let text = range == 0..<block.utf16Count ? block.text : (block.text as NSString).substring(with: NSRange(location: start, length: range.count))
         var base = attributes(for: block.kind)
         if !extraTraits.isEmpty { base[Self.fontKey] = font(for: block.kind, traits: extraTraits) }
+        if let color = textColor(inside: block.containers) { base[Self.foregroundKey] = color }
         let result = NSMutableAttributedString(string: text, attributes: base)
         let length = result.length
         if case .code(let language) = block.kind, let store = images?.store {

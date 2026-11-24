@@ -474,13 +474,14 @@ public final class DocumentLayout: @unchecked Sendable {
             // Quote bars, run on through the gap from the block above when it
             // is in the same quote.
             let above = index > 0 ? self.entry(at: index - 1) : nil
+            let bar = style.quoteBarColor?.cgColor(dark: dark) ?? accent
             var x: CGFloat = 0
             for (depth, container) in block.containers.enumerated() {
                 if container == .quote {
                     var top = frame.minY
                     if let above, Self.shareQuote(above.layout.block, block, at: depth) { top = above.frame.maxY }
                     // Square ends, so that segments of one bar meet cleanly.
-                    fill(CGRect(x: x, y: top, width: 3, height: frame.maxY - top), radius: 0, color: accent)
+                    fill(CGRect(x: x, y: top, width: style.quoteBarWidth, height: frame.maxY - top), radius: 0, color: bar)
                 }
                 x += style.width(of: container)
             }
@@ -534,7 +535,9 @@ public final class DocumentLayout: @unchecked Sendable {
             case .text(let line, let origin)?:
                 drawLine(line, at: CGPoint(x: origin.x, y: entry.y + origin.y))
             case .checkbox(let rect, let checked)?:
-                drawCheckbox(rect.offsetBy(dx: 0, dy: entry.y), checked: checked, in: context, text: text, dark: dark)
+                let item = block.containers.lastIndex(of: .listItem) ?? 0
+                let color = style.textColor(inside: block.containers[..<item])?.cgColor(dark: dark) ?? text
+                drawCheckbox(rect.offsetBy(dx: 0, dy: entry.y), checked: checked, in: context, text: color, dark: dark)
             case nil:
                 break
             }
@@ -549,10 +552,11 @@ public final class DocumentLayout: @unchecked Sendable {
                          hidden: hidden.map { ($0.lowerBound - line.indexBase)..<($0.upperBound - line.indexBase) })
             }
 
+            let imageText = layout.attachments.isEmpty ? text : style.textColor(inside: block.containers)?.cgColor(dark: dark) ?? text
             for attachment in layout.attachments {
                 let rect = attachment.rect.offsetBy(dx: 0, dy: entry.y)
                 guard rect.intersects(dirtyRect) else { continue }
-                drawImage(attachment.attachment, in: rect, context: context, text: text, background: codeBackground)
+                drawImage(attachment.attachment, in: rect, context: context, text: imageText, background: codeBackground)
             }
 
             for index in visible { drawShapes(of: lines[index], in: entry, over: true) }

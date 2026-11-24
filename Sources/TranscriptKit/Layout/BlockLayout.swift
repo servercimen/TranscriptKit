@@ -519,6 +519,7 @@ final class BlockLayout: @unchecked Sendable {
         guard let kind = block.marker, let firstLine, let item = block.containers.lastIndex(of: .listItem) else { return nil }
         // The marker sits in the gutter of the innermost list item.
         let gutterEnd = style.contentLeading(for: Array(block.containers[...item]))
+        let quoteColor = style.textColor(inside: block.containers[..<item])
         let font = style.font(for: .paragraph)
         switch kind {
         case .task(let checked):
@@ -531,12 +532,12 @@ final class BlockLayout: @unchecked Sendable {
             if case .number(let number) = kind {
                 text = style.listNumberFormat.text(for: number)
                 attributes = style.attributes(for: .paragraph, weight: style.listNumberWeight)
-                if let color = style.listNumberColor { attributes[TranscriptStyle.foregroundKey] = color }
+                if let color = style.listNumberColor ?? quoteColor { attributes[TranscriptStyle.foregroundKey] = color }
             } else {
                 let bullet = style.bullet(at: block.listLevel)
                 text = bullet.text
                 attributes = style.attributes(for: .paragraph)
-                if let color = bullet.color { attributes[TranscriptStyle.foregroundKey] = color }
+                if let color = bullet.color ?? quoteColor { attributes[TranscriptStyle.foregroundKey] = color }
             }
             let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
             let markerWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))

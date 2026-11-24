@@ -445,3 +445,36 @@ private struct VisibleArea: TranscriptShapeRecipe {
     #expect(!ltr.contains(CGPoint(x: 0.5, y: -13.5)) && ltr.contains(CGPoint(x: 39.5, y: -13.5)))
     #expect(!rtl.contains(CGPoint(x: 39.5, y: -13.5)) && rtl.contains(CGPoint(x: 0.5, y: -13.5)))
 }
+
+private let hebrewWords = String(repeating: "מילה ", count: 20)
+private let streamedTags: [String] = [
+    "פתח <pill>\(hebrewWords)סוף</pill> זנב ועוד מילים",
+    "Lead <pill>\(hebrewWords)סוף</pill> tail",
+    "פתח <probe>abc \(hebrewWords)</probe> זנב",
+]
+
+@Test(arguments: streamedTags)
+func streamedRightToLeftTagsAreLaidOutAsAWhole(markdown: String) {
+    var parser = MarkdownStreamParser(idPrefix: "d", tags: shapeTags)
+    var layout: DocumentLayout?
+    var text = Substring(markdown)
+    while !text.isEmpty {
+        parser.append(String(text.prefix(5)))
+        text = text.dropFirst(5)
+        layout = DocumentLayout(document: parser.document, width: 200, reusing: layout)
+    }
+    let fresh = DocumentLayout(document: parser.document, width: 200)
+    func summary(_ layout: DocumentLayout) -> [String] {
+        layout.entry(at: 0).layout.lines.map { line in
+            "\(line.range) \(line.frame) " + (line.decorations?.behind.map { "\($0.path.boundingBoxOfPath)" } ?? []).joined()
+        }
+    }
+    #expect(summary(layout!) == summary(fresh))
+}
+
+@Test func aTagWithTextInBothDirectionsKeepsItsShapes() throws {
+    let layout = layout("שלום <pill>abc אבג</pill> וכולם")
+    let decorations = try #require(layout.entry(at: 0).layout.lines[0].decorations)
+    #expect(!decorations.behind.isEmpty)
+    #expect(decorations.behind[0].path.boundingBoxOfPath.width > 20)
+}

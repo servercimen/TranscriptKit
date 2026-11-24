@@ -38,6 +38,8 @@ struct DecoratedTags {
     /// that starts there is moved right by it, since there is no character
     /// before it on the line to carry it. Not in a right-to-left paragraph.
     let startPadding: [Int: CGFloat]
+    /// Whether the block has right-to-left text.
+    let hasRightToLeftText: Bool
 
     /// Whether any of the block's tags take padding or draw shapes.
     static func appear(in block: TranscriptBlock) -> Bool {
@@ -90,6 +92,7 @@ struct DecoratedTags {
         self.tags = tags
         self.kerns = kerns
         self.startPadding = startPadding
+        hasRightToLeftText = direction != nil
     }
 
     /// Whether `inner` is `outer` or inside it.
@@ -230,8 +233,8 @@ final class LineDecorations: @unchecked Sendable {
             guard end > start, start - textBase >= 0, start - textBase < text.length else { continue }
             let isStart = tag.range.lowerBound >= range.lowerBound
             let isEnd = tag.textEnd <= range.upperBound
-            let minX: CGFloat
-            let maxX: CGFloat
+            var minX: CGFloat
+            var maxX: CGFloat
             if tag.isRightToLeft {
                 // The glyphs of its text, without the spacing on its first
                 // character, which is padding. Whitespace at the end of the line is left out.
@@ -247,6 +250,13 @@ final class LineDecorations: @unchecked Sendable {
                     ? (glyphs.end(through: end - 1 - indexBase) ?? CTLineGetOffsetForStringIndex(line, end - indexBase, nil))
                         - (tags.kerns[end - 1] ?? 0)
                     : visibleWidth
+                // A tag with text in both directions: its first and last
+                // characters can be anywhere in it.
+                if maxX <= minX, tags.hasRightToLeftText,
+                   let extent = glyphs.extent(of: (start - indexBase)..<(end - indexBase)) {
+                    minX = max(extent.minX, 0)
+                    maxX = min(extent.maxX, visibleWidth)
+                }
             }
             guard maxX > minX else { continue }
             // The tag's own font, which a fallback font for an emoji doesn't change.

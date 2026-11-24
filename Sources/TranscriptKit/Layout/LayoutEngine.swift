@@ -77,8 +77,16 @@ final class LayoutEngine: @unchecked Sendable {
     }
 
     let queue = DispatchQueue(label: "TranscriptKit.layout", qos: .userInitiated)
+    /// The work in flight: drains that are scheduled or running, a result
+    /// that the view has not taken yet, and the image store's loads.
+    let work: PendingWork
     /// Pictures for the documents' images, if the view was given a loader.
-    let images = TranscriptImageStore()
+    let images: TranscriptImageStore
+
+    init() {
+        work = PendingWork()
+        images = TranscriptImageStore(work: work)
+    }
 
     // Guarded by `lock`.
     private let lock = NSLock()
@@ -243,10 +251,11 @@ final class LayoutEngine: @unchecked Sendable {
             return max(lastDrain + frameInterval - CACurrentMediaTime(), 0)
         }
         if let delay {
+            work.begin()
             if delay > 0 {
-                queue.asyncAfter(deadline: .now() + delay) { self.drain() }
+                queue.asyncAfter(deadline: .now() + delay) { self.drain(); self.work.end() }
             } else {
-                queue.async { self.drain() }
+                queue.async { self.drain(); self.work.end() }
             }
         }
         return accepted
@@ -398,7 +407,9 @@ final class LayoutEngine: @unchecked Sendable {
     /// update that adds no text, for when updates have stopped. The tail
     /// stays in use. Any thread; the result comes like any other.
     func settleFinishedFades() {
+        work.begin()
         queue.async { [self] in
+            defer { work.end() }
             guard let layout = base, width > 0, layout.width == width else { return }
             let (fading, band) = updateFades(layout: layout, appendedTo: layout, tagsStarted: false)
             guard let band else { return }
@@ -458,6 +469,7 @@ final class LayoutEngine: @unchecked Sendable {
             }
             guard !wakeScheduled else { return nil }
             wakeScheduled = true
+            work.begin()
             return onOutput
         }
         handler?()
@@ -465,13 +477,16 @@ final class LayoutEngine: @unchecked Sendable {
 
     /// The merged result waiting to be installed, if any. Main thread.
     func takeOutput() -> Output? {
-        lock.withLock { () -> Output? in
+        let (output, woke): (Output?, Bool) = lock.withLock {
             defer {
                 mailbox = nil
                 wakeScheduled = false
             }
-            return mailbox
+            return (mailbox, wakeScheduled)
         }
+        // The caller installs the output before main can see the work idle.
+        if woke { work.end() }
+        return output
     }
 
     // MARK: Synchronous layout (main thread)

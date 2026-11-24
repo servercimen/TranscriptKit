@@ -34,7 +34,7 @@ text streaming in at hundreds of characters a second doesn't make scrolling stut
 ## Requirements
 
 iOS 17 or later, Swift 6 (Xcode 16 or later). The parser and document model also build on macOS 14, which is where
-the tests run.
+most of the tests run.
 
 ## Installation
 
@@ -342,6 +342,34 @@ style.codeBackgroundColor = TranscriptColor(UIColor.secondarySystemFill)  // cod
 style.accentColor = TranscriptColor(UIColor.tertiaryLabel)           // quote bars, rules, table lines
 ```
 
+To match an existing Markdown look, set how lists, task boxes, quotes, inline code and table headers look. The
+defaults keep the look of today. A color that is nil uses the text color (the quote text color in a block quote), or
+the value in the comment:
+
+```swift
+var style = TranscriptStyle()
+style.listNumberFormat = .period                     // "1." where the Markdown wrote "1)"; .asWritten by default
+style.listNumberWeight = 0.3                         // as TranscriptFont.weight; nil uses the body weight
+style.listNumberColor = TranscriptColor(UIColor.secondaryLabel)
+style.bullets = ["•", "–"]                           // by level; levels past the end use the last one
+style.bulletColors = [TranscriptColor(UIColor.secondaryLabel)]
+style.taskCheckedColor = TranscriptColor(UIColor.systemGreen)       // nil: blue
+style.taskCheckmarkColor = TranscriptColor(UIColor.white)          // nil: white
+style.taskUncheckedColor = TranscriptColor(UIColor.tertiaryLabel)  // nil: the text color at 45% opacity
+style.quoteBarColor = TranscriptColor(UIColor.systemOrange)        // nil: accentColor
+style.quoteBarWidth = 4                              // 3 by default; keep it less than quoteIndent
+style.quoteTextColor = TranscriptColor(UIColor.secondaryLabel)
+style.inlineCodeBackgroundColor = TranscriptColor(UIColor.tertiarySystemFill)  // nil: no fill
+style.inlineCodeCornerRadius = 4
+style.tableHeaderBackgroundColor = TranscriptColor(UIColor.systemGray5)       // nil: codeBackgroundColor
+style.tableHeaderWeight = 0.3                        // nil: the bold body font
+```
+
+A named body font has its own weight, so a weight does not change it. For such a font, a weight of 0.3 or more uses its
+bold face. Inline code in a table header uses its bold face at a header weight of 0.3 or more. Links, code colors and
+custom tags' colors win over the quote text color. A custom tag's highlight wins over the inline code fill. The inline
+code fill does not change where lines break.
+
 ### Reading the selection
 
 `onSelectionChange` tells the app when the selection changes. The range is in the document's flat UTF-16 offset
@@ -361,12 +389,37 @@ selection ends, and its range is nil. The selection stays when the person opens 
 
 In UIKit, use `onSelectionChange`, `selectedRange` and `selectsAllWhenShown` on `TranscriptTextView`.
 
+### Waiting for the final content
+
+The view lays out plain text at once only when it shows no layout yet. A style or a renderer that the app sets before
+the document, on a view that has a width, makes the view lay out the empty text first. The text of the document then
+shows on a later turn of the main run loop, as in the example below. Layouts of later updates, images, formulas and
+code colors also come back on later turns. A snapshot or a test that does not wait for them can show no text, or the
+text without them.
+`contentSettled()` on `TranscriptTextView` returns when the view shows its final content. Then no layout, stream
+parse, image load, formula or code colors are pending, the last layout is on screen, and its tiles are drawn:
+
+```swift
+let view = TranscriptTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 600))
+view.mathRenderer = myMathRenderer
+view.document = document
+await view.contentSettled()
+let image = UIGraphicsImageRenderer(bounds: view.bounds).image { view.layer.render(in: $0.cgContext) }
+```
+
+While a stream that has not finished goes on, `contentSettled()` returns at the first moment when nothing is pending.
+A cancelled task returns at once. An image or a formula that comes back as nil counts as done. A load, a formula or
+a highlight that never ends holds back `contentSettled()`, so use a timeout or cancel the task. Give the view its size
+before the call: a view with no width lays out nothing and settles at once. Fades and tag animations that play are not
+waited for, so turn off `textFadeInDuration` and `animatesTags` to compare pixels.
+
 ## In this repository
 
 | Folder | Contents |
 | --- | --- |
 | `Sources/TranscriptKit` | The library |
 | `Tests/TranscriptKitTests` | Unit, layout and pixel tests: `swift test` |
+| `Tests/TranscriptKitViewTests` | Tests of `TranscriptTextView` and `TranscriptText` on iOS: `xcodebuild test -scheme TranscriptKit -destination 'platform=iOS Simulator,name=<an iPhone>' -only-testing:TranscriptKitViewTests` |
 | [`Examples/ChatSample`](Examples/ChatSample) | A chat app that mixes streamed TranscriptKit text with native SwiftUI views (cards, charts, photos), custom tags and text beside other views |
 | `Demo` | A small app for trying selection and streaming |
 | `Benchmark` | A benchmark app and script that compare TranscriptKit with other renderers on the simulator and on phones, with results and notes |

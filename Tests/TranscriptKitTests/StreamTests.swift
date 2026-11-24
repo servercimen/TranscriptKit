@@ -208,6 +208,27 @@ private final class Recorder: @unchecked Sendable {
     #expect(result.layout.reusedBlockCount == 1)
 }
 
+@Test func aNewStyleReachesTheEngineBeforeTheViewIsPlaced() throws {
+    let engine = LayoutEngine()
+    let style = TranscriptStyle()
+    let boldText = style.withBoldText(true)
+    engine.layOutUntilPlaced(width: 120, style: style)
+    engine.layOutUntilPlaced(width: 120, style: boldText)
+    engine.submit(.init(document: MarkdownStreamParser.document(from: "Some text that wraps at narrow widths."), source: 1, sequence: 1))
+    engine.drainNow()
+    let output = try #require(engine.takeOutput())
+    #expect(output.layout.width == 120)
+    #expect(output.layout.style == boldText)
+
+    // Another width waits for the view to be placed.
+    engine.layOutUntilPlaced(width: 200, style: style)
+    engine.submit(.init(document: MarkdownStreamParser.document(from: "More text."), source: 1, sequence: 2))
+    engine.drainNow()
+    let next = try #require(engine.takeOutput())
+    #expect(next.layout.width == 120)
+    #expect(next.layout.style == boldText)
+}
+
 /// Blocks without their ids, which depend on the parser instance.
 private func content(_ document: TranscriptDocument) -> [String] {
     document.blocks.map { "\($0.kind)|\($0.text)|\($0.spans)" }

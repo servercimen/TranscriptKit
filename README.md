@@ -327,6 +327,34 @@ style.codeBackgroundColor = TranscriptColor(UIColor.secondarySystemFill)  // cod
 style.accentColor = TranscriptColor(UIColor.tertiaryLabel)           // quote bars, rules, table lines
 ```
 
+To match an existing Markdown look, set how lists, task boxes, quotes, inline code and table headers look. The
+defaults keep the look of today. A color that is nil uses the text color (the quote text color in a block quote), or
+the value in the comment:
+
+```swift
+var style = TranscriptStyle()
+style.listNumberFormat = .period                     // "1." where the Markdown wrote "1)"; .asWritten by default
+style.listNumberWeight = 0.3                         // as TranscriptFont.weight; nil uses the body weight
+style.listNumberColor = TranscriptColor(UIColor.secondaryLabel)
+style.bullets = ["•", "–"]                           // by level; levels past the end use the last one
+style.bulletColors = [TranscriptColor(UIColor.secondaryLabel)]
+style.taskCheckedColor = TranscriptColor(UIColor.systemGreen)       // nil: blue
+style.taskCheckmarkColor = TranscriptColor(UIColor.white)          // nil: white
+style.taskUncheckedColor = TranscriptColor(UIColor.tertiaryLabel)  // nil: the text color at 45% opacity
+style.quoteBarColor = TranscriptColor(UIColor.systemOrange)        // nil: accentColor
+style.quoteBarWidth = 4                              // 3 by default; keep it less than quoteIndent
+style.quoteTextColor = TranscriptColor(UIColor.secondaryLabel)
+style.inlineCodeBackgroundColor = TranscriptColor(UIColor.tertiarySystemFill)  // nil: no fill
+style.inlineCodeCornerRadius = 4
+style.tableHeaderBackgroundColor = TranscriptColor(UIColor.systemGray5)       // nil: codeBackgroundColor
+style.tableHeaderWeight = 0.3                        // nil: the bold body font
+```
+
+A named body font has its own weight, so a weight does not change it. For such a font, a weight of 0.3 or more uses its
+bold face. Inline code in a table header uses its bold face at a header weight of 0.3 or more. Links, code colors and
+custom tags' colors win over the quote text color. A custom tag's highlight wins over the inline code fill. The inline
+code fill does not change where lines break.
+
 ### Reading the selection
 
 `onSelectionChange` tells the app when the selection changes. The range is in the document's flat UTF-16 offset

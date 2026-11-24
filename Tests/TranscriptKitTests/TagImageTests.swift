@@ -64,6 +64,28 @@ private func glyphX(_ layout: DocumentLayout, at offset: Int) -> CGFloat {
     #expect(abs(rect.midY + capHeight / 2) < 0.5)
 }
 
+@Test func aTagImageSitsOnTheRightOfRightToLeftText() throws {
+    let image = TranscriptTagImage(square(CGColor(red: 1, green: 0, blue: 0, alpha: 1)), size: CGSize(width: 14, height: 14), gap: 4)
+    let plain = layout("ראה <chip>שישי</chip> בקרוב", image: nil)
+    let laidOut = layout("ראה <chip>שישי</chip> בקרוב", image: image)
+    let line = laidOut.entry(at: 0).layout.lines[0]
+    let rect = try #require(line.decorations?.images.first).rect
+    // "שישי" starts at offset 4, with its rightmost glyph. The image is
+    // after that glyph, on its right, past the gap.
+    let plainLine = plain.entry(at: 0).layout.lines[0]
+    var advance = CGSize.zero
+    for run in CTLineGetGlyphRuns(plainLine.ctLine) as! [CTRun] {
+        let count = CTRunGetGlyphCount(run)
+        var indices = [CFIndex](repeating: 0, count: count)
+        CTRunGetStringIndices(run, CFRange(location: 0, length: count), &indices)
+        if let found = indices.firstIndex(of: 4) { CTRunGetAdvances(run, CFRange(location: found, length: 1), &advance) }
+    }
+    #expect(advance.width > 0)
+    #expect(abs(rect.minX - (glyphStart(line, at: 4) + advance.width + 4)) < 0.5)
+    // The room for the image is there: the line is wider by it.
+    #expect(abs(line.frame.width - plainLine.frame.width - 18) < 0.5)
+}
+
 @Test func aTagImageIsDrawn() {
     let image = TranscriptTagImage(square(CGColor(red: 1, green: 0, blue: 0, alpha: 1)), size: CGSize(width: 14, height: 14), gap: 4)
     let laidOut = layout("See <chip>Friday</chip> soon", image: image)

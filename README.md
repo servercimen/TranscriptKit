@@ -305,6 +305,10 @@ and a table puts its first column on the right. A table column with no colon in 
 the leading edge. A colon on one side (`:---` or `---:`) puts the column's text at the left or at the right, in both
 directions. Code blocks are always left to right.
 
+A custom tag takes the direction of its first strong character. A right-to-left tag starts at the right: its padding
+and its image before the text are on the right, and the built-in shapes are open on the correct side where the tag
+wraps. `TranscriptFragment.isRightToLeft` tells a shape of your own the same.
+
 A selection follows the glyphs. In text of mixed direction, one line can have several selection rects. In a line with
 right-to-left text, the left and right arrow keys move the caret to the next caret on that side of the screen. Copy
 gives the text in the order it was written.

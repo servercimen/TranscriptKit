@@ -204,7 +204,7 @@ final class BlockLayout: @unchecked Sendable {
         }
 
         // Only the tags on the lines laid out again; the others' lines are kept.
-        let decorated = hasDecorations ? DecoratedTags(block, from: restart) : nil
+        let decorated = hasDecorations ? DecoratedTags(block, from: restart, direction: direction) : nil
 
         let fixedHeight = style.lineHeight(for: block.kind)
         let gap = fixedHeight == nil ? style.lineSpacing : 0
@@ -391,7 +391,7 @@ final class BlockLayout: @unchecked Sendable {
         let font = style.font(for: block.kind)
         let fixedHeight = style.lineHeight(for: block.kind)
         let gap = fixedHeight == nil ? style.lineSpacing : 0
-        let decorated = DecoratedTags(block)
+        let decorated = DecoratedTags(block, direction: direction)
         let sizing = ImageSizing(store: images, maximumWidth: max(available / CGFloat(columns) - padding * 2, 20))
         let minimumWidth = padding * 2 + style.effectiveBodySize
 

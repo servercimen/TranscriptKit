@@ -92,11 +92,18 @@ public struct TranscriptFragment: Sendable, Equatable {
     /// The glyphs of the tag's text on this line, in order, for a tag with
     /// an animation; empty for other tags.
     public let glyphs: [TranscriptGlyph]
+    /// Whether the tag's text is right to left. Then the tag starts at the
+    /// right end of `rect` and ends at its left end.
+    public let isRightToLeft: Bool
+
+    /// Whether the tag starts or ends at the left end of `rect`, and at its right end.
+    var closesLeft: Bool { isRightToLeft ? isEnd : isStart }
+    var closesRight: Bool { isRightToLeft ? isStart : isEnd }
 
     /// Made by layout; public so apps can test their recipes.
     public init(textRect: CGRect, rect: CGRect, isStart: Bool, isEnd: Bool, ascent: CGFloat, descent: CGFloat, xHeight: CGFloat,
                 capHeight: CGFloat, underlineOffset: CGFloat, underlineThickness: CGFloat, seed: UInt64,
-                visibleRect: CGRect = .infinite, glyphs: [TranscriptGlyph] = []) {
+                visibleRect: CGRect = .infinite, glyphs: [TranscriptGlyph] = [], isRightToLeft: Bool = false) {
         self.textRect = textRect
         self.rect = rect
         self.isStart = isStart
@@ -110,6 +117,7 @@ public struct TranscriptFragment: Sendable, Equatable {
         self.seed = seed
         self.visibleRect = visibleRect
         self.glyphs = glyphs
+        self.isRightToLeft = isRightToLeft
     }
 }
 
@@ -158,15 +166,15 @@ public struct TranscriptPath: @unchecked Sendable {
         return stroke == nil ? bounds : bounds.insetBy(dx: -lineWidth / 2, dy: -lineWidth / 2)
     }
 
-    func draw(in context: CGContext, dark: Bool) {
+    func draw(in context: CGContext, dark: Bool, highContrast: Bool) {
         if let fill {
             context.addPath(path)
-            context.setFillColor(fill.cgColor(dark: dark))
+            context.setFillColor(fill.cgColor(dark: dark, highContrast: highContrast))
             context.fillPath()
         }
         if let stroke {
             context.addPath(path)
-            context.setStrokeColor(stroke.cgColor(dark: dark))
+            context.setStrokeColor(stroke.cgColor(dark: dark, highContrast: highContrast))
             context.setLineWidth(lineWidth)
             context.setLineCap(lineCap)
             context.setLineJoin(lineJoin)
@@ -258,17 +266,17 @@ struct PillRecipe: TranscriptShapeRecipe {
         // The outline's middle runs half its width inside the box, so the
         // whole pill stays in `outer`.
         let box = outer.insetBy(dx: 0, dy: inset)
-        let left = fragment.isStart ? box.minX + inset : box.minX
-        let right = fragment.isEnd ? box.maxX - inset : box.maxX
+        let left = fragment.closesLeft ? box.minX + inset : box.minX
+        let right = fragment.closesRight ? box.maxX - inset : box.maxX
         let shape = CGRect(x: left, y: box.minY, width: max(right - left, 0), height: box.height)
         let radius = min(cornerRadius ?? shape.height / 2, shape.height / 2, shape.width / 2)
         if let fill {
-            result.append(TranscriptPath(Self.outline(of: shape, radius: radius, closedLeft: fragment.isStart,
-                                                      closedRight: fragment.isEnd, forFill: true), fill: fill))
+            result.append(TranscriptPath(Self.outline(of: shape, radius: radius, closedLeft: fragment.closesLeft,
+                                                      closedRight: fragment.closesRight, forFill: true), fill: fill))
         }
         if let border, borderWidth > 0 {
-            result.append(TranscriptPath(Self.outline(of: shape, radius: radius, closedLeft: fragment.isStart,
-                                                      closedRight: fragment.isEnd, forFill: false),
+            result.append(TranscriptPath(Self.outline(of: shape, radius: radius, closedLeft: fragment.closesLeft,
+                                                      closedRight: fragment.closesRight, forFill: false),
                                          stroke: border, lineWidth: borderWidth))
         }
         return result
@@ -375,8 +383,8 @@ struct UnderlineRecipe: TranscriptShapeRecipe {
         let bottom = fragment.descent * 0.55 + offset
         let top = bottom - height
         // Overshoots the text a little at the tag's ends, as a quick stroke does.
-        let start = text.minX - (fragment.isStart ? 2 : 0)
-        let end = text.maxX + (fragment.isEnd ? 2 : 0)
+        let start = text.minX - (fragment.closesLeft ? 2 : 0)
+        let end = text.maxX + (fragment.closesRight ? 2 : 0)
         let length = max(end - start, 0)
         let slant: CGFloat = min(3, length / 3)
         let phase1 = CGFloat(fragment.seed & 0xFFFF) / 0xFFFF * 2 * .pi
@@ -396,8 +404,8 @@ struct UnderlineRecipe: TranscriptShapeRecipe {
         }
         distances.append(length)
         let path = CGMutablePath()
-        let startSlant = fragment.isStart ? slant : 0
-        let endSlant = fragment.isEnd ? slant : 0
+        let startSlant = fragment.closesLeft ? slant : 0
+        let endSlant = fragment.closesRight ? slant : 0
         path.move(to: CGPoint(x: start + startSlant, y: topEdge(0)))
         for d in distances.dropFirst() {
             path.addLine(to: CGPoint(x: start + min(d, length), y: topEdge(d)))

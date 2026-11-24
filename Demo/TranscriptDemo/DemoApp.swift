@@ -5,7 +5,11 @@ import TranscriptKit
 struct DemoApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            if ProcessInfo.processInfo.arguments.contains("-replacementCheck") {
+                ReplacementCheckView()
+            } else {
+                ContentView()
+            }
         }
     }
 }
@@ -18,15 +22,26 @@ struct ContentView: View {
     @State private var document = TranscriptDocument()
     @State private var streaming: Task<Void, Never>?
     @State private var tappedLink: URL?
+    /// With `-sideScroll`, code does not wrap and wide display math scrolls
+    /// sideways from the leading edge.
+    private let style: TranscriptStyle = {
+        var style = TranscriptStyle()
+        if ProcessInfo.processInfo.arguments.contains("-sideScroll") {
+            style.codeWraps = false
+            style.displayMathScrolls = true
+            style.displayMathAlignment = .leading
+        }
+        return style
+    }()
 
     var body: some View {
         NavigationStack {
             ScrollView {
                 Group {
                     if usesDocumentPath {
-                        TranscriptText(document)
+                        TranscriptText(document, style: style)
                     } else {
-                        TranscriptText(stream: transcript)
+                        TranscriptText(stream: transcript, style: style)
                     }
                 }
                 .padding(16)
@@ -86,7 +101,8 @@ struct ContentView: View {
     private func stream() async {
         // `-slowStream` stretches the response over about 15 seconds, for testing gestures.
         let pause = ProcessInfo.processInfo.arguments.contains("-slowStream") ? 90 : 20
-        var pending = Substring(Sample.streamedMarkdown)
+        let wide = ProcessInfo.processInfo.arguments.contains("-wideSample")
+        var pending = Substring(Sample.streamedMarkdown + (wide ? Sample.wide : ""))
         // The document path uses its own parser, so no `TranscriptStream` (and
         // no display link) is involved at all.
         var parser = MarkdownStreamParser()
@@ -121,8 +137,31 @@ enum Sample {
             }
             return TranscriptStream(markdown: sections.joined())
         }
+        if ProcessInfo.processInfo.arguments.contains("-wideSample") {
+            return TranscriptStream(markdown: intro + wide)
+        }
         return TranscriptStream(markdown: intro)
     }
+
+    /// A code block with a long line and a wide formula, for `-sideScroll`.
+    /// With `-wideSample`, the intro ends with them, and so does the streamed answer.
+    static let wide = #"""
+    ## Wide blocks
+
+    ```swift
+    let primes = [2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37, 41, 43, 47, 53, 59, 61, 67, 71, 73, 79, 83, 89, 97] // END
+    let total = primes.reduce(0, +)
+    print(total)
+    ```
+
+    $$
+    \sum_{k=1}^{n} k^2 = \frac{n(n+1)(2n+1)}{6} = 1^2 + 2^2 + 3^2 + 4^2 + 5^2 + 6^2 + \cdots + n^2 \quad \text{END}
+    $$
+
+    A paragraph after the wide blocks still wraps at the width of the screen, as it did before.
+
+
+    """#
 
     static let intro = """
     # One selection, many blocks
@@ -175,6 +214,74 @@ enum Sample {
     [1]: https://example.com/paper
 
 
+    """
+}
+
+/// Launch with `-replacementCheck` to replace the text of a card every two
+/// seconds, with a short text and a long one in turn. Add `-crossfade` to lay
+/// out each new text at once and crossfade to it. Add `-animatedSwap` to
+/// swap inside `withAnimation`, so that the card's height animates. Each swap
+/// logs when it happened, and each change of the card's height logs when
+/// SwiftUI saw it.
+struct ReplacementCheckView: View {
+    @State private var showsLong = false
+    @State private var swap = 0
+    @State private var swapTime: CFTimeInterval = 0
+    private let crossfades = ProcessInfo.processInfo.arguments.contains("-crossfade")
+    private let animatesSwap = ProcessInfo.processInfo.arguments.contains("-animatedSwap")
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(crossfades ? "Crossfade, laid out at once" : "Laid out in the background")
+                    .font(.footnote.monospaced())
+                    .padding(.bottom, 8)
+                TranscriptText(MarkdownStreamParser.document(from: showsLong ? Self.long : Self.short))
+                    .crossfadesReplacedText(crossfades, duration: 0.6)
+                    .padding(12)
+                    .background(Color.yellow.opacity(0.35))
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                        let delay = (CACurrentMediaTime() - swapTime) * 1000
+                        print("replacement-check swap=\(swap) height=\(height) after=\(String(format: "%.1f", delay)) ms")
+                    }
+                Rectangle()
+                    .fill(.red)
+                    .frame(height: 8)
+            }
+            .padding(16)
+        }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                swap += 1
+                swapTime = CACurrentMediaTime()
+                print("replacement-check swap=\(swap) long=\(!showsLong)")
+                if animatesSwap {
+                    withAnimation(.easeInOut(duration: 0.6)) { showsLong.toggle() }
+                } else {
+                    showsLong.toggle()
+                }
+            }
+        }
+    }
+
+    static let short = """
+    ## Summary
+
+    The build has **two steps**. The details come in two seconds.
+    """
+
+    static let long = """
+    ## Details
+
+    The first step compiles the package. The second step runs the tests on the device, and each step writes its \
+    log to the `build` folder.
+
+    1. Compile the package.
+    2. Run the tests.
+    3. Read the log, and run a step again with `--verbose` if it fails.
+
+    > A step that fails twice needs a look at the [guide](https://example.com/guide).
     """
 }
 

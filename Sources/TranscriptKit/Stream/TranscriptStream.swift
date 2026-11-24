@@ -48,14 +48,18 @@ public final class TranscriptStream {
     private var pending = ""
     private var finishPending = false
     private var jobInFlight = false
+    private var idleActions: [() -> Void] = []
 
     /// - Parameters:
     ///   - markdown: text that is already complete, such as earlier
     ///     messages. It is parsed right away. Can be called from any thread.
     ///   - tags: custom tags the text may use, and how they look; see
     ///     `TranscriptTag`. Other tags show as written.
-    public nonisolated init(markdown: String = "", tags: [TranscriptTag] = []) {
-        var parser = MarkdownStreamParser(tags: tags)
+    ///   - newlinesAsLineBreaks: if true, a single newline inside a paragraph
+    ///     or a heading is a line break. If false (the default), it is a space, as in
+    ///     CommonMark. See `MarkdownStreamParser.init`.
+    public nonisolated init(markdown: String = "", tags: [TranscriptTag] = [], newlinesAsLineBreaks: Bool = false) {
+        var parser = MarkdownStreamParser(tags: tags, newlinesAsLineBreaks: newlinesAsLineBreaks)
         if !markdown.isEmpty {
             parser.append(markdown)
         }
@@ -87,6 +91,7 @@ public final class TranscriptStream {
         pending = ""
         finishPending = false
         receive(worker.applyNow(text, finish: finish))
+        runIdleActions()
     }
 
     private func receive(_ update: StreamUpdate) {
@@ -109,6 +114,24 @@ public final class TranscriptStream {
         worker.detach(id)
     }
 
+    // MARK: Pending work
+
+    /// No appended text waits to be parsed, and no parse is running. The
+    /// sinks have had every version by then.
+    var isIdle: Bool { !jobInFlight && pending.isEmpty && !finishPending }
+
+    /// Calls `action` once, the next time the stream becomes idle.
+    func whenIdle(_ action: @escaping () -> Void) {
+        idleActions.append(action)
+    }
+
+    private func runIdleActions() {
+        guard isIdle, !idleActions.isEmpty else { return }
+        let actions = idleActions
+        idleActions = []
+        actions.forEach { $0() }
+    }
+
     // MARK: Frame timing
 
     /// Starts parsing what has been appended, unless a parse is running.
@@ -127,6 +150,7 @@ public final class TranscriptStream {
                     self.jobInFlight = false
                     if let update { self.receive(update) }
                     if !self.pending.isEmpty || self.finishPending { self.scheduleFrame() }
+                    self.runIdleActions()
                 }
             }
         }

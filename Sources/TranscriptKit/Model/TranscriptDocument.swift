@@ -44,7 +44,9 @@ public struct InlineSpan: Equatable, Sendable {
     }
 
     /// For text inside a custom tag (see `TranscriptTag`): the tag and its
-    /// decoration. Its traits and link are also in `traits` and `link`.
+    /// decoration. In a parsed span, and in one made with
+    /// `InlineSpan(range:tagged:)`, its traits and link are also in `traits`
+    /// and `link`. Setting it does not change them.
     public var customTag: CustomTag? {
         get { extras?.customTag }
         set { extras = Extras.make(image: image, reference: reference, customTag: newValue, math: math) }
@@ -56,6 +58,13 @@ public struct InlineSpan: Equatable, Sendable {
         self.traits = traits
         self.link = link
         self.extras = Extras.make(image: image, reference: reference, customTag: customTag, math: math)
+    }
+
+    /// A span for text inside a custom tag, as the parser makes it: with
+    /// the tag's decoration, its traits, and its link. For a document that
+    /// the app builds without the parser.
+    public init(range: Range<Int>, tagged tag: CustomTag) {
+        self.init(range: range, traits: tag.decoration.traits, link: tag.decoration.link, customTag: tag)
     }
 
     init(range: Range<Int>, traits: Traits, link: String?, extras: Extras?) {
@@ -132,6 +141,10 @@ public struct TranscriptTable: Equatable, Sendable {
     public var alignments: [Alignment]
     /// Cell ranges, row by row; the first row is the header.
     public var rows: [[Range<Int>]]
+    /// The columns whose delimiter cell has a colon on one side only, as in
+    /// ":---" or "---:". Their alignment is a side of the screen, the left
+    /// or the right, so a right-to-left table does not mirror it.
+    var sidedColumns: Set<Int> = []
 
     public init(alignments: [Alignment], rows: [[Range<Int>]]) {
         self.alignments = alignments
@@ -144,7 +157,7 @@ public struct TranscriptTable: Equatable, Sendable {
     /// end, and the last cell perhaps longer: the structure of a table whose
     /// text grew at its end.
     func isExtended(by newer: TranscriptTable) -> Bool {
-        guard alignments == newer.alignments, newer.rows.count >= rows.count else { return false }
+        guard alignments == newer.alignments, sidedColumns == newer.sidedColumns, newer.rows.count >= rows.count else { return false }
         guard let lastRow = rows.indices.last else { return true }
         for index in 0..<lastRow where rows[index] != newer.rows[index] { return false }
         let old = rows[lastRow]
@@ -407,7 +420,15 @@ public struct TranscriptDocument: Equatable, Sendable {
     /// Markdown tables and images as their alt text, with a blank line
     /// between blocks that are not neighbouring list content.
     public func copyText(in range: Range<Int>) -> String {
-        var result = ""
+        copiedText(in: range, style: nil).string
+    }
+
+    /// The text of `copyText(in:)`, with the fonts of `style`, links,
+    /// strikethrough and underline when `style` is set, and no attributes
+    /// otherwise.
+    func copiedText(in range: Range<Int>, style: TranscriptStyle?) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        let separatorAttributes = style.map { [TranscriptStyle.fontKey: $0.font(for: .paragraph)] } ?? [:]
         var previousWasInList = false
         var start = 0
         for block in blocks {
@@ -418,25 +439,26 @@ public struct TranscriptDocument: Equatable, Sendable {
             let lower = max(range.lowerBound, start)
             let upper = min(range.upperBound, start + length)
             let includesStart = range.lowerBound <= start && range.upperBound > start
-            var piece: String
+            let attributes = style.map { [TranscriptStyle.fontKey: $0.font(for: block.kind)] } ?? [:]
+            var piece: NSMutableAttributedString
             switch block.kind {
             case .rule:
                 guard includesStart else { continue }
-                piece = "---"
+                piece = NSMutableAttributedString(string: "---", attributes: attributes)
             case .table(let table):
                 guard lower < upper || includesStart else { continue }
-                piece = Self.markdownTable(table, text: block.text, local: (lower - start)..<(upper - start))
+                piece = markdownTable(table, of: block, local: (lower - start)..<(upper - start), attributes: attributes, style: style)
             case .paragraph, .heading, .code:
                 guard lower < upper else { continue }
                 let local = NSRange(location: lower - start, length: upper - lower)
-                let text = NSMutableString(string: (block.text as NSString).substring(with: local))
+                piece = NSMutableAttributedString(string: (block.text as NSString).substring(with: local), attributes: attributes)
+                if let style { styleSpans(of: block, from: local.location, in: piece, style: style) }
                 // Images by their alt text and formulas by their LaTeX, last
                 // first so offsets stay valid.
                 for span in block.spans.reversed() where local.contains(span.range.lowerBound) {
                     guard let replacement = span.image?.alt ?? span.math?.source else { continue }
-                    text.replaceCharacters(in: NSRange(location: span.range.lowerBound - local.location, length: 1), with: replacement)
+                    piece.replaceCharacters(in: NSRange(location: span.range.lowerBound - local.location, length: 1), with: replacement)
                 }
-                piece = text as String
             }
 
             // Container prefixes: the first line gets the list marker, later
@@ -468,27 +490,49 @@ public struct TranscriptDocument: Equatable, Sendable {
             // A selection that starts inside the block starts mid-line.
             if !includesStart { firstPrefix = "" }
             if !firstPrefix.isEmpty || !restPrefix.isEmpty {
-                let lines = piece.components(separatedBy: "\n")
-                piece = lines.enumerated().map { ($0.offset == 0 ? firstPrefix : restPrefix) + $0.element }.joined(separator: "\n")
+                let prefixed = NSMutableAttributedString()
+                var lineStart = 0
+                func appendLine(upTo end: Int) {
+                    let prefix = lineStart == 0 ? firstPrefix : restPrefix
+                    if !prefix.isEmpty { prefixed.append(NSAttributedString(string: prefix, attributes: attributes)) }
+                    prefixed.append(piece.attributedSubstring(from: NSRange(location: lineStart, length: end - lineStart)))
+                    lineStart = end
+                }
+                for (offset, unit) in piece.string.utf16.enumerated() where unit == 0x0A { appendLine(upTo: offset + 1) }
+                appendLine(upTo: piece.length)
+                piece = prefixed
             }
 
             let isInList = block.listLevel > 0
-            if !result.isEmpty { result += previousWasInList && isInList ? "\n" : "\n\n" }
-            result += piece
+            if result.length > 0 {
+                result.append(NSAttributedString(string: previousWasInList && isInList ? "\n" : "\n\n", attributes: separatorAttributes))
+            }
+            result.append(piece)
             previousWasInList = isInList
         }
         return result
     }
 
-    /// The rows of `table` that `local` touches, as a Markdown table.
-    private static func markdownTable(_ table: TranscriptTable, text: String, local: Range<Int>) -> String {
-        let string = text as NSString
-        var lines: [String] = []
+    /// The rows of `table` that `local` touches, as a Markdown table. With
+    /// `style`, each cell keeps the styles of its spans.
+    private func markdownTable(_ table: TranscriptTable, of block: TranscriptBlock, local: Range<Int>,
+                               attributes: [NSAttributedString.Key: Any], style: TranscriptStyle?) -> NSMutableAttributedString {
+        let string = block.text as NSString
+        let result = NSMutableAttributedString()
+        func append(_ text: String) { result.append(NSAttributedString(string: text, attributes: attributes)) }
         for (index, row) in table.rows.enumerated() {
             guard let first = row.first, let last = row.last,
                   first.lowerBound < max(local.upperBound, local.lowerBound + 1), last.upperBound >= local.lowerBound else { continue }
-            let cells = row.map { string.substring(with: NSRange(location: $0.lowerBound, length: $0.count)) }
-            lines.append("| " + cells.joined(separator: " | ") + " |")
+            if result.length > 0 { append("\n") }
+            append("| ")
+            for (column, cell) in row.enumerated() {
+                if column > 0 { append(" | ") }
+                let range = NSRange(location: cell.lowerBound, length: cell.count)
+                let piece = NSMutableAttributedString(string: string.substring(with: range), attributes: attributes)
+                if let style { styleSpans(of: block, from: cell.lowerBound, in: piece, style: style) }
+                result.append(piece)
+            }
+            append(" |")
             if index == 0 {
                 let rule = table.alignments.map { alignment -> String in
                     switch alignment {
@@ -497,9 +541,9 @@ public struct TranscriptDocument: Equatable, Sendable {
                     case .trailing: return "---:"
                     }
                 }
-                lines.append("| " + rule.joined(separator: " | ") + " |")
+                append("\n| " + rule.joined(separator: " | ") + " |")
             }
         }
-        return lines.joined(separator: "\n")
+        return result
     }
 }

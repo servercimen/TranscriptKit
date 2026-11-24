@@ -22,6 +22,11 @@ final class BlockLayout: @unchecked Sendable {
 
         /// The top of what is drawn for the line, its tags' shapes included.
         var inkTop: CGFloat { frame.minY - (decorations?.inkAbove ?? 0) }
+
+        /// Whether Core Text drew some of the line's text right to left.
+        var hasRightToLeftRuns: Bool {
+            (CTLineGetGlyphRuns(ctLine) as! [CTRun]).contains { CTRunGetStatus($0).contains(.rightToLeft) }
+        }
     }
 
     /// What marks a list item, drawn in the gutter of its first line.
@@ -39,7 +44,9 @@ final class BlockLayout: @unchecked Sendable {
 
     /// A table's grid. Its lines are in text order: row by row, cell by cell.
     struct Table {
-        /// Left edge of each column, then the right edge of the last one.
+        /// Left edge of each column, then the right edge of the last one,
+        /// from left to right. In a right-to-left table, the first column
+        /// is the one on the right.
         let columnX: [CGFloat]
         /// Top of each row, then the bottom of the last one.
         let rowY: [CGFloat]
@@ -79,6 +86,43 @@ final class BlockLayout: @unchecked Sendable {
     /// For a block with reference links: those whose label was defined when
     /// it was laid out, and so styled as links.
     let definedReferences: Set<String>?
+    /// The right edge of the widest line.
+    let contentRight: CGFloat
+    /// How far the block's lines can move left: how much wider they are than
+    /// the block's box, its trailing padding included. Zero for a block that
+    /// does not scroll sideways, or whose lines fit.
+    let maximumScrollOffset: CGFloat
+
+    /// The box that the lines of a block that scrolls sideways show in.
+    var scrollBox: CGRect { CGRect(x: contentLeading, y: 0, width: max(width - contentLeading, 0), height: height) }
+
+    /// The widest an image or a formula grows in a block that scrolls sideways.
+    static let unlimitedWidth: CGFloat = 100_000
+
+    /// Whether `block` is a paragraph that holds only display math.
+    static func isDisplayMath(_ block: TranscriptBlock) -> Bool {
+        block.spans.count == 1 && block.spans[0].math?.isDisplay == true
+            && block.text.trimmingCharacters(in: .whitespacesAndNewlines) == "\u{FFFC}"
+    }
+
+    /// Whether the style lets `block` scroll sideways instead of wrapping or scaling down.
+    static func scrollsSideways(_ block: TranscriptBlock, style: TranscriptStyle) -> Bool {
+        switch block.kind {
+        case .code: return !style.codeWraps
+        case .paragraph: return style.displayMathScrolls && isDisplayMath(block)
+        case .heading, .rule, .table: return false
+        }
+    }
+    /// What the block's text says about its direction.
+    let directionScan: DirectionScan
+    /// The base direction that the text was typeset with, or nil for Core
+    /// Text's natural one, when the text has no right-to-left character.
+    /// Code is always left to right.
+    let paragraphDirection: WritingDirection?
+
+    /// Whether the lines start at the right: the indents of the block's
+    /// containers, its list marker and its quote bars are on the right too.
+    var isRightToLeft: Bool { paragraphDirection == .rightToLeft }
 
     /// The labels of `block`'s reference links that `definitions` defines,
     /// or nil if it has none.
@@ -117,45 +161,61 @@ final class BlockLayout: @unchecked Sendable {
         let contentLeading = style.contentLeading(for: block.containers)
         let defined = Self.definedReferences(of: block, in: definitions)
         self.definedReferences = defined
-        // Earlier lines can be kept only if they were styled the same way.
-        let previous = previous.flatMap { $0.definedReferences == defined ? $0 : nil }
+        // Earlier lines can be kept only if the block grew from them and
+        // they were styled the same way.
+        let grown = previous.flatMap { $0.definedReferences == defined && $0.block.isStyledPrefix(of: block) ? $0 : nil }
+        var scan = grown?.directionScan ?? DirectionScan()
+        scan.scan(block.text)
+        let direction = block.kind.isCode ? (scan.hasRightToLeft ? .leftToRight : nil) : scan.paragraphDirection
+        self.directionScan = scan
+        self.paragraphDirection = direction
+        let previous = grown.flatMap { $0.paragraphDirection == direction ? $0 : nil }
         self.imageRevision = revision
         self.contentLeading = contentLeading
 
         let lines: SharedList<Line>
         if let model = block.kind.table {
             let laidOut = Self.layOutTable(model, block: block, style: style, x: contentLeading, available: available,
-                                           blockWidth: width, images: images, definitions: definitions,
+                                           blockWidth: width, direction: direction, images: images, definitions: definitions,
                                            reusing: previous.flatMap { $0.width == width && $0.style == style && $0.imageRevision == revision ? $0 : nil })
             lines = laidOut.lines
             self.height = laidOut.height
             self.table = laidOut.table
+            self.contentRight = laidOut.table.frame.maxX
+            self.maximumScrollOffset = 0
         } else {
-            let sizing = ImageSizing(store: images, maximumWidth: available)
+            let scrolls = Self.scrollsSideways(block, style: style)
+            let sizing = ImageSizing(store: images, maximumWidth: scrolls ? Self.unlimitedWidth : available)
             let laidOut = Self.layOutText(block, style: style, insets: insets, available: available, blockWidth: width,
-                                          sizing: sizing, definitions: definitions,
+                                          wraps: !scrolls, direction: direction, sizing: sizing, definitions: definitions,
                                           reusing: previous.flatMap { $0.width == width && $0.imageRevision == revision ? $0 : nil })
             lines = laidOut.lines
             self.height = laidOut.height
             self.table = nil
+            self.contentRight = laidOut.right
+            self.maximumScrollOffset = scrolls ? max(ceil(laidOut.right + insets.trailing - width), 0) : 0
         }
         self.lines = lines
-        self.marker = Self.makeMarker(for: block, style: style, firstLine: lines.first)
+        self.marker = Self.makeMarker(for: block, style: style, firstLine: lines.first, width: width,
+                                      rightToLeft: direction == .rightToLeft)
         self.attachments = hasImages ? Self.findAttachments(in: lines) : []
     }
 
     // MARK: Text
 
+    /// - Parameter wraps: whether lines break at `available`, or only at line breaks.
     private static func layOutText(_ block: TranscriptBlock, style: TranscriptStyle, insets: TranscriptStyle.Insets,
-                                   available: CGFloat, blockWidth: CGFloat, sizing: ImageSizing, definitions: [String: String],
-                                   reusing previous: BlockLayout?) -> (lines: SharedList<Line>, height: CGFloat) {
+                                   available: CGFloat, blockWidth: CGFloat, wraps: Bool, direction: WritingDirection?,
+                                   sizing: ImageSizing, definitions: [String: String],
+                                   reusing previous: BlockLayout?) -> (lines: SharedList<Line>, height: CGFloat, right: CGFloat) {
         let length = block.utf16Count
         let font = style.font(for: block.kind)
         let hasDecorations = DecoratedTags.appear(in: block)
         var lines = SharedList<Line>()
         var y = insets.vertical
         var restart = 0
-        if let previous, previous.style == style, previous.block.isStyledPrefix(of: block), previous.lines.count > 1 {
+        var right: CGFloat = 0
+        if let previous, previous.style == style, previous.lines.count > 1 {
             // Line breaks are chosen greedily, so appended text can only
             // change the last line and what follows it.
             var keep = previous.lines.count - 1
@@ -169,26 +229,44 @@ final class BlockLayout: @unchecked Sendable {
                     line.range.allSatisfy { text.character(at: $0) == 0x0A }
                 }
                 while keep > 0, holdsOnlyLineBreaks(previous.lines[keep]) { keep -= 1 }
+                // The padding after a tag that runs to the end of the text,
+                // as an open one does, is on the last character, so the word
+                // written last may have gone down a line for it alone. Once
+                // more text comes, the padding moves on, and the line above
+                // may take that word back.
+                let previousLength = previous.block.utf16Count
+                let endsInPadding = previous.block.spans.contains { span in
+                    span.range.upperBound == previousLength && (span.customTag?.decoration.padding ?? 0) > 0
+                }
+                if keep > 0, endsInPadding { keep -= 1 }
+                // A tag that keeps together may have gone down a line, and
+                // may no longer fit on a line of its own: the line above it
+                // is laid out again.
+                while keep > 0, DecoratedTags.keptTagStarts(at: previous.lines[keep].range.lowerBound, in: block) { keep -= 1 }
             }
             if keep > 0 {
                 lines = previous.lines.prefix(keep)
                 restart = previous.lines[keep].range.lowerBound
                 y = previous.lines[keep].frame.minY
+                // The lines typeset again hold at least the text they held, so
+                // the widest of the earlier lines is no wider than this.
+                right = previous.contentRight
             }
         }
 
         // Only the tags on the lines laid out again; the others' lines are kept.
-        let decorated = hasDecorations ? DecoratedTags(block, from: restart) : nil
+        let decorated = hasDecorations ? DecoratedTags(block, from: restart, direction: direction) : nil
 
         let fixedHeight = style.lineHeight(for: block.kind)
         let gap = fixedHeight == nil ? style.lineSpacing : 0
-        let isDisplayMath = block.spans.count == 1 && block.spans[0].math?.isDisplay == true
-            && block.text.trimmingCharacters(in: .whitespacesAndNewlines) == "\u{FFFC}"
+        let isDisplayMath = Self.isDisplayMath(block)
         func add(_ ctLine: CTLine, range: Range<Int>, indexBase: Int, leading: CGFloat = 0, text: NSAttributedString? = nil) {
             let metrics = fitted(lineMetrics(ctLine, isEmpty: range.isEmpty, font: font), to: fixedHeight)
-            let x = insets.leading + leading + (isDisplayMath
-                ? max(((available - leading - metrics.width) / 2).rounded(.down), 0)
-                : alignmentOffset(block, style: style, width: metrics.width, room: available - leading))
+            let x = place(insets.leading + leading + (isDisplayMath
+                ? offset(for: style.displayMathAlignment, width: metrics.width, room: available - leading)
+                : alignmentOffset(block, style: style, width: metrics.width, room: available - leading)),
+                width: metrics.width, in: blockWidth, direction: direction)
+            right = max(right, x + metrics.width)
             var decorations: LineDecorations?
             if let decorated, let text {
                 decorations = LineDecorations.make(line: ctLine, range: range, indexBase: indexBase, visibleWidth: metrics.width,
@@ -209,15 +287,24 @@ final class BlockLayout: @unchecked Sendable {
 
         if restart < length {
             let attributed = style.attributedString(for: block, from: restart, images: sizing, definitions: definitions,
-                                                    kerns: decorated?.kerns ?? [:])
+                                                    kerns: decorated?.kerns ?? [:], direction: direction)
             let typesetter = CTTypesetterCreateWithAttributedString(attributed)
+            let string = attributed.string as NSString
             var start = restart
             while start < length {
                 let local = start - restart
                 // A padded tag that starts the line has no character before it
                 // on the line to carry its padding, so the line moves over.
-                let leading = min(decorated?.startPadding[start] ?? 0, available / 2)
-                let count = max(CTTypesetterSuggestLineBreak(typesetter, local, Double(available - leading)), 1)
+                func room(at offset: Int) -> CGFloat { min(decorated?.startPadding[offset] ?? 0, available / 2) }
+                let leading = room(at: start)
+                var count = wraps
+                    ? max(CTTypesetterSuggestLineBreak(typesetter, local, Double(available - leading)), 1)
+                    : Self.lengthToLineBreak(in: string, from: local)
+                if wraps, let decorated, start + count < length {
+                    count = decorated.lineEnd(from: start, to: start + count) { range in
+                        Self.width(of: range.lowerBound - restart, count: range.count, in: typesetter) <= available - room(at: range.lowerBound)
+                    } - start
+                }
                 let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: local, length: count))
                 add(ctLine, range: start..<(start + count), indexBase: restart, leading: leading, text: attributed)
                 start += count
@@ -228,7 +315,25 @@ final class BlockLayout: @unchecked Sendable {
             let empty = CTLineCreateWithAttributedString(NSAttributedString(string: "", attributes: style.attributes(for: block.kind)))
             add(empty, range: length..<length, indexBase: length)
         }
-        return (lines, y - gap + insets.vertical)
+        return (lines, y - gap + insets.vertical, right)
+    }
+
+    /// The length of the line of `string` that starts at `start`: up to and
+    /// including its line break, or to the end.
+    static func lengthToLineBreak(in string: NSString, from start: Int) -> Int {
+        let rest = NSRange(location: start, length: string.length - start)
+        let found = string.rangeOfCharacter(from: .newlines, options: [], range: rest)
+        guard found.location != NSNotFound else { return max(rest.length, 1) }
+        var end = found.location + found.length
+        if string.character(at: found.location) == 0x0D, end < string.length, string.character(at: end) == 0x0A { end += 1 }
+        return end - start
+    }
+
+    /// How wide `count` characters from `start` are on one line, without
+    /// the space at their end.
+    private static func width(of start: Int, count: Int, in typesetter: CTTypesetter) -> CGFloat {
+        let line = CTTypesetterCreateLine(typesetter, CFRange(location: start, length: count))
+        return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil) - CTLineGetTrailingWhitespaceWidth(line))
     }
 
     /// Line metrics made `height` tall, with the text centred, when the app
@@ -239,12 +344,27 @@ final class BlockLayout: @unchecked Sendable {
         return (metrics.width, height, metrics.ascent + ((height - metrics.height) / 2).rounded())
     }
 
-    /// How far a line `width` wide moves right in `room` for the style's
-    /// alignment. Only paragraphs and headings outside lists and quotes move.
+    /// Where a line `width` wide starts in a block `blockWidth` wide, if it
+    /// starts `leading` from the block's leading edge: the left edge, or the
+    /// right edge in right-to-left text.
+    static func place(_ leading: CGFloat, width: CGFloat, in blockWidth: CGFloat, direction: WritingDirection?) -> CGFloat {
+        direction == .rightToLeft ? blockWidth - leading - width : leading
+    }
+
+    /// How far a line `width` wide moves from the leading edge in `room` for
+    /// the style's alignment. Only paragraphs and headings outside lists and
+    /// quotes move.
     static func alignmentOffset(_ block: TranscriptBlock, style: TranscriptStyle, width: CGFloat, room: CGFloat) -> CGFloat {
         guard isAligned(block, style: style) else { return 0 }
+        return offset(for: style.textAlignment, width: width, room: room)
+    }
+
+    /// How far a line `width` wide moves from the leading edge in `room`
+    /// for `alignment`.
+    /// A line wider than `room` stays at the leading edge.
+    static func offset(for alignment: TranscriptTextAlignment, width: CGFloat, room: CGFloat) -> CGFloat {
         let slack = max(room - width, 0)
-        switch style.textAlignment {
+        switch alignment {
         case .leading: return 0
         case .center: return (slack / 2).rounded(.down)
         case .trailing: return slack
@@ -273,24 +393,31 @@ final class BlockLayout: @unchecked Sendable {
         table = original.table
         imageRevision = original.imageRevision
         definedReferences = original.definedReferences
+        directionScan = original.directionScan
+        paragraphDirection = original.paragraphDirection
         let count = min(max(count, 1), original.lines.count)
         var kept = original.lines.prefix(count)
         let insets = style.insets(for: block)
         if ellipsis, let last = kept.last {
             _ = kept.removeLast()
-            kept.append(Self.withEllipsis(last, block: block, style: style, insets: insets, width: original.width))
+            kept.append(Self.withEllipsis(last, block: block, style: style, insets: insets, width: original.width,
+                                          direction: original.paragraphDirection))
         }
         lines = kept
         let bottom = kept.last.map { $0.frame.maxY } ?? 0
         height = bottom + insets.vertical
+        contentRight = kept.reduce(0) { max($0, $1.frame.maxX) }
+        maximumScrollOffset = original.table == nil && Self.scrollsSideways(block, style: style)
+            ? max(ceil(contentRight + insets.trailing - width), 0) : 0
         length = kept.last?.range.upperBound ?? 0
         attachments = original.attachments.filter { $0.rect.minY < bottom }
     }
 
     private static func withEllipsis(_ line: Line, block: TranscriptBlock, style: TranscriptStyle,
-                                     insets: TranscriptStyle.Insets, width: CGFloat) -> Line {
+                                     insets: TranscriptStyle.Insets, width: CGFloat, direction: WritingDirection?) -> Line {
         let available = max(width - insets.leading - insets.trailing, 1)
-        let rest = NSMutableAttributedString(attributedString: style.attributedString(for: block, range: line.range.lowerBound..<block.utf16Count))
+        let rest = NSMutableAttributedString(attributedString: style.attributedString(for: block, range: line.range.lowerBound..<block.utf16Count,
+                                                                                      direction: direction))
         let attributes = rest.length > 0 ? rest.attributes(at: rest.length - 1, effectiveRange: nil) : style.attributes(for: block.kind)
         // Trailing line breaks would end the line before the ellipsis.
         while rest.length > 0, (rest.string as NSString).character(at: rest.length - 1) == 0x0A {
@@ -302,12 +429,14 @@ final class BlockLayout: @unchecked Sendable {
         let token = CTLineCreateWithAttributedString(NSAttributedString(string: "…", attributes: attributes))
         let full = CTLineCreateWithAttributedString(rest)
         let aligned = isAligned(block, style: style)
-        let start = aligned ? insets.leading : line.frame.minX
+        // From the leading edge.
+        let start = aligned ? insets.leading : (direction == .rightToLeft ? width - line.frame.maxX : line.frame.minX)
         let room = max(insets.leading + available - start, 1)
         let ctLine = CTLineCreateTruncatedLine(full, Double(room), .end, token) ?? full
         let font = style.font(for: block.kind)
         let metrics = lineMetrics(ctLine, isEmpty: false, font: font)
-        let x = aligned ? insets.leading + alignmentOffset(block, style: style, width: metrics.width, room: available) : start
+        let x = place(aligned ? insets.leading + alignmentOffset(block, style: style, width: metrics.width, room: available) : start,
+                      width: metrics.width, in: width, direction: direction)
         return Line(ctLine: ctLine, indexBase: line.range.lowerBound, range: line.range,
                     frame: CGRect(x: x, y: line.frame.minY, width: metrics.width, height: line.frame.height),
                     baseline: line.baseline, decorations: nil)
@@ -341,7 +470,8 @@ final class BlockLayout: @unchecked Sendable {
     /// neither measured nor typeset again, and keep their lines if the
     /// columns did not change, so only the row being written is redrawn.
     private static func layOutTable(_ model: TranscriptTable, block: TranscriptBlock, style: TranscriptStyle, x: CGFloat,
-                                    available: CGFloat, blockWidth: CGFloat, images: TranscriptImageStore?, definitions: [String: String],
+                                    available: CGFloat, blockWidth: CGFloat, direction: WritingDirection?,
+                                    images: TranscriptImageStore?, definitions: [String: String],
                                     reusing previous: BlockLayout?) -> (lines: SharedList<Line>, height: CGFloat, table: Table) {
         let columns = max(model.columnCount, 1)
         let padding = style.tableCellPadding
@@ -349,7 +479,7 @@ final class BlockLayout: @unchecked Sendable {
         let font = style.font(for: block.kind)
         let fixedHeight = style.lineHeight(for: block.kind)
         let gap = fixedHeight == nil ? style.lineSpacing : 0
-        let decorated = DecoratedTags(block)
+        let decorated = DecoratedTags(block, direction: direction)
         let sizing = ImageSizing(store: images, maximumWidth: max(available / CGFloat(columns) - padding * 2, 20))
         let minimumWidth = padding * 2 + style.effectiveBodySize
 
@@ -357,16 +487,21 @@ final class BlockLayout: @unchecked Sendable {
         var kept = 0
         var old: Table?
         if let previous, let oldTable = previous.table, let oldModel = previous.block.kind.table,
-           oldModel.alignments == model.alignments, previous.block.isStyledPrefix(of: block) {
+           oldModel.alignments == model.alignments, oldModel.sidedColumns == model.sidedColumns {
             let limit = min(oldModel.rows.count - 1, model.rows.count)
             while kept < limit, oldModel.rows[kept] == model.rows[kept] { kept += 1 }
             old = oldTable
         }
 
         typealias Cell = (text: NSAttributedString, typesetter: CTTypesetter, range: Range<Int>)
+        // Each cell is typeset on its own, so Core Text gives it the direction
+        // of its own text. The table's direction sets the order of the columns.
         func makeCells(_ row: Int) -> [Cell] {
-            model.rows[row].prefix(columns).map { range in
-                let text = style.attributedString(for: block, range: range, extraTraits: row == 0 ? .bold : [], images: sizing,
+            let header = row == 0
+            let weight = header ? style.tableHeaderWeight : nil
+            let traits: InlineSpan.Traits = header && weight == nil ? .bold : []
+            return model.rows[row].prefix(columns).map { range in
+                let text = style.attributedString(for: block, range: range, extraTraits: traits, weight: weight, images: sizing,
                                                   definitions: definitions, kerns: decorated?.kerns ?? [:])
                 return (text, CTTypesetterCreateWithAttributedString(text), range)
             }
@@ -390,12 +525,19 @@ final class BlockLayout: @unchecked Sendable {
                         let isBreak = index == start + count || [0x20, 0x09, 0x0A].contains(string.character(at: index))
                         guard isBreak else { continue }
                         if index > wordStart {
-                            let width = CTLineGetOffsetForStringIndex(line, index, nil) - CTLineGetOffsetForStringIndex(line, wordStart, nil)
+                            // Negative in right-to-left text.
+                            let width = abs(CTLineGetOffsetForStringIndex(line, index, nil) - CTLineGetOffsetForStringIndex(line, wordStart, nil))
                             longestWord = max(longestWord, width)
                         }
                         wordStart = index + 1
                     }
                     start += count
+                }
+                if let decorated {
+                    let base = cell.range.lowerBound
+                    longestWord = max(longestWord, decorated.widestKeptTag(in: cell.range) { range in
+                        Self.width(of: range.lowerBound - base, count: range.count, in: cell.typesetter)
+                    })
                 }
                 natural.append(ceil(widest) + padding * 2)
                 minimum.append(ceil(longestWord) + padding * 2)
@@ -440,14 +582,16 @@ final class BlockLayout: @unchecked Sendable {
                 }
             }
         }
+        // From the leading edge; mirrored once the table is laid out, if it is right to left.
         var columnX = [x]
         for width in widths { columnX.append(columnX[columnX.count - 1] + width) }
+        let shownColumnX = direction == .rightToLeft ? columnX.reversed().map { blockWidth - $0 } : columnX
 
         var lines = SharedList<Line>()
         var rowY: [CGFloat] = [0]
         var cellLines: [[Range<Int>]] = []
         var firstRow = 0
-        if kept > 0, let old, let previous, old.columnX == columnX {
+        if kept > 0, let old, let previous, old.columnX == shownColumnX {
             // Same columns: the kept rows look exactly as before.
             lines = previous.lines.prefix(old.cellLines[kept - 1].last?.upperBound ?? 0)
             rowY = Array(old.rowY[...kept])
@@ -467,11 +611,16 @@ final class BlockLayout: @unchecked Sendable {
                     let metrics = fitted(lineMetrics(ctLine, isEmpty: range.isEmpty, font: font), to: fixedHeight)
                     let slack = max(textWidth - metrics.width, 0)
                     let offset: CGFloat
-                    switch column < model.alignments.count ? model.alignments[column] : .leading {
+                    var alignment = column < model.alignments.count ? model.alignments[column] : .leading
+                    if direction == .rightToLeft, model.sidedColumns.contains(column) {
+                        alignment = alignment == .leading ? .trailing : .leading
+                    }
+                    switch alignment {
                     case .leading: offset = 0
                     case .center: offset = (slack / 2).rounded()
                     case .trailing: offset = slack
                     }
+                    let lineX = place(columnX[column] + padding + offset, width: metrics.width, in: blockWidth, direction: direction)
                     var decorations: LineDecorations?
                     if let decorated {
                         // A tag at the start of a cell gets no room on its left: it
@@ -479,13 +628,13 @@ final class BlockLayout: @unchecked Sendable {
                         decorations = LineDecorations.make(line: ctLine, range: range, indexBase: cell.range.lowerBound,
                                                            visibleWidth: metrics.width, top: -metrics.ascent,
                                                            bottom: metrics.height - metrics.ascent,
-                                                           lineX: columnX[column] + padding + offset, blockWidth: blockWidth,
+                                                           lineX: lineX, blockWidth: blockWidth,
                                                            block: block.id, tags: decorated, text: cell.text,
                                                            textBase: cell.range.lowerBound)
                     }
                     lines.append(Line(
                         ctLine: ctLine, indexBase: cell.range.lowerBound, range: range,
-                        frame: CGRect(x: columnX[column] + padding + offset, y: y, width: metrics.width, height: metrics.height),
+                        frame: CGRect(x: lineX, y: y, width: metrics.width, height: metrics.height),
                         baseline: y + metrics.ascent,
                         decorations: decorations
                     ))
@@ -493,7 +642,13 @@ final class BlockLayout: @unchecked Sendable {
                 }
                 var start = 0
                 while start < cell.text.length {
-                    let count = max(CTTypesetterSuggestLineBreak(cell.typesetter, start, Double(textWidth)), 1)
+                    var count = max(CTTypesetterSuggestLineBreak(cell.typesetter, start, Double(textWidth)), 1)
+                    if let decorated, start + count < cell.text.length {
+                        let base = cell.range.lowerBound
+                        count = decorated.lineEnd(from: base + start, to: base + start + count) { range in
+                            Self.width(of: range.lowerBound - base, count: range.count, in: cell.typesetter) <= textWidth
+                        } - base - start
+                    }
                     let ctLine = CTTypesetterCreateLine(cell.typesetter, CFRange(location: start, length: count))
                     add(ctLine, range: (cell.range.lowerBound + start)..<(cell.range.lowerBound + start + count))
                     start += count
@@ -509,33 +664,44 @@ final class BlockLayout: @unchecked Sendable {
             rowY.append(ceil(bottom))
             cellLines.append(rowLines)
         }
-        let table = Table(columnX: columnX, rowY: rowY, cellLines: cellLines, naturalWidths: rowNaturals, minimumWidths: rowMinimums)
+        let table = Table(columnX: shownColumnX, rowY: rowY, cellLines: cellLines, naturalWidths: rowNaturals, minimumWidths: rowMinimums)
         return (lines, rowY[rowY.count - 1], table)
     }
 
     // MARK: Markers and images
 
-    private static func makeMarker(for block: TranscriptBlock, style: TranscriptStyle, firstLine: Line?) -> Marker? {
+    private static func makeMarker(for block: TranscriptBlock, style: TranscriptStyle, firstLine: Line?, width: CGFloat,
+                                   rightToLeft: Bool) -> Marker? {
         guard let kind = block.marker, let firstLine, let item = block.containers.lastIndex(of: .listItem) else { return nil }
         // The marker sits in the gutter of the innermost list item.
         let gutterEnd = style.contentLeading(for: Array(block.containers[...item]))
+        let quoteColor = style.textColor(inside: block.containers[..<item])
         let font = style.font(for: .paragraph)
         switch kind {
         case .task(let checked):
             let side = (style.effectiveBodySize * 0.82).rounded()
             let middle = firstLine.baseline - CTFontGetCapHeight(font) / 2
-            return .checkbox(CGRect(x: gutterEnd - side - 6, y: (middle - side / 2).rounded(), width: side, height: side), checked: checked)
+            let x = rightToLeft ? width - gutterEnd + 6 : gutterEnd - side - 6
+            return .checkbox(CGRect(x: x, y: (middle - side / 2).rounded(), width: side, height: side), checked: checked)
         case .bullet, .number:
             let text: String
+            var attributes: [NSAttributedString.Key: Any]
             if case .number(let number) = kind {
-                text = number
+                text = style.listNumberFormat.text(for: number)
+                attributes = style.attributes(for: .paragraph, weight: style.listNumberWeight)
+                if let color = style.listNumberColor ?? quoteColor { attributes[TranscriptStyle.foregroundKey] = color }
             } else {
-                let depth = block.listLevel
-                text = depth <= 1 ? "•" : (depth == 2 ? "◦" : "▪")
+                let bullet = style.bullet(at: block.listLevel)
+                text = bullet.text
+                attributes = style.attributes(for: .paragraph)
+                if let color = bullet.color ?? quoteColor { attributes[TranscriptStyle.foregroundKey] = color }
             }
-            let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: style.attributes(for: .paragraph)))
+            // So that a number's period is on the side of the text: ".1".
+            if rightToLeft { attributes[TranscriptStyle.paragraphStyleKey] = WritingDirection.rightToLeft.paragraphStyle }
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
             let markerWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
-            return .text(line, origin: CGPoint(x: max(gutterEnd - markerWidth - 7, 0), y: firstLine.baseline))
+            let x = rightToLeft ? min(width - gutterEnd + 7, width - markerWidth) : max(gutterEnd - markerWidth - 7, 0)
+            return .text(line, origin: CGPoint(x: x, y: firstLine.baseline))
         }
     }
 
@@ -579,12 +745,39 @@ final class BlockLayout: @unchecked Sendable {
         return CGRect(x: x(forOffset: offset, in: line) - 1, y: line.frame.minY, width: 2, height: line.frame.height)
     }
 
+    /// Where a caret at `offset` goes when it moves one stop to the right,
+    /// or to the left, in a line with right-to-left text: to the nearest
+    /// caret on that side, else to the end of the line on that side. Nil in
+    /// other lines, where a stop is one character, or when the caret is at
+    /// that end of the line already.
+    func visualStep(from offset: Int, right: Bool) -> Int? {
+        guard offset >= 0, offset <= length else { return nil }
+        let index = lineIndex(forOffset: offset)
+        let line = lines[index]
+        guard !line.range.isEmpty, hasRightToLeftText(line) else { return nil }
+        // The end of a line that wraps is a caret on the next line.
+        let last = index == lines.count - 1 ? line.range.upperBound : line.range.upperBound - 1
+        let text = block.text as NSString
+        let x = self.x(forOffset: offset, in: line)
+        var best: (offset: Int, distance: CGFloat)?
+        for candidate in line.range.lowerBound...max(last, line.range.lowerBound) where candidate != offset {
+            if candidate < text.length, text.rangeOfComposedCharacterSequence(at: candidate).location != candidate { continue }
+            let distance = (self.x(forOffset: candidate, in: line) - x) * (right ? 1 : -1)
+            if distance > 0.5, best.map({ distance < $0.distance }) ?? true { best = (candidate, distance) }
+        }
+        if let best { return best.offset }
+        let end = right != isRightToLeft ? line.range.upperBound : line.range.lowerBound
+        return end == offset ? nil : end
+    }
+
     func closestOffset(to point: CGPoint) -> Int {
         guard let table else { return closestOffset(to: point, amongLines: 0..<lines.count) }
         // The cell under the point, or the nearest one.
         let row = min(max((table.rowY.lastIndex { $0 <= point.y } ?? 0), 0), table.cellLines.count - 1)
         guard row >= 0, !table.cellLines[row].isEmpty else { return 0 }
-        let column = min(max((table.columnX.lastIndex { $0 <= point.x } ?? 0), 0), table.cellLines[row].count - 1)
+        var column = table.columnX.lastIndex { $0 <= point.x } ?? 0
+        if isRightToLeft { column = table.columnX.count - 2 - column }
+        column = min(max(column, 0), table.cellLines[row].count - 1)
         return closestOffset(to: point, amongLines: table.cellLines[row][column])
     }
 
@@ -610,6 +803,16 @@ final class BlockLayout: @unchecked Sendable {
         guard let line = lines.first(where: { $0.frame.minY <= point.y && point.y < $0.frame.maxY
                                                && point.x >= $0.frame.minX && point.x < $0.frame.maxX }),
               !line.range.isEmpty else { return nil }
+        if hasRightToLeftText(line) {
+            let x = point.x - line.frame.minX
+            guard let glyph = glyphs(of: line).first(where: { $0.minX <= x && x < $0.maxX }) else { return nil }
+            // In a ligature, the character whose part of the glyph is under the point.
+            let character = glyph.characters.first { offset in
+                let part = glyph.part(offset..<(offset + 1), in: line)
+                return part.minX <= x && x < part.maxX
+            } ?? glyph.characters.lowerBound
+            return line.range.contains(character) ? character : nil
+        }
         let localBoundary = CTLineGetStringIndexForPosition(line.ctLine, CGPoint(x: point.x - line.frame.minX, y: 0))
         guard localBoundary != kCFNotFound else { return nil }
         let boundary = localBoundary + line.indexBase
@@ -630,21 +833,180 @@ final class BlockLayout: @unchecked Sendable {
         return nil
     }
 
-    /// One rect per line touched by `range`. Left-to-right only for now.
+
+    /// A part of a selection on one line: the glyphs of one or more runs
+    /// next to each other that go the same way.
+    struct SelectionSegment: Equatable {
+        var rect: CGRect
+        var isRightToLeft: Bool
+        /// The first and the last of its selected characters, in block offsets.
+        var characters: ClosedRange<Int>
+        /// The index of its line in the block.
+        var line: Int
+        /// Whether it holds the first selected character, where the start
+        /// handle goes, and the last one, where the end handle goes.
+        var containsStart = false
+        var containsEnd = false
+    }
+
+    /// One rect per line touched by `range`, in lines that are all left to
+    /// right. A line with right-to-left text gets one rect for each stretch
+    /// of glyphs that go the same way, from left to right, so a selection in
+    /// text of mixed direction can have several rects on a line.
     func selectionRects(for range: Range<Int>) -> [CGRect] {
+        selectionSegments(for: range).map(\.rect)
+    }
+
+    func selectionSegments(for range: Range<Int>) -> [SelectionSegment] {
         guard !range.isEmpty else { return [] }
-        var rects: [CGRect] = []
+        var segments: [SelectionSegment] = []
         let first = lineIndex(forOffset: range.lowerBound)
         for index in first..<lines.count {
             let line = lines[index]
             if line.range.lowerBound >= range.upperBound { break }
-            let startX = x(forOffset: max(range.lowerBound, line.range.lowerBound), in: line)
             let continuesPastLine = range.upperBound >= line.range.upperBound && index < lines.count - 1
+            let lower = max(range.lowerBound, line.range.lowerBound)
+            if hasRightToLeftText(line) {
+                segments += runSegments(of: line, at: index, selecting: range, continuesPastLine: continuesPastLine)
+                continue
+            }
+            let startX = x(forOffset: lower, in: line)
             let endX = continuesPastLine ? max(line.frame.maxX, startX) : x(forOffset: range.upperBound, in: line)
             if endX > startX || continuesPastLine {
-                rects.append(CGRect(x: startX, y: line.frame.minY, width: max(endX - startX, 4), height: line.frame.height))
+                let last = max(min(range.upperBound, line.range.upperBound) - 1, lower)
+                segments.append(SelectionSegment(
+                    rect: CGRect(x: startX, y: line.frame.minY, width: max(endX - startX, 4), height: line.frame.height),
+                    isRightToLeft: false, characters: lower...last, line: index))
             }
         }
-        return rects
+        if let start = segments.indices.min(by: { segments[$0].characters.lowerBound < segments[$1].characters.lowerBound }) {
+            segments[start].containsStart = true
+        }
+        if let last = segments.map(\.characters.upperBound).max(),
+           let end = segments.indices.last(where: { segments[$0].characters.upperBound == last }) {
+            segments[end].containsEnd = true
+        }
+        return segments
+    }
+
+    /// Whether Core Text can have drawn some of the line right to left. A
+    /// block without a right-to-left character has no such line.
+    private func hasRightToLeftText(_ line: Line) -> Bool {
+        isRightToLeft || (paragraphDirection != nil && line.hasRightToLeftRuns)
+    }
+
+    /// The selected glyphs of a line, as rects of the runs they are in.
+    /// Whitespace at the end of a line, which Core Text puts outside the
+    /// line box, is left out.
+    private func runSegments(of line: Line, at lineIndex: Int, selecting range: Range<Int>,
+                             continuesPastLine: Bool) -> [SelectionSegment] {
+        var segments: [SelectionSegment] = []
+        var current: (run: Int, minX: CGFloat, maxX: CGFloat, characters: ClosedRange<Int>, rightToLeft: Bool)?
+        func flush() {
+            guard let part = current else { return }
+            current = nil
+            let rect = CGRect(x: line.frame.minX + part.minX, y: line.frame.minY, width: part.maxX - part.minX, height: line.frame.height)
+            if let last = segments.last, last.isRightToLeft == part.rightToLeft, abs(last.rect.maxX - rect.minX) < 0.5 {
+                segments[segments.count - 1].rect = last.rect.union(rect)
+                segments[segments.count - 1].characters = min(last.characters.lowerBound, part.characters.lowerBound)
+                    ... max(last.characters.upperBound, part.characters.upperBound)
+            } else {
+                segments.append(SelectionSegment(rect: rect, isRightToLeft: part.rightToLeft, characters: part.characters,
+                                                 line: lineIndex))
+            }
+        }
+        for glyph in glyphs(of: line) {
+            let lower = max(range.lowerBound, line.range.lowerBound, glyph.characters.lowerBound)
+            let upper = min(range.upperBound, line.range.upperBound, glyph.characters.upperBound)
+            guard lower < upper else { continue }
+            let selected = lower..<upper
+            let edges = glyph.part(selected, in: line)
+            let minX = max(edges.minX, 0)
+            let maxX = min(edges.maxX, line.frame.width)
+            guard maxX > minX else { continue }
+            let characters = selected.lowerBound...(selected.upperBound - 1)
+            if let part = current, part.run == glyph.run {
+                current = (part.run, min(part.minX, minX), max(part.maxX, maxX),
+                           min(part.characters.lowerBound, characters.lowerBound)...max(part.characters.upperBound, characters.upperBound),
+                           part.rightToLeft)
+            } else {
+                flush()
+                current = (glyph.run, minX, maxX, characters, glyph.rightToLeft)
+            }
+        }
+        flush()
+        if segments.isEmpty, continuesPastLine {
+            // Only a line break or spaces: a sliver at the caret shows that they are selected.
+            let lower = max(range.lowerBound, line.range.lowerBound)
+            let x = x(forOffset: lower, in: line)
+            segments.append(SelectionSegment(rect: CGRect(x: isRightToLeft ? x - 4 : x, y: line.frame.minY, width: 4, height: line.frame.height),
+                                             isRightToLeft: isRightToLeft, characters: lower...lower, line: lineIndex))
+        }
+        return segments
+    }
+
+    /// A glyph of a line: the characters it stands for (block offsets), and
+    /// its left and right edges in the line.
+    private struct Glyph {
+        /// More than one character for a ligature.
+        let characters: Range<Int>
+        let minX: CGFloat
+        let maxX: CGFloat
+        let rightToLeft: Bool
+        let run: Int
+
+        /// The left and right edges of the part of the glyph that stands for
+        /// the characters of `range`.
+        func part(_ range: Range<Int>, in line: Line) -> (minX: CGFloat, maxX: CGFloat) {
+            let lower = max(range.lowerBound, characters.lowerBound)
+            let upper = min(range.upperBound, characters.upperBound)
+            guard lower > characters.lowerBound || upper < characters.upperBound else { return (minX, maxX) }
+            let a = edge(before: lower, in: line)
+            let b = edge(before: upper, in: line)
+            return (min(a, b), max(a, b))
+        }
+
+        /// Where the caret before character `offset` is in the glyph: from
+        /// Core Text if it puts it inside the glyph, else at an even share.
+        private func edge(before offset: Int, in line: Line) -> CGFloat {
+            let start = rightToLeft ? maxX : minX
+            let end = rightToLeft ? minX : maxX
+            if offset <= characters.lowerBound { return start }
+            if offset >= characters.upperBound { return end }
+            let x = CTLineGetOffsetForStringIndex(line.ctLine, offset - line.indexBase, nil)
+            if x > minX + 0.01, x < maxX - 0.01 { return x }
+            return start + (end - start) * CGFloat(offset - characters.lowerBound) / CGFloat(characters.count)
+        }
+    }
+
+    /// The glyphs of a line from left to right.
+    private func glyphs(of line: Line) -> [Glyph] {
+        var result: [Glyph] = []
+        for (runIndex, run) in (CTLineGetGlyphRuns(line.ctLine) as! [CTRun]).enumerated() {
+            let count = CTRunGetGlyphCount(run)
+            guard count > 0 else { continue }
+            var indices = [CFIndex](repeating: 0, count: count)
+            var positions = [CGPoint](repeating: .zero, count: count)
+            var advances = [CGSize](repeating: .zero, count: count)
+            CTRunGetStringIndices(run, CFRange(location: 0, length: 0), &indices)
+            CTRunGetPositions(run, CFRange(location: 0, length: 0), &positions)
+            CTRunGetAdvances(run, CFRange(location: 0, length: 0), &advances)
+            let rightToLeft = CTRunGetStatus(run).contains(.rightToLeft)
+            let runRange = CTRunGetStringRange(run)
+            // A glyph stands for its character and those after it up to the
+            // next one that a glyph of the run starts at.
+            let starts = Set(indices).sorted()
+            var ends: [CFIndex: CFIndex] = [:]
+            for (position, start) in starts.enumerated() {
+                ends[start] = position + 1 < starts.count ? starts[position + 1] : max(runRange.location + runRange.length, start + 1)
+            }
+            for glyph in 0..<count {
+                let start = indices[glyph] + line.indexBase
+                let end = (ends[indices[glyph]] ?? indices[glyph] + 1) + line.indexBase
+                result.append(Glyph(characters: start..<end, minX: positions[glyph].x, maxX: positions[glyph].x + advances[glyph].width,
+                                    rightToLeft: rightToLeft, run: runIndex))
+            }
+        }
+        return result
     }
 }

@@ -534,7 +534,7 @@ public final class DocumentLayout: @unchecked Sendable {
             case .text(let line, let origin)?:
                 drawLine(line, at: CGPoint(x: origin.x, y: entry.y + origin.y))
             case .checkbox(let rect, let checked)?:
-                drawCheckbox(rect.offsetBy(dx: 0, dy: entry.y), checked: checked, in: context, stroke: text)
+                drawCheckbox(rect.offsetBy(dx: 0, dy: entry.y), checked: checked, in: context, text: text, dark: dark)
             case nil:
                 break
             }
@@ -661,11 +661,11 @@ public final class DocumentLayout: @unchecked Sendable {
         context.restoreGState()
     }
 
-    private func drawCheckbox(_ rect: CGRect, checked: Bool, in context: CGContext, stroke: CGColor) {
+    private func drawCheckbox(_ rect: CGRect, checked: Bool, in context: CGContext, text: CGColor, dark: Bool) {
         context.saveGState()
         let box = CGPath(roundedRect: rect.insetBy(dx: 0.75, dy: 0.75), cornerWidth: 4, cornerHeight: 4, transform: nil)
         if checked {
-            context.setFillColor(CGColor(red: 0, green: 0.478, blue: 1, alpha: 1))
+            context.setFillColor(style.taskCheckedColor?.cgColor(dark: dark) ?? CGColor(red: 0, green: 0.478, blue: 1, alpha: 1))
             context.addPath(box)
             context.fillPath()
             let check = CGMutablePath()
@@ -673,14 +673,14 @@ public final class DocumentLayout: @unchecked Sendable {
             check.addLine(to: CGPoint(x: rect.minX + rect.width * 0.43, y: rect.minY + rect.height * 0.7))
             check.addLine(to: CGPoint(x: rect.minX + rect.width * 0.76, y: rect.minY + rect.height * 0.32))
             context.addPath(check)
-            context.setStrokeColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            context.setStrokeColor(style.taskCheckmarkColor?.cgColor(dark: dark) ?? CGColor(red: 1, green: 1, blue: 1, alpha: 1))
             context.setLineWidth(max(rect.width * 0.12, 1.5))
             context.setLineCap(.round)
             context.setLineJoin(.round)
             context.strokePath()
         } else {
             context.addPath(box)
-            context.setStrokeColor(stroke.copy(alpha: 0.45) ?? stroke)
+            context.setStrokeColor(style.taskUncheckedColor?.cgColor(dark: dark) ?? text.copy(alpha: 0.45) ?? text)
             context.setLineWidth(1.5)
             context.strokePath()
         }

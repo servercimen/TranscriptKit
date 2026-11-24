@@ -88,6 +88,14 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// The colors of the bullets, by level as `bullets`. Empty uses the text
     /// color.
     public var bulletColors: [TranscriptColor] = []
+    /// The fill of a task box that is checked. Nil uses blue (red 0, green
+    /// 0.478, blue 1).
+    public var taskCheckedColor: TranscriptColor?
+    /// The check mark in a task box that is checked. Nil uses white.
+    public var taskCheckmarkColor: TranscriptColor?
+    /// The outline of a task box that is not checked. Nil uses the text color
+    /// at 45% opacity.
+    public var taskUncheckedColor: TranscriptColor?
 
     public init() {}
 

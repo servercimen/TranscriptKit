@@ -25,6 +25,49 @@ private func color(of attributes: NSDictionary) -> TranscriptColor? {
     attributes[TranscriptStyle.foregroundKey.rawValue] as? TranscriptColor
 }
 
+/// RGBA pixels of a layout drawn at 2x on white, in black text.
+private struct Drawing {
+    let pixels: [UInt8]
+    let width: Int
+    let height: Int
+    static let scale: CGFloat = 2
+
+    init(_ layout: DocumentLayout, dark: Bool = false) {
+        let width = Int((layout.width * Self.scale).rounded())
+        let height = Int(((layout.height + 4) * Self.scale).rounded())
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        pixels.withUnsafeMutableBytes { buffer in
+            let context = CGContext(data: buffer.baseAddress, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                                    space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+            context.translateBy(x: 0, y: CGFloat(height))
+            context.scaleBy(x: Self.scale, y: -Self.scale)
+            let all = CGRect(x: 0, y: 0, width: layout.width, height: layout.height + 4)
+            context.setFillColor(CGColor(gray: 1, alpha: 1))
+            context.fill(all)
+            layout.draw(in: context, dirtyRect: all, text: CGColor(gray: 0, alpha: 1), codeBackground: CGColor(gray: 0.9, alpha: 1),
+                        accent: CGColor(gray: 0.6, alpha: 1), dark: dark)
+        }
+        self.pixels = pixels
+        self.width = width
+        self.height = height
+    }
+
+    /// How many pixels in a rect, in layout points, are close to an RGB color (0 to 255).
+    func count(in rect: CGRect, near rgb: (Int, Int, Int), tolerance: Int = 40) -> Int {
+        let minX = max(Int(rect.minX * Self.scale), 0), maxX = min(Int(rect.maxX * Self.scale), width)
+        let minY = max(Int(rect.minY * Self.scale), 0), maxY = min(Int(rect.maxY * Self.scale), height)
+        var count = 0
+        for y in minY..<max(maxY, minY) {
+            for x in minX..<max(maxX, minX) {
+                let i = (y * width + x) * 4
+                if abs(Int(pixels[i]) - rgb.0) <= tolerance, abs(Int(pixels[i + 1]) - rgb.1) <= tolerance,
+                   abs(Int(pixels[i + 2]) - rgb.2) <= tolerance { count += 1 }
+            }
+        }
+        return count
+    }
+}
+
 // MARK: List numbers
 
 @Test func listNumberFormatsRewriteTheDelimiter() {
@@ -90,4 +133,35 @@ private func color(of attributes: NSDictionary) -> TranscriptColor? {
     #expect(CTLineGetGlyphCount(inner.line) == 2)
     #expect(color(of: outer.attributes) == red)
     #expect(color(of: inner.attributes) == blue)
+}
+
+// MARK: Task boxes
+
+/// The checked and the unchecked task box of a two-item task list, in layout points.
+private func taskBoxes(_ layout: DocumentLayout) -> (checked: CGRect, unchecked: CGRect)? {
+    guard case .checkbox(let checked, true)? = layout.entry(at: 0).layout.marker,
+          case .checkbox(let unchecked, false)? = layout.entry(at: 1).layout.marker else { return nil }
+    return (checked.offsetBy(dx: 0, dy: layout.entry(at: 0).y), unchecked.offsetBy(dx: 0, dy: layout.entry(at: 1).y))
+}
+
+@Test func taskBoxesTakeTheirColors() throws {
+    let markdown = "- [x] done\n- [ ] open"
+    let plain = layout(markdown)
+    let plainBoxes = try #require(taskBoxes(plain))
+    let before = Drawing(plain)
+    #expect(before.count(in: plainBoxes.checked, near: (0, 122, 255)) > 20)
+    #expect(before.count(in: plainBoxes.checked, near: (255, 0, 0)) == 0)
+    #expect(before.count(in: plainBoxes.unchecked, near: (0, 0, 255)) == 0)
+
+    var style = TranscriptStyle()
+    style.taskCheckedColor = TranscriptColor(red: 1, green: 0, blue: 0)
+    style.taskCheckmarkColor = TranscriptColor(red: 0, green: 1, blue: 0)
+    style.taskUncheckedColor = TranscriptColor(red: 0, green: 0, blue: 1)
+    let styled = layout(markdown, style: style)
+    let styledBoxes = try #require(taskBoxes(styled))
+    let after = Drawing(styled)
+    #expect(after.count(in: styledBoxes.checked, near: (0, 122, 255)) == 0)
+    #expect(after.count(in: styledBoxes.checked, near: (255, 0, 0)) > 20)
+    #expect(after.count(in: styledBoxes.checked, near: (0, 255, 0)) > 4)
+    #expect(after.count(in: styledBoxes.unchecked, near: (0, 0, 255)) > 10)
 }

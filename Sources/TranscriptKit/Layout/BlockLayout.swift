@@ -527,13 +527,17 @@ final class BlockLayout: @unchecked Sendable {
             return .checkbox(CGRect(x: gutterEnd - side - 6, y: (middle - side / 2).rounded(), width: side, height: side), checked: checked)
         case .bullet, .number:
             let text: String
+            var attributes: [NSAttributedString.Key: Any]
             if case .number(let number) = kind {
-                text = number
+                text = style.listNumberFormat.text(for: number)
+                attributes = style.attributes(for: .paragraph, weight: style.listNumberWeight)
+                if let color = style.listNumberColor { attributes[TranscriptStyle.foregroundKey] = color }
             } else {
                 let depth = block.listLevel
                 text = depth <= 1 ? "•" : (depth == 2 ? "◦" : "▪")
+                attributes = style.attributes(for: .paragraph)
             }
-            let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: style.attributes(for: .paragraph)))
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
             let markerWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
             return .text(line, origin: CGPoint(x: max(gutterEnd - markerWidth - 7, 0), y: firstLine.baseline))
         }

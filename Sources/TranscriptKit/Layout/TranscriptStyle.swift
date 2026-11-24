@@ -9,6 +9,26 @@ public enum TranscriptTextAlignment: Hashable, Sendable {
     case trailing
 }
 
+/// How a list item's number is written; see `TranscriptStyle.listNumberFormat`.
+public enum TranscriptListNumberFormat: Hashable, Sendable {
+    /// The number, then "." or ")" as the Markdown wrote it.
+    case asWritten
+    /// The number between `prefix` and `suffix`, such as "(" and ")".
+    case custom(prefix: String, suffix: String)
+
+    /// The number, then ".", whatever the Markdown wrote.
+    public static let period = custom(prefix: "", suffix: ".")
+    /// The number, then ")", whatever the Markdown wrote.
+    public static let parenthesis = custom(prefix: "", suffix: ")")
+
+    /// The text of the marker that the Markdown wrote as `written`, such as "3.".
+    func text(for written: String) -> String {
+        guard case .custom(let prefix, let suffix) = self else { return written }
+        let number = written.prefix { $0.isASCII && $0.isNumber }
+        return prefix + number + suffix
+    }
+}
+
 /// Typography and spacing for a transcript.
 public struct TranscriptStyle: Equatable, Sendable {
     /// The font of paragraphs, list items, quotes and tables. Nil uses the
@@ -51,6 +71,16 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// Quote bars, thematic breaks and table lines. Nil uses the system's
     /// tertiary label color.
     public var accentColor: TranscriptColor?
+
+    /// How the numbers of ordered list items are written.
+    public var listNumberFormat: TranscriptListNumberFormat = .asWritten
+    /// The weight of the numbers of ordered list items, from -1 to 1 as
+    /// `TranscriptFont.weight`. Nil uses the weight of the body text. A named
+    /// body font has its own weight: a weight of 0.3 or more uses its bold
+    /// face, and a lower weight uses the font as it is.
+    public var listNumberWeight: CGFloat?
+    /// The color of the numbers of ordered list items. Nil uses the text color.
+    public var listNumberColor: TranscriptColor?
 
     public init() {}
 
@@ -97,6 +127,7 @@ public struct TranscriptStyle: Equatable, Sendable {
             var role: Int
             var size: CGFloat
             var traits: Int
+            var weight: CGFloat?
             var font: TranscriptFont?
             var code: TranscriptFont?
         }
@@ -118,17 +149,24 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// The traits that change the font; the others are drawn.
     private static let fontTraits: InlineSpan.Traits = [.bold, .italic, .code]
 
-    func font(for kind: TranscriptBlock.Kind, traits: InlineSpan.Traits = []) -> CTFont {
+    /// - Parameter weight: for body text, a weight as `TranscriptFont.weight`
+    ///   instead of the body font's own.
+    func font(for kind: TranscriptBlock.Kind, traits: InlineSpan.Traits = [], weight: CGFloat? = nil) -> CTFont {
         let traits = traits.intersection(Self.fontTraits)
+        var weight = weight
         let role: Int
         switch kind {
         case .paragraph, .rule, .table: role = 0
-        case .heading(let level): role = min(max(level, 1), 6)
-        case .code: role = 7
+        case .heading(let level):
+            role = min(max(level, 1), 6)
+            weight = nil
+        case .code:
+            role = 7
+            weight = nil
         }
-        let key = FontCache.Key(role: role, size: bodySize, traits: traits.rawValue, font: customFont(for: kind),
+        let key = FontCache.Key(role: role, size: bodySize, traits: traits.rawValue, weight: weight, font: customFont(for: kind),
                                 code: traits.contains(.code) ? codeFont : nil)
-        return Self.fontCache.font(for: key) { makeFont(for: kind, traits: traits) }
+        return Self.fontCache.font(for: key) { makeFont(for: kind, traits: traits, weight: weight) }
     }
 
     /// The font the app set for this kind of text, if any.
@@ -150,9 +188,19 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// The size of body text: the body font's, or `bodySize`.
     var effectiveBodySize: CGFloat { bodyFont?.size ?? bodySize }
 
-    private func makeFont(for kind: TranscriptBlock.Kind, traits: InlineSpan.Traits) -> CTFont {
+    private func makeFont(for kind: TranscriptBlock.Kind, traits: InlineSpan.Traits, weight: CGFloat?) -> CTFont {
         var font: CTFont
-        if let custom = customFont(for: kind) {
+        var traits = traits
+        if let weight {
+            if let custom = customFont(for: kind), custom.name != nil {
+                font = custom.makeFont()
+                if weight >= 0.3 { traits.insert(.bold) }
+            } else {
+                var custom = customFont(for: kind) ?? TranscriptFont(size: bodySize)
+                custom.weight = weight
+                font = custom.makeFont()
+            }
+        } else if let custom = customFont(for: kind) {
             font = custom.makeFont()
         } else {
             switch kind {
@@ -193,9 +241,9 @@ public struct TranscriptStyle: Equatable, Sendable {
     static let backgroundKey = NSAttributedString.Key("TranscriptKit.background")
     private static let kernKey = NSAttributedString.Key(kCTKernAttributeName as String)
 
-    func attributes(for kind: TranscriptBlock.Kind) -> [NSAttributedString.Key: Any] {
+    func attributes(for kind: TranscriptBlock.Kind, weight: CGFloat? = nil) -> [NSAttributedString.Key: Any] {
         var attributes: [NSAttributedString.Key: Any] = [
-            Self.fontKey: font(for: kind),
+            Self.fontKey: font(for: kind, weight: weight),
             // Text takes the context's fill color, so the view controls light/dark.
             Self.colorFromContextKey: true,
         ]

@@ -89,7 +89,8 @@ final class RenderCalls: @unchecked Sendable {
 }
 
 @Test func aFormulaThatFailsIsNotDrawnAgain() async {
-    let store = TranscriptImageStore()
+    let cache = TranscriptMathCache()
+    let store = TranscriptImageStore(mathCache: cache)
     let calls = RenderCalls()
     store.setMathRenderer { math, _ in
         calls.add(math.tex)
@@ -102,6 +103,8 @@ final class RenderCalls: @unchecked Sendable {
     #expect(store.drawnImage(math) == nil)
     try? await Task.sleep(for: .milliseconds(50))
     #expect(calls.all.count == 1)
+    // The cache keeps only images: a view that comes later asks the renderer again.
+    #expect(cache.usage.count == 0)
 }
 
 @Test func theCacheRemovesTheLeastRecentlyUsedFormulasOverItsLimit() async {
@@ -118,9 +121,9 @@ final class RenderCalls: @unchecked Sendable {
     }
     #expect(cache.usage.count == 3)
     #expect(cache.usage.bytes <= 256 * 3)
-    #expect(cache.result(for: .init(math: formulas[0], fontSize: 17)) != nil)
-    #expect(cache.result(for: .init(math: formulas[1], fontSize: 17)) == nil)
-    #expect(cache.result(for: .init(math: formulas[4], fontSize: 17)) != nil)
+    #expect(cache.image(for: .init(math: formulas[0], fontSize: 17)) != nil)
+    #expect(cache.image(for: .init(math: formulas[1], fontSize: 17)) == nil)
+    #expect(cache.image(for: .init(math: formulas[4], fontSize: 17)) != nil)
     cache.removeAll()
     #expect(cache.usage.count == 0)
 }
@@ -212,4 +215,257 @@ private final class Deliveries: @unchecked Sendable {
     await waitFor { deliveries.count == 1 }
     deliveries.runAll()
     #expect(deliveries.callCount == 2)
+}
+
+/// Holds a renderer until the test lets it go on.
+private final class Gate: @unchecked Sendable {
+    private let lock = NSLock()
+    private var isOpen = false
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func wait() async {
+        await withCheckedContinuation { continuation in
+            let resume: Bool = lock.withLock {
+                if isOpen { return true }
+                waiters.append(continuation)
+                return false
+            }
+            if resume { continuation.resume() }
+        }
+    }
+
+    func open() {
+        let waiters: [CheckedContinuation<Void, Never>] = lock.withLock {
+            isOpen = true
+            defer { self.waiters = [] }
+            return self.waiters
+        }
+        waiters.forEach { $0.resume() }
+    }
+}
+
+/// Keeps the work that the store runs once a failed formula may have settled.
+private final class Settles: @unchecked Sendable {
+    private let lock = NSLock()
+    private var waiting: [@Sendable () -> Void] = []
+    func add(_ work: @escaping @Sendable () -> Void) { lock.withLock { waiting.append(work) } }
+    var count: Int { lock.withLock { waiting.count } }
+    func runAll() {
+        let work = lock.withLock {
+            defer { waiting = [] }
+            return waiting
+        }
+        work.forEach { $0() }
+    }
+}
+
+private func width(_ formula: TranscriptImageStore.Formula) -> CGFloat? {
+    guard case .drawn(let image) = formula else { return nil }
+    return image.size.width
+}
+
+private func isAsWritten(_ formula: TranscriptImageStore.Formula) -> Bool {
+    if case .asWritten = formula { return true }
+    return false
+}
+
+@Test func aFormulaThatFailsWhileItStreamsInDoesNotShowItsLatex() async {
+    let settles = Settles()
+    let store = TranscriptImageStore(settle: { settles.add($0) })
+    let calls = RenderCalls()
+    // Like a real renderer: LaTeX with an open brace cannot be drawn.
+    store.setMathRenderer { math, _ in
+        calls.add(math.tex)
+        let open = math.tex.filter { $0 == "{" }.count
+        let closed = math.tex.filter { $0 == "}" }.count
+        return open == closed ? solidFormula(width: 10 * math.tex.count, height: 10) : nil
+    }
+    let slot = TranscriptImageStore.MathSlot(block: "md-0", index: 0)
+    func ask(_ tex: String) -> TranscriptImageStore.Formula {
+        store.formula(for: TranscriptMath(tex: tex, isDisplay: true), fontSize: 17, in: slot)
+    }
+    let full = "x = \\frac{a}{b}"
+    for count in 1...full.count {
+        let tex = String(full.prefix(count))
+        #expect(!isAsWritten(ask(tex)))
+        await waitFor { calls.all.last == tex }
+        #expect(calls.all.last == tex)
+        try? await Task.sleep(for: .milliseconds(5))
+        #expect(!isAsWritten(ask(tex)))
+    }
+    // The failures of LaTeX that changed since settle to nothing.
+    settles.runAll()
+    #expect(width(ask(full)) == CGFloat(10 * full.count))
+
+    // LaTeX that fails and then stays the same shows as written: it is not a prefix of a drawn formula forever.
+    let broken = full + " + \\frac{c}{"
+    #expect(width(ask(broken)) == CGFloat(10 * full.count))
+    await waitFor { settles.count == 1 }
+    #expect(width(ask(broken)) == CGFloat(10 * full.count))
+    settles.runAll()
+    #expect(isAsWritten(ask(broken)))
+}
+
+@Test func removingAllFormulasDrawsThemAgainInTheStoresThatShowThem() async {
+    let cache = TranscriptMathCache()
+    let deliveries = Deliveries()
+    let store = TranscriptImageStore(mathCache: cache, deliver: { deliveries.add($0) })
+    store.setOnChange { deliveries.called() }
+    let calls = RenderCalls()
+    store.setMathRenderer { math, _ in
+        calls.add(math.tex)
+        return solidFormula(width: 10 * calls.all.count, height: 10)
+    }
+    let math = TranscriptMath(tex: "x", isDisplay: false)
+    _ = store.drawnImage(math)
+    await waitFor { store.drawnImage(math) != nil }
+    #expect(store.drawnImage(math)?.size.width == 10)
+    deliveries.runAll()
+    let revision = store.revision
+    cache.removeAll()
+    #expect(store.revision > revision)
+    #expect(deliveries.count == 1)
+    deliveries.runAll()
+    #expect(store.drawnImage(math) == nil)
+    await waitFor { store.drawnImage(math) != nil }
+    #expect(store.drawnImage(math)?.size.width == 20)
+    #expect(calls.all == ["x", "x"])
+}
+
+@Test func aDrawThatStartedBeforeRemoveAllIsNotKept() async {
+    let cache = TranscriptMathCache()
+    let store = TranscriptImageStore(mathCache: cache)
+    let gates = [Gate(), Gate()]
+    let calls = RenderCalls()
+    store.setMathRenderer { math, _ in
+        let call = calls.all.count
+        calls.add(math.tex)
+        await gates[call].wait()
+        return solidFormula(width: 10 * (call + 1), height: 10)
+    }
+    let math = TranscriptMath(tex: "x", isDisplay: false)
+    #expect(store.drawnImage(math) == nil)
+    await waitFor { calls.all.count == 1 }
+    cache.removeAll()
+    // The new request does not wait for the draw from before.
+    #expect(store.drawnImage(math) == nil)
+    await waitFor { calls.all.count == 2 }
+    #expect(calls.all.count == 2)
+    gates[0].open()
+    try? await Task.sleep(for: .milliseconds(50))
+    #expect(cache.usage.count == 0)
+    #expect(store.drawnImage(math) == nil)
+    gates[1].open()
+    await waitFor { store.drawnImage(math) != nil }
+    #expect(store.drawnImage(math)?.size.width == 20)
+    #expect(cache.image(for: .init(math: math, fontSize: 17))?.size.width == 20)
+}
+
+@Test func aStoreGivenAnotherCacheDrawsIntoIt() async {
+    let first = TranscriptMathCache()
+    let second = TranscriptMathCache()
+    let store = TranscriptImageStore(mathCache: first)
+    store.setMathRenderer { _, _ in solidFormula(width: 10, height: 10) }
+    let math = TranscriptMath(tex: "x", isDisplay: false)
+    _ = store.drawnImage(math)
+    await waitFor { store.drawnImage(math) != nil }
+    var revision = store.revision
+    store.setMathCache(second)
+    #expect(store.revision > revision)
+    #expect(store.drawnImage(math) == nil)
+    await waitFor { store.drawnImage(math) != nil }
+    #expect(second.drawCount == 1)
+    // The cache it used before no longer lays it out again.
+    revision = store.revision
+    first.removeAll()
+    #expect(store.revision == revision)
+    #expect(store.drawnImage(math) != nil)
+}
+
+@Test func newerLatexThatIsAlreadyDrawnReplacesTheWaitingLatex() async {
+    // Room for one formula only.
+    let cache = TranscriptMathCache(byteLimit: 256)
+    let gate = Gate()
+    let calls = RenderCalls()
+    let renderer: TranscriptMathRenderer = { math, _ in
+        calls.add(math.tex)
+        if math.tex == "x" { await gate.wait() }
+        return solidFormula(width: 10 * math.tex.count, height: 10)
+    }
+    let store = TranscriptImageStore(mathCache: cache)
+    let other = TranscriptImageStore(mathCache: cache)
+    store.setMathRenderer(renderer)
+    other.setMathRenderer(renderer)
+    let slot = TranscriptImageStore.MathSlot(block: "md-0", index: 0)
+    func ask(_ tex: String) -> TranscriptImageStore.Formula {
+        store.formula(for: TranscriptMath(tex: tex, isDisplay: true), fontSize: 17, in: slot)
+    }
+    _ = ask("x")
+    await waitFor { calls.all == ["x"] }
+    _ = ask("x+")
+    // Another view draws the newest LaTeX first.
+    let newest = TranscriptMath(tex: "x+y", isDisplay: true)
+    _ = other.drawnImage(newest)
+    await waitFor { other.drawnImage(newest) != nil }
+    #expect(width(ask("x+y")) == 30)
+    gate.open()
+    await waitFor { cache.image(for: .init(math: TranscriptMath(tex: "x", isDisplay: true), fontSize: 17)) != nil }
+    try? await Task.sleep(for: .milliseconds(50))
+    // "x+" was not drawn, and the late image of "x" did not replace the newer one.
+    #expect(calls.all == ["x", "x+y"])
+    #expect(width(ask("x+y")) == 30)
+    #expect(calls.all == ["x", "x+y"])
+}
+
+@Test func picturesColorsAndFormulasThatArriveTogetherCallOnChangeOnce() async {
+    let deliveries = Deliveries()
+    let store = TranscriptImageStore(deliver: { deliveries.add($0) })
+    let picture = solidFormula(width: 4, height: 4).image
+    store.setLoader({ _ in picture }, onChange: { deliveries.called() })
+    store.setHighlighter { code, _ in [TranscriptCodeHighlight(range: 0..<code.utf16.count, color: TranscriptColor(red: 1, green: 0, blue: 0))] }
+    store.setMathRenderer { _, _ in solidFormula(width: 10, height: 10) }
+    let revision = store.revision
+    _ = store.picture(for: TranscriptImage(source: "a.png", alt: "a"))
+    _ = store.highlights(for: "code", text: "let x = 1", language: "swift")
+    _ = store.drawnImage(TranscriptMath(tex: "x", isDisplay: false))
+    await waitFor { store.revision == revision + 3 }
+    #expect(store.revision == revision + 3)
+    #expect(deliveries.count == 1)
+    deliveries.runAll()
+    #expect(deliveries.callCount == 1)
+}
+
+@Test func viewsShareTheirFormulasByDefault() async {
+    let calls = RenderCalls()
+    let renderer: TranscriptMathRenderer = { math, _ in
+        calls.add(math.tex)
+        return solidFormula(width: 10, height: 10)
+    }
+    let engines = [LayoutEngine(), LayoutEngine()]
+    for engine in engines { engine.images.setMathRenderer(renderer) }
+    // Other tests can use the shared cache at the same time, so this formula is one of its own.
+    let math = TranscriptMath(tex: "x_{\(UUID().uuidString)}", isDisplay: false)
+    _ = engines[0].images.drawnImage(math)
+    await waitFor { engines[0].images.drawnImage(math) != nil }
+    #expect(engines[1].images.drawnImage(math) != nil)
+    #expect(calls.all == [math.tex])
+}
+
+@Test func aStoreKeepsTheFormulasOfItsDocumentHoweverManyThereAre() async {
+    // Room for a few of the formulas only.
+    let cache = TranscriptMathCache(byteLimit: 256 * 8)
+    let store = TranscriptImageStore(mathCache: cache)
+    let calls = RenderCalls()
+    store.setMathRenderer { math, _ in
+        calls.add(math.tex)
+        return solidFormula(width: 10, height: 10)
+    }
+    let formulas = (0..<1100).map { TranscriptMath(tex: "x_{\($0)}", isDisplay: false) }
+    for math in formulas { _ = store.drawnImage(math) }
+    await waitFor { calls.all.count == 1100 && formulas.allSatisfy { store.drawnImage($0) != nil } }
+    #expect(formulas.allSatisfy { store.drawnImage($0) != nil })
+    #expect(calls.all.count == 1100)
+    // A document without those blocks: their slots go.
+    store.keepFormulas(of: MarkdownStreamParser.document(from: "Text", idPrefix: "other"))
+    #expect(store.mathSlotCount == 0)
 }

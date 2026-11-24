@@ -253,6 +253,7 @@ public struct TranscriptStyle: Equatable, Sendable {
             cuts.insert(span.range.upperBound)
         }
         let sorted = cuts.sorted()
+        var mathStarts: [Int]?
         for (lower, upper) in zip(sorted, sorted.dropFirst()) {
             var traits = extraTraits
             var isLink = false
@@ -287,8 +288,10 @@ public struct TranscriptStyle: Equatable, Sendable {
             if let background { result.addAttribute(Self.backgroundKey, value: background, range: range) }
             if image != nil || math != nil, range.length == 1 {
                 let font = result.attribute(Self.fontKey, at: lower, effectiveRange: nil).map { $0 as! CTFont } ?? self.font(for: block.kind)
-                let attachment = math.map {
-                    ImageAttachment(math: $0.math, slot: Self.mathSlot(in: block, at: $0.start), sizing: images, font: font, style: self)
+                let attachment = math.map { math -> ImageAttachment in
+                    if mathStarts == nil { mathStarts = Self.mathStarts(in: block) }
+                    let slot = Self.mathSlot(in: block, at: math.start, starts: mathStarts!)
+                    return ImageAttachment(math: math.math, slot: slot, sizing: images, font: font, style: self)
                 } ?? ImageAttachment(image: image!, sizing: images, font: font, style: self)
                 result.addAttribute(Self.imageKey, value: attachment, range: range)
                 result.addAttribute(Self.runDelegateKey, value: attachment.makeRunDelegate(), range: range)
@@ -307,8 +310,23 @@ extension TranscriptStyle {
     /// The slot of the formula that starts at UTF-16 offset `start` of
     /// `block`: it is the same whichever part of the block is laid out.
     static func mathSlot(in block: TranscriptBlock, at start: Int) -> TranscriptImageStore.MathSlot {
-        let before = block.spans.reduce(0) { $0 + ($1.math != nil && $1.range.lowerBound < start ? 1 : 0) }
-        return TranscriptImageStore.MathSlot(block: block.id, index: before)
+        mathSlot(in: block, at: start, starts: mathStarts(in: block))
+    }
+
+    /// The same, with the block's `mathStarts`.
+    static func mathSlot(in block: TranscriptBlock, at start: Int, starts: [Int]) -> TranscriptImageStore.MathSlot {
+        var low = 0
+        var high = starts.count
+        while low < high {
+            let middle = (low + high) / 2
+            if starts[middle] < start { low = middle + 1 } else { high = middle }
+        }
+        return TranscriptImageStore.MathSlot(block: block.id, index: low)
+    }
+
+    /// Where the block's formulas start, in order.
+    static func mathStarts(in block: TranscriptBlock) -> [Int] {
+        block.spans.compactMap { $0.math != nil ? $0.range.lowerBound : nil }.sorted()
     }
 }
 

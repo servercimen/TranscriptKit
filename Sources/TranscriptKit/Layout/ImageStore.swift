@@ -39,10 +39,17 @@ final class TranscriptImageStore: @unchecked Sendable {
     ///   - mathCache: where drawn formulas are kept. A store has a cache of
     ///     its own unless it is given one that views share.
     ///   - deliver: runs `onChange`.
+    ///   - settle: runs its work once the LaTeX of a formula that the
+    ///     renderer could not draw may have stopped changing.
     init(mathCache: TranscriptMathCache = TranscriptMathCache(),
-         deliver: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }) {
+         deliver: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) },
+         settle: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void = {
+             DispatchQueue.global().asyncAfter(deadline: .now() + 1, execute: $0)
+         }) {
         self.mathCache = mathCache
         self.deliver = deliver
+        self.settle = settle
+        mathCache.add(self)
     }
 
     /// Sets the loader and what to call when a picture has arrived; see
@@ -149,18 +156,35 @@ final class TranscriptImageStore: @unchecked Sendable {
         case asWritten
     }
 
+    /// A slot, as for code blocks: what it shows and what is drawn for it.
+    private struct SlotState {
+        /// The formula the slot was asked for last.
+        var asked: TranscriptMathCache.Key?
+        /// The slot's last image, and its formula. The image is kept here
+        /// too, so that a formula on screen that the cache removed is not
+        /// drawn again, which would remove another one.
+        var shown: (key: TranscriptMathCache.Key, image: TranscriptMathImage)?
+        /// The last formula that the renderer could not draw, and whether
+        /// its LaTeX stayed the same long enough after that to show it.
+        var failed: TranscriptMathCache.Key?
+        var failureSettled = false
+        /// The formula being drawn, and the newest one waiting for its turn.
+        var drawing: TranscriptMathCache.Key?
+        var waiting: TranscriptMathCache.Key?
+        /// The slot showed a newer formula than the one being drawn, which
+        /// then must not replace it.
+        var drawingIsOutdated = false
+    }
+
     private var mathRenderer: TranscriptMathRenderer?
     private var mathCache: TranscriptMathCache
     private var mathGeneration = 0
-    /// For each slot, as for code blocks: the formula it last showed drawn,
-    /// the one being drawn, and the newest one waiting for its turn.
-    /// The last images are kept here too: a formula on screen that the cache
-    /// removed is then not drawn again, which would remove another one. Only
-    /// the slots used last are kept, so that a view that shows one document
-    /// after another does not keep all their formulas.
-    private var shownFormulas = LeastRecentlyUsed<MathSlot, (key: TranscriptMathCache.Key, image: TranscriptMathImage)>(costLimit: 1024)
-    private var drawingFormulas: [MathSlot: TranscriptMathCache.Key] = [:]
-    private var waitingFormulas: [MathSlot: TranscriptMathCache.Key] = [:]
+    private var mathSlots: [MathSlot: SlotState] = [:]
+    /// How many slots were kept when slots of other documents were last removed.
+    private var keptMathSlots = 0
+    /// Runs its work once the LaTeX of a formula that failed may have
+    /// stopped changing.
+    private let settle: @Sendable (@escaping @Sendable () -> Void) -> Void
 
     var hasMathRenderer: Bool { lock.withLock { mathRenderer != nil } }
 
@@ -176,47 +200,81 @@ final class TranscriptImageStore: @unchecked Sendable {
 
     /// Sets where drawn formulas are kept, and lays them out again.
     func setMathCache(_ cache: TranscriptMathCache) {
-        lock.withLock {
-            guard cache !== mathCache else { return }
+        let changed: Bool = lock.withLock {
+            guard cache !== mathCache else { return false }
             mathCache = cache
             resetFormulas()
+            return true
         }
+        if changed { cache.add(self) }
+    }
+
+    /// The cache removed all its formulas: they are drawn again.
+    func mathCacheWasEmptied(_ cache: TranscriptMathCache) {
+        let changed: Bool = lock.withLock {
+            guard cache === mathCache else { return false }
+            resetFormulas()
+            return mathRenderer != nil
+        }
+        if changed { notifyChange() }
     }
 
     private func resetFormulas() {
         mathGeneration += 1
         _revision += 1
-        shownFormulas.removeAll()
-        drawingFormulas = [:]
-        waitingFormulas = [:]
+        mathSlots = [:]
+        keptMathSlots = 0
+    }
+
+    /// Removes the slots of blocks that are not in `document`, so that a
+    /// view that shows one document after another does not keep all their
+    /// formulas. The slots of `document` all stay, however many there are.
+    func keepFormulas(of document: TranscriptDocument) {
+        lock.withLock {
+            guard mathSlots.count > keptMathSlots * 2 + 64 else { return }
+            let blocks = Set(document.blocks.map(\.id))
+            mathSlots = mathSlots.filter { blocks.contains($0.key.block) || $0.value.drawing != nil }
+            keptMathSlots = mathSlots.count
+        }
     }
 
     /// What to show for `math` in `slot`. When it is not drawn yet, drawing
     /// starts (or waits for the slot's current one to end), and the slot's
     /// last image is given meanwhile: while a formula streams in, its last
     /// image is closer to the new one than empty space is.
+    ///
+    /// A renderer can return nil for LaTeX that is not complete yet. Then the
+    /// slot shows the same until its LaTeX stays the same for a moment, and
+    /// only after that shows the LaTeX as written.
     func formula(for math: TranscriptMath, fontSize: CGFloat, in slot: MathSlot) -> Formula {
         let key = TranscriptMathCache.Key(math: math, fontSize: fontSize)
         let (formula, start): (Formula, (TranscriptMathRenderer, TranscriptMathCache, Int)?) = lock.withLock {
             guard let mathRenderer else { return (.asWritten, nil) }
-            switch mathCache.result(for: key) {
-            case .drawn(let image)?:
-                shownFormulas.set((key, image), for: slot, cost: 1)
+            var state = mathSlots[slot] ?? SlotState()
+            defer { mathSlots[slot] = state }
+            state.asked = key
+            if let image = mathCache.image(for: key) {
+                state.shown = (key, image)
+                state.waiting = nil
+                state.drawingIsOutdated = state.drawing != nil
                 return (.drawn(image), nil)
-            case .failed?:
-                return (.asWritten, nil)
-            case nil:
-                break
             }
-            let shown = shownFormulas.value(for: slot)
-            if let shown, shown.key == key { return (.drawn(shown.image), nil) }
+            if let shown = state.shown, shown.key == key {
+                state.waiting = nil
+                state.drawingIsOutdated = state.drawing != nil
+                return (.drawn(shown.image), nil)
+            }
             var meanwhile = Formula.pending
-            if let shown, Self.mayBeEarlierVersion(shown.key.math, of: math) { meanwhile = .drawn(shown.image) }
-            if let drawing = drawingFormulas[slot] {
-                waitingFormulas[slot] = drawing == key ? nil : key
+            if let shown = state.shown, Self.mayBeEarlierVersion(shown.key.math, of: math) { meanwhile = .drawn(shown.image) }
+            if state.failed == key {
+                state.waiting = nil
+                return (state.failureSettled ? .asWritten : meanwhile, nil)
+            }
+            if let drawing = state.drawing {
+                state.waiting = drawing == key ? nil : key
                 return (meanwhile, nil)
             }
-            drawingFormulas[slot] = key
+            state.drawing = key
             return (meanwhile, (mathRenderer, mathCache, mathGeneration))
         }
         if let (renderer, cache, generation) = start {
@@ -243,19 +301,60 @@ final class TranscriptImageStore: @unchecked Sendable {
 
     private func finishFormula(_ key: TranscriptMathCache.Key, in slot: MathSlot, _ result: TranscriptMathCache.Result,
                                generation: Int) {
-        let (changed, next): (Bool, (TranscriptMathCache.Key, TranscriptMathRenderer, TranscriptMathCache)?) = lock.withLock {
-            guard generation == mathGeneration else { return (false, nil) }
-            if case .drawn(let image) = result { shownFormulas.set((key, image), for: slot, cost: 1) }
-            _revision += 1
-            if let waiting = waitingFormulas.removeValue(forKey: slot), waiting != key, let mathRenderer {
-                drawingFormulas[slot] = waiting
-                return (true, (waiting, mathRenderer, mathCache))
+        let (changed, failed, next): (Bool, Bool, (TranscriptMathCache.Key, TranscriptMathRenderer, TranscriptMathCache)?) = lock.withLock {
+            guard generation == mathGeneration, var state = mathSlots[slot] else { return (false, false, nil) }
+            defer { mathSlots[slot] = state }
+            let isNewest = key == state.asked
+            var changed = false
+            var failed = false
+            switch result {
+            case .drawn(let image):
+                // An older formula's image stands in for the newest until that is drawn.
+                let standsIn = !state.drawingIsOutdated && state.asked.map { Self.mayBeEarlierVersion(key.math, of: $0.math) } == true
+                if isNewest || standsIn {
+                    state.shown = (key, image)
+                    changed = true
+                }
+            case .failed:
+                if isNewest {
+                    state.failed = key
+                    state.failureSettled = false
+                    failed = true
+                }
             }
-            drawingFormulas[slot] = nil
-            return (true, nil)
+            if changed { _revision += 1 }
+            state.drawingIsOutdated = false
+            if let waiting = state.waiting, let mathRenderer {
+                state.waiting = nil
+                state.drawing = waiting
+                return (changed, failed, (waiting, mathRenderer, mathCache))
+            }
+            state.waiting = nil
+            state.drawing = nil
+            return (changed, failed, nil)
         }
         if let (waiting, renderer, cache) = next {
             draw(waiting, in: slot, with: renderer, cache: cache, generation: generation)
+        }
+        if failed {
+            settle { [weak self] in self?.settleFailure(key, in: slot, generation: generation) }
+        }
+        if changed { notifyChange() }
+    }
+
+    /// How many slots the store keeps. For tests.
+    var mathSlotCount: Int { lock.withLock { mathSlots.count } }
+
+    /// Shows the LaTeX of a formula that failed, if the slot was not asked
+    /// for other LaTeX since.
+    private func settleFailure(_ key: TranscriptMathCache.Key, in slot: MathSlot, generation: Int) {
+        let changed: Bool = lock.withLock {
+            guard generation == mathGeneration, var state = mathSlots[slot], state.failed == key, state.asked == key,
+                  !state.failureSettled else { return false }
+            state.failureSettled = true
+            mathSlots[slot] = state
+            _revision += 1
+            return true
         }
         if changed { notifyChange() }
     }

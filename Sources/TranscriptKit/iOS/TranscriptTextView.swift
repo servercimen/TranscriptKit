@@ -180,7 +180,15 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// the LaTeX of a formula changes, as when an app closes an open formula
     /// in each new snapshot of the text, the formula keeps its last image
     /// until the new one is drawn, and only its newest LaTeX waits to be
-    /// drawn. A formula shows its LaTeX as written if the renderer returns nil.
+    /// drawn. If the renderer returns nil, the formula shows its LaTeX as
+    /// written once that LaTeX stays the same for a second: LaTeX that is
+    /// not complete yet can fail while it streams in.
+    ///
+    /// Views share `TranscriptMathCache.shared` by default, and a formula
+    /// that one view drew shows in the others without a call to their
+    /// renderers. Setting this property does not empty the cache. Give views
+    /// whose renderers draw a formula differently a `mathCache` each, and
+    /// call `removeAll()` on the cache when the renderer changes how it draws.
     public var mathRenderer: TranscriptMathRenderer? {
         didSet {
             engine.images.setOnChange { [weak self] in

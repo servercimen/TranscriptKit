@@ -297,7 +297,7 @@ private func attachment(in layout: DocumentLayout) -> ImageAttachment? {
     let plain = DocumentLayout(document: document, width: 300, style: TranscriptStyle(), reusing: nil, images: TranscriptImageStore())
     #expect(attachment(in: plain)?.label != nil)
 
-    let store = TranscriptImageStore()
+    let store = TranscriptImageStore(settle: { $0() })
     store.setMathRenderer { _, _ in nil }
     let revision = store.revision
     let first = DocumentLayout(document: document, width: 300, style: TranscriptStyle(), reusing: nil, images: store)

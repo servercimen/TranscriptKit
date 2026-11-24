@@ -6,7 +6,9 @@ import Foundation
 ///
 /// Each `TranscriptTextView` uses `shared` unless the app gives it another
 /// cache. A cache keeps the formulas of one renderer: give views whose
-/// renderers draw a formula differently a cache each.
+/// renderers draw a formula differently a cache each. The cache keeps only
+/// images: when the renderer returns nil, each view keeps that result for
+/// the formulas it shows, until its renderer is set again.
 public final class TranscriptMathCache: @unchecked Sendable {
     /// The cache that views use unless the app gives them another.
     public static let shared = TranscriptMathCache()
@@ -27,83 +29,113 @@ public final class TranscriptMathCache: @unchecked Sendable {
     /// What the renderer gave for a formula.
     enum Result: Sendable {
         case drawn(TranscriptMathImage)
-        /// The renderer returned nil: the formula shows its LaTeX as written.
+        /// The renderer returned nil.
         case failed
+    }
 
-        /// Bytes. A formula that failed costs a little too, so that the
-        /// number of formulas kept has a limit.
-        var cost: Int {
-            guard case .drawn(let formula) = self else { return 256 }
-            return max(formula.image.bytesPerRow * formula.image.height, 256)
-        }
+    /// A draw of `key` that started after the cache was emptied `generation` times.
+    private struct Draw: Hashable {
+        let key: Key
+        let generation: Int
+    }
+
+    private struct WeakStore {
+        weak var store: TranscriptImageStore?
     }
 
     private let lock = NSLock()
-    private var results: LeastRecentlyUsed<Key, Result>
-    /// For each formula that is being drawn: what to call with its result.
-    private var waiting: [Key: [@Sendable (Result) -> Void]] = [:]
+    private var images: LeastRecentlyUsed<Key, TranscriptMathImage>
+    /// For each draw in progress: what to call with its result.
+    private var waiting: [Draw: [@Sendable (Result) -> Void]] = [:]
+    private var stores: [ObjectIdentifier: WeakStore] = [:]
+    /// How many stores were alive when the dead ones were last removed.
+    private var liveStores = 0
     private var generation = 0
     private var draws = 0
 
     /// - Parameter byteLimit: how much memory the drawn formulas can use.
     ///   When they use more, the formulas used least recently are removed.
     public init(byteLimit: Int = 16 * 1024 * 1024) {
-        results = LeastRecentlyUsed(costLimit: byteLimit)
+        images = LeastRecentlyUsed(costLimit: byteLimit)
     }
 
-    /// Removes all the formulas. Views draw a formula again the next time
-    /// they lay it out. Use this when the renderer changes how it draws.
+    /// Removes all the formulas, and lays out again the views that use the
+    /// cache, so that they draw their formulas again. Use this when the
+    /// renderer changes how it draws. Formulas that are being drawn now are
+    /// not kept, and are drawn again when a view asks for them.
     public func removeAll() {
-        lock.withLock {
+        let stores: [TranscriptImageStore] = lock.withLock {
             generation += 1
-            results.removeAll()
+            images.removeAll()
+            return self.stores.values.compactMap(\.store)
+        }
+        for store in stores { store.mathCacheWasEmptied(self) }
+    }
+
+    /// Tells `store` when the cache is emptied.
+    func add(_ store: TranscriptImageStore) {
+        lock.withLock {
+            stores[ObjectIdentifier(store)] = WeakStore(store: store)
+            if stores.count > liveStores * 2 + 64 {
+                stores = stores.filter { $0.value.store != nil }
+                liveStores = stores.count
+            }
         }
     }
 
-    /// The result for `key`, if the renderer has given it.
-    func result(for key: Key) -> Result? {
-        lock.withLock { results.value(for: key) }
+    /// The image for `key`, if the renderer has drawn it.
+    func image(for key: Key) -> TranscriptMathImage? {
+        lock.withLock { images.value(for: key) }
     }
 
     /// Calls `done` with the result for `key`: right away if the renderer
-    /// has given it, or else once it has drawn the formula. The renderer is
-    /// not called again for a formula that it is drawing.
+    /// has drawn it, or else once the renderer has given its result. The
+    /// renderer is not called again for a formula that it is drawing.
     func draw(_ key: Key, with renderer: @escaping TranscriptMathRenderer, then done: @escaping @Sendable (Result) -> Void) {
-        enum Step { case known(Result), wait, start(Int) }
+        enum Step { case known(TranscriptMathImage), wait, start(Draw) }
         let step: Step = lock.withLock {
-            if let known = results.value(for: key) { return .known(known) }
-            if waiting[key] != nil {
-                waiting[key]!.append(done)
+            if let known = images.value(for: key) { return .known(known) }
+            let draw = Draw(key: key, generation: generation)
+            if waiting[draw] != nil {
+                waiting[draw]!.append(done)
                 return .wait
             }
-            waiting[key] = [done]
+            waiting[draw] = [done]
             draws += 1
-            return .start(generation)
+            return .start(draw)
         }
         switch step {
-        case .known(let result):
-            done(result)
+        case .known(let image):
+            done(.drawn(image))
         case .wait:
             break
-        case .start(let generation):
+        case .start(let draw):
             Task.detached {
                 let drawn = await renderer(key.math, key.fontSize)?.withAlphaAsMask()
-                self.finish(key, drawn.map(Result.drawn) ?? .failed, generation: generation)
+                self.finish(draw, drawn.map(Result.drawn) ?? .failed)
             }
         }
     }
 
-    private func finish(_ key: Key, _ result: Result, generation: Int) {
+    private func finish(_ draw: Draw, _ result: Result) {
         let waiters: [@Sendable (Result) -> Void] = lock.withLock {
-            if generation == self.generation { results.set(result, for: key, cost: result.cost) }
-            return waiting.removeValue(forKey: key) ?? []
+            if draw.generation == generation, case .drawn(let image) = result {
+                images.set(image, for: draw.key, cost: Self.cost(of: image))
+            }
+            return waiting.removeValue(forKey: draw) ?? []
         }
         for done in waiters { done(result) }
+    }
+
+    /// Bytes, and at least a little for each formula, so that the number of
+    /// formulas kept has a limit.
+    static func cost(of formula: TranscriptMathImage) -> Int {
+        max(formula.image.bytesPerRow * formula.image.height, 256)
     }
 
     /// How many times the renderer was called. For tests.
     var drawCount: Int { lock.withLock { draws } }
 
     /// How much memory the formulas use, in bytes, and how many there are. For tests.
-    var usage: (bytes: Int, count: Int) { lock.withLock { (results.totalCost, results.count) } }
+    var usage: (bytes: Int, count: Int) { lock.withLock { (images.totalCost, images.count) } }
 }

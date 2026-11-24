@@ -239,7 +239,8 @@ A single `$` is text, so prices stay as written. TranscriptKit does not read Mar
 Without a renderer, a formula shows its LaTeX in the code font. A renderer gets the formula and the font size of the
 text around it. It returns an image, the image's size in points, and its baseline: the distance from the bottom edge
 up to the baseline. TranscriptKit calls it off the main thread, once for each formula and font size. If it returns
-nil, the formula shows its LaTeX as written.
+nil, the formula shows its LaTeX as written once that LaTeX stays the same for a second. LaTeX that is not complete yet
+can fail while it streams in, and the formula then keeps what it showed.
 
 ```swift
 TranscriptText(stream: stream)
@@ -260,11 +261,14 @@ reads the LaTeX.
 Until the renderer draws a formula, the formula is empty space of about its size. The LaTeX of a formula can change
 from one update to the next, for example when your app closes an open formula in each new snapshot of the text. Then
 the formula keeps its last image until the new one is drawn. Each formula has at most one drawing in progress, and
-newer LaTeX replaces the LaTeX that waits for its turn. Images that arrive together cause one layout.
+newer LaTeX replaces the LaTeX that waits for its turn. Images that arrive together cause one layout. A view keeps
+the images of the formulas in the document it shows, also when the cache removes them, so it does not draw them again.
 
 Drawn formulas are kept in a `TranscriptMathCache`. All views share `TranscriptMathCache.shared` by default, so a
 formula that shows in many messages is drawn once. The cache removes the least recently used formulas when they use
-more than its byte limit, 16 MB by default. Give views whose renderers draw a formula differently a cache each:
+more than its byte limit, 16 MB by default. The cache does not keep a nil result: each view keeps it for the formulas
+it shows. A view shows the formulas that any renderer of its cache drew, so give views whose renderers draw a formula
+differently a cache each:
 
 ```swift
 let cache = TranscriptMathCache(byteLimit: 8 * 1024 * 1024)
@@ -273,8 +277,8 @@ TranscriptText(stream: stream)
     .mathRenderer(myRenderer, cache: cache)
 ```
 
-In UIKit, set `mathCache` on `TranscriptTextView`. Call `removeAll()` on a cache after your renderer changes how it
-draws.
+In UIKit, set `mathCache` on `TranscriptTextView`. Setting a renderer does not empty the cache. Call `removeAll()` on
+a cache after your renderer changes how it draws: the views that use the cache then draw their formulas again.
 
 ### Selection
 

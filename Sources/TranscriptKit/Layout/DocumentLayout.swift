@@ -67,6 +67,7 @@ public final class DocumentLayout: @unchecked Sendable {
         self.document = document
         let imageRevision = images?.revision ?? 0
         self.imageRevision = imageRevision
+        images?.keepFormulas(of: document)
 
         // A line-limited layout may hold a block cut short, so it is not reused.
         let previous = style.lineLimit == nil ? previous.flatMap { $0.width == width && $0.style == style ? $0 : nil } : nil

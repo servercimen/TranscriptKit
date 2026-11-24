@@ -80,8 +80,10 @@ public struct TranscriptText: UIViewRepresentable {
     }
 
     /// Draws LaTeX formulas; see `TranscriptTextView.mathRenderer`. The
-    /// drawn formulas are kept in `cache`, which views share by default; see
-    /// `TranscriptTextView.mathCache`. Read once, when the view is created.
+    /// drawn formulas are kept in `cache`, which is `TranscriptMathCache.shared`
+    /// by default: views that share a cache show the formulas that any of
+    /// their renderers drew. See `TranscriptTextView.mathCache`. Read once,
+    /// when the view is created.
     public func mathRenderer(_ renderer: @escaping TranscriptMathRenderer, cache: TranscriptMathCache = .shared) -> TranscriptText {
         var copy = self
         copy.mathRenderer = renderer

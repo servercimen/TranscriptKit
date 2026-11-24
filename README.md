@@ -274,7 +274,8 @@ them off with `.showsWritingTools(false)`, or with `showsWritingTools` on `Trans
 Copy puts two forms of the selected text on the pasteboard. The plain text is readable as Markdown, with list
 markers, quote prefixes and tables (see `copyText(in:)` on `TranscriptDocument`). The rich text is RTF, with the
 fonts of the text, bold, italic, code, links, strikethrough and underline. It has no colors, so pasted text takes the
-colors of the place it goes to. An app that reads plain text gets the plain text.
+colors of the place it goes to. Its list markers, quote prefixes, tables and rules are the characters of the plain
+text, not RTF lists or tables. An app that reads plain text gets the plain text.
 
 ### VoiceOver
 

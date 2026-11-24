@@ -426,3 +426,25 @@ private final class FlushRecord {
     #expect(second.isIdle)
     #expect(host.text == "Other text")
 }
+
+@MainActor
+@Test(.timeLimit(.minutes(1))) func textThatTheLayoutAppendsHoldsTheWaitBack() async {
+    let host = Host()
+    let stream = TranscriptStream()
+    host.show(stream)
+    stream.append("One two")
+    await host.waiters.wait()
+
+    // As an app does that appends from a callback of the layout, such as
+    // `onSelectionChange`.
+    var appended = false
+    host.waiters.layOut = {
+        guard !appended else { return }
+        appended = true
+        stream.append(" three")
+    }
+    await host.waiters.wait()
+    #expect(appended)
+    #expect(stream.isIdle)
+    #expect(host.text == "One two three")
+}

@@ -73,25 +73,31 @@ final class ContentSettledWaiters {
     }
 
     private func isSettled() -> Bool {
-        guard work.isIdle else { return false }
-        if let stream = stream(), !stream.isIdle {
-            if watchedStream !== stream {
-                watchedStream = stream
-                // `flush()` runs this inline, so the check must not lay out
-                // or draw inside the caller's call.
-                stream.whenIdle { [weak self, weak stream] in
-                    guard let self else { return }
-                    if self.watchedStream === stream { self.watchedStream = nil }
-                    DispatchQueue.main.async { [weak self] in
-                        MainActor.assumeIsolated { self?.check() }
-                    }
-                }
-            }
-            return false
-        }
+        guard work.isIdle, streamIsIdle() else { return false }
         layOut()
-        guard work.isIdle else { return false }
+        // A callback of the layout, such as `onSelectionChange`, can append
+        // to the stream, and an append starts no work.
+        guard work.isIdle, streamIsIdle() else { return false }
         draw()
         return true
+    }
+
+    /// The stream has no text left to parse. If it has, checks again when
+    /// it becomes idle.
+    private func streamIsIdle() -> Bool {
+        guard let stream = stream(), !stream.isIdle else { return true }
+        if watchedStream !== stream {
+            watchedStream = stream
+            // `flush()` runs this inline, so the check must not lay out
+            // or draw inside the caller's call.
+            stream.whenIdle { [weak self, weak stream] in
+                guard let self else { return }
+                if self.watchedStream === stream { self.watchedStream = nil }
+                DispatchQueue.main.async { [weak self] in
+                    MainActor.assumeIsolated { self?.check() }
+                }
+            }
+        }
+        return false
     }
 }

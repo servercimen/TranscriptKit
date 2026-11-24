@@ -81,11 +81,12 @@ final class LayoutEngine: @unchecked Sendable {
     /// that the view has not taken yet, and the image store's loads.
     let work: PendingWork
     /// Pictures for the documents' images, if the view was given a loader.
+    /// Formulas are kept in the cache that views share.
     let images: TranscriptImageStore
 
     init() {
         work = PendingWork()
-        images = TranscriptImageStore(work: work)
+        images = TranscriptImageStore(mathCache: .shared, work: work)
     }
 
     // Guarded by `lock`.

@@ -169,14 +169,37 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     /// Draws LaTeX formulas: `\( … \)` inline, and `\[ … \]` and `$$ … $$`
     /// as display math. It is called off the main thread, once for each formula
-    /// and font size. Only the alpha of the image it returns is used: the
-    /// formula is drawn in the text color. A formula shows its LaTeX as
-    /// written until it is drawn, or if the renderer returns nil. Not set by
-    /// default.
+    /// and font size in `mathCache`. Only the alpha of the image it returns is
+    /// used: the formula is drawn in the text color. Not set by default.
+    ///
+    /// Until a formula is drawn, it is empty space of about its size. While
+    /// the LaTeX of a formula changes, as when an app closes an open formula
+    /// in each new snapshot of the text, the formula keeps its last image
+    /// until the new one is drawn, and only its newest LaTeX waits to be
+    /// drawn. If the renderer returns nil, the formula shows its LaTeX as
+    /// written once that LaTeX stays the same for a second: LaTeX that is
+    /// not complete yet can fail while it streams in.
+    ///
+    /// Views share `TranscriptMathCache.shared` by default, and a formula
+    /// that one view drew shows in the others without a call to their
+    /// renderers. Setting this property does not empty the cache. Give views
+    /// whose renderers draw a formula differently a `mathCache` each, and
+    /// call `removeAll()` on the cache when the renderer changes how it draws.
     public var mathRenderer: TranscriptMathRenderer? {
         didSet {
             engine.images.setOnChange(imagesChanged)
             engine.images.setMathRenderer(mathRenderer)
+            relayoutNow()
+        }
+    }
+
+    /// Keeps the formulas that `mathRenderer` draws, so that views that share
+    /// a cache draw each formula once. `TranscriptMathCache.shared` by default.
+    /// Give views whose renderers draw a formula differently a cache each.
+    public var mathCache: TranscriptMathCache = .shared {
+        didSet {
+            guard mathCache !== oldValue else { return }
+            engine.images.setMathCache(mathCache)
             relayoutNow()
         }
     }
@@ -189,8 +212,9 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// Work that keeps arriving, such as a stream that has not finished,
     /// does not hold it back: it returns at the first moment when nothing
     /// is pending. A cancelled task returns at once. An image that the
-    /// loader returns nil for, and a formula that the renderer returns nil
-    /// for, count as done. A load, a formula or a highlight that never ends
+    /// loader returns nil for counts as done. A formula that the renderer
+    /// returns nil for counts as done when it shows its LaTeX as written,
+    /// about a second later. A load, a formula or a highlight that never ends
     /// holds it back: use a timeout, or cancel the task. Fades and tag
     /// animations that play are not waited for: to compare pixels, turn off
     /// `textFadeInDuration` and `animatesTags`.
@@ -212,16 +236,11 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         return waiters
     }
 
-    /// Lays out again on main when a picture, a formula or code colors
-    /// arrive. Any thread.
+    /// Lays out again when pictures, formulas or code colors arrive. The
+    /// image store calls it on main.
     private var imagesChanged: @Sendable () -> Void {
-        let work = engine.work
-        return { [weak self] in
-            work.begin()
-            DispatchQueue.main.async {
-                MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
-                work.end()
-            }
+        { [weak self] in
+            MainActor.assumeIsolated { self?.relayoutNow(keepingFades: true) }
         }
     }
 

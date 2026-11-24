@@ -67,6 +67,7 @@ public final class DocumentLayout: @unchecked Sendable {
         self.document = document
         let imageRevision = images?.revision ?? 0
         self.imageRevision = imageRevision
+        images?.keepFormulas(of: document)
 
         // A line-limited layout may hold a block cut short, so it is not reused.
         let previous = style.lineLimit == nil ? previous.flatMap { $0.width == width && $0.style == style ? $0 : nil } : nil
@@ -718,11 +719,11 @@ public final class DocumentLayout: @unchecked Sendable {
             }
             return
         }
-        // No picture: a chip with the alt text.
+        // No picture: a chip with the alt text, or for a formula being drawn, nothing.
+        guard let label = attachment.label else { return }
         context.setFillColor(background)
         context.addPath(CGPath(roundedRect: rect.insetBy(dx: 0, dy: 1), cornerWidth: 5, cornerHeight: 5, transform: nil))
         context.fillPath()
-        guard let label = attachment.label else { return }
         var ascent: CGFloat = 0
         var descent: CGFloat = 0
         CTLineGetTypographicBounds(label, &ascent, &descent, nil)

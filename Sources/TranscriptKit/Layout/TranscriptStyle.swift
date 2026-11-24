@@ -362,11 +362,12 @@ public struct TranscriptStyle: Equatable, Sendable {
             cuts.insert(span.range.upperBound)
         }
         let sorted = cuts.sorted()
+        var mathStarts: [Int]?
         for (lower, upper) in zip(sorted, sorted.dropFirst()) {
             var traits = extraTraits
             var isLink = false
             var image: TranscriptImage?
-            var math: TranscriptMath?
+            var math: (math: TranscriptMath, start: Int)?
             // Spans are sorted with outer ones first, so an inner tag's colors win.
             var foreground: TranscriptColor?
             var background: TranscriptColor?
@@ -374,7 +375,7 @@ public struct TranscriptStyle: Equatable, Sendable {
                 traits.formUnion(span.traits)
                 if span.link != nil || span.reference.map({ definitions[$0] != nil }) == true { isLink = true }
                 if let spanImage = span.image { image = spanImage }
-                if let spanMath = span.math { math = spanMath }
+                if let spanMath = span.math { math = (spanMath, span.range.lowerBound + start) }
                 if let decoration = span.customTag?.decoration {
                     if let color = decoration.foreground { foreground = color }
                     if let color = decoration.background { background = color }
@@ -400,8 +401,11 @@ public struct TranscriptStyle: Equatable, Sendable {
             }
             if image != nil || math != nil, range.length == 1 {
                 let font = result.attribute(Self.fontKey, at: lower, effectiveRange: nil).map { $0 as! CTFont } ?? self.font(for: block.kind)
-                let attachment = math.map { ImageAttachment(math: $0, sizing: images, font: font, style: self) }
-                    ?? ImageAttachment(image: image!, sizing: images, font: font, style: self)
+                let attachment = math.map { math -> ImageAttachment in
+                    if mathStarts == nil { mathStarts = Self.mathStarts(in: block) }
+                    let slot = Self.mathSlot(in: block, at: math.start, starts: mathStarts!)
+                    return ImageAttachment(math: math.math, slot: slot, sizing: images, font: font, style: self)
+                } ?? ImageAttachment(image: image!, sizing: images, font: font, style: self)
                 result.addAttribute(Self.imageKey, value: attachment, range: range)
                 result.addAttribute(Self.runDelegateKey, value: attachment.makeRunDelegate(), range: range)
             }
@@ -415,6 +419,30 @@ public struct TranscriptStyle: Equatable, Sendable {
     }
 }
 
+extension TranscriptStyle {
+    /// The slot of the formula that starts at UTF-16 offset `start` of
+    /// `block`: it is the same whichever part of the block is laid out.
+    static func mathSlot(in block: TranscriptBlock, at start: Int) -> TranscriptImageStore.MathSlot {
+        mathSlot(in: block, at: start, starts: mathStarts(in: block))
+    }
+
+    /// The same, with the block's `mathStarts`.
+    static func mathSlot(in block: TranscriptBlock, at start: Int, starts: [Int]) -> TranscriptImageStore.MathSlot {
+        var low = 0
+        var high = starts.count
+        while low < high {
+            let middle = (low + high) / 2
+            if starts[middle] < start { low = middle + 1 } else { high = middle }
+        }
+        return TranscriptImageStore.MathSlot(block: block.id, index: low)
+    }
+
+    /// Where the block's formulas start, in order.
+    static func mathStarts(in block: TranscriptBlock) -> [Int] {
+        block.spans.compactMap { $0.math != nil ? $0.range.lowerBound : nil }.sorted()
+    }
+}
+
 /// What layout needs to know to size images: the loaded ones, and the width
 /// they must fit in.
 struct ImageSizing {
@@ -423,7 +451,8 @@ struct ImageSizing {
 }
 
 /// An image in laid-out text: the loaded picture, or a placeholder showing
-/// the alt text when there is none.
+/// the alt text when there is none. A formula that is being drawn has
+/// neither: it is empty space.
 final class ImageAttachment: @unchecked Sendable {
     let image: TranscriptImage
     let picture: CGImage?
@@ -436,19 +465,25 @@ final class ImageAttachment: @unchecked Sendable {
     let math: TranscriptMath?
     var isMask: Bool { math != nil && picture != nil }
 
-    /// A formula, drawn by the store's math renderer, or its LaTeX as written
-    /// until it is (or if it is not).
-    init(math: TranscriptMath, sizing: ImageSizing?, font: CTFont, style: TranscriptStyle) {
+    /// A formula, drawn by the store's math renderer. Until it is, it is empty
+    /// space of about its size. Without a renderer, or if the renderer cannot
+    /// draw it, it is its LaTeX as written.
+    init(math: TranscriptMath, slot: TranscriptImageStore.MathSlot, sizing: ImageSizing?, font: CTFont, style: TranscriptStyle) {
         self.image = TranscriptImage(source: "", alt: math.tex)
         self.math = math
         let maximumWidth = max(sizing?.maximumWidth ?? 320, 20)
-        if let formula = sizing?.store?.formula(for: math, fontSize: CTFontGetSize(font)) {
+        let formula = sizing?.store?.formula(for: math, fontSize: CTFontGetSize(font), in: slot) ?? .asWritten
+        if case .drawn(let formula) = formula {
             let natural = CGSize(width: max(formula.size.width, 1), height: max(formula.size.height, 1))
             let scale = min(1, maximumWidth / natural.width)
             self.picture = formula.image
             self.label = nil
             self.size = CGSize(width: ceil(natural.width * scale), height: ceil(natural.height * scale))
             self.ascent = size.height - formula.baseline * scale
+        } else if case .pending = formula {
+            self.picture = nil
+            self.label = nil
+            (self.size, self.ascent) = Self.reservedSpace(for: math, font: font, maximumWidth: maximumWidth)
         } else {
             let size = CTFontGetSize(font) * 0.85
             let code = style.codeFont?.makeFont(size: size) ?? CTFontCreateUIFontForLanguage(.userFixedPitch, size, nil)!
@@ -469,6 +504,23 @@ final class ImageAttachment: @unchecked Sendable {
             self.size = CGSize(width: min(width, maximumWidth), height: ceil(CTFontGetAscent(font) + CTFontGetDescent(font)) + 4)
             self.ascent = ceil(CTFontGetAscent(font)) + 2
         }
+    }
+
+    /// Room for a formula that is not drawn yet, so that the text around it
+    /// moves less when it is: about as wide as its symbols, and one line
+    /// tall for inline math. Display math gets a line for each of its rows,
+    /// and two when it has a fraction, a sum or an integral.
+    static func reservedSpace(for math: TranscriptMath, font: CTFont, maximumWidth: CGFloat) -> (size: CGSize, ascent: CGFloat) {
+        let fontSize = CTFontGetSize(font)
+        let ascent = ceil(CTFontGetAscent(font))
+        let lineHeight = ceil(CTFontGetAscent(font) + CTFontGetDescent(font))
+        let shape = LatexShape(math.tex)
+        let rows = math.isDisplay ? shape.rows : 1
+        let symbolsInARow = (shape.symbols + rows - 1) / rows
+        let width = min(max(CGFloat(symbolsInARow) * fontSize * 0.55, fontSize).rounded(), maximumWidth)
+        guard math.isDisplay else { return (CGSize(width: width, height: lineHeight), ascent) }
+        let height = lineHeight * CGFloat(rows) * (shape.isTall ? 2 : 1)
+        return (CGSize(width: width, height: height), height - (lineHeight - ascent))
     }
 
     init(image: TranscriptImage, sizing: ImageSizing?, font: CTFont, style: TranscriptStyle) {
@@ -517,5 +569,54 @@ final class ImageAttachment: @unchecked Sendable {
             getWidth: { Unmanaged<ImageAttachment>.fromOpaque($0).takeUnretainedValue().size.width }
         )
         return CTRunDelegateCreate(&callbacks, Unmanaged.passRetained(self).toOpaque())!
+    }
+}
+
+/// A rough count of what a formula draws, read from its LaTeX.
+struct LatexShape: Equatable {
+    /// Letters, digits, operators and symbol commands such as `\alpha`.
+    var symbols = 0
+    /// Rows, which `\\` separates.
+    var rows = 1
+    /// It has a fraction, a sum, an integral or a product, which are about
+    /// twice as tall as a line.
+    var isTall = false
+
+    private static let layoutCommands: Set<Substring> = [
+        "frac", "dfrac", "tfrac", "left", "right", "mathrm", "mathbf", "mathit", "mathsf", "text", "textrm",
+        "operatorname", "displaystyle", "textstyle", "limits",
+    ]
+    private static let tallCommands: Set<Substring> = ["frac", "dfrac", "sum", "int", "iint", "oint", "prod", "coprod", "binom"]
+
+    init(_ tex: String) {
+        let units = Substring(tex)
+        var index = units.startIndex
+        while index < units.endIndex {
+            let character = units[index]
+            index = units.index(after: index)
+            guard character == "\\" else {
+                if !(character.isWhitespace || "{}^_&~".contains(character)) { symbols += 1 }
+                continue
+            }
+            let name = units[index...].prefix { $0.isLetter }
+            guard !name.isEmpty else {
+                // An escaped character, `\\` between rows, or a space such as `\,`.
+                guard index < units.endIndex else { break }
+                let escaped = units[index]
+                if escaped == "\\" { rows += 1 } else if "{}|%$#".contains(escaped) { symbols += 1 }
+                index = units.index(after: index)
+                continue
+            }
+            index = name.endIndex
+            if Self.tallCommands.contains(name) { isTall = true }
+            if name == "begin" || name == "end" {
+                // The environment's name is not drawn.
+                if index < units.endIndex, units[index] == "{", let close = units[index...].firstIndex(of: "}") {
+                    index = units.index(after: close)
+                }
+            } else if !Self.layoutCommands.contains(name) {
+                symbols += 1
+            }
+        }
     }
 }

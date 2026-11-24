@@ -12,7 +12,8 @@ import QuartzCore
 /// main run loop.
 ///
 /// The main thread lays out synchronously only when it cannot wait: the
-/// first layout, and a change of width or style. It does so through
+/// first layout, a change of width or style, and a replaced document when
+/// the view's `replacementCrossfadeDuration` asks for it. It does so through
 /// `queue.sync`, so the engine's state is only ever touched on its queue.
 ///
 /// While text is being appended, the engine also draws the end of the
@@ -225,8 +226,12 @@ final class LayoutEngine: @unchecked Sendable {
 
     /// Asks for `request` to be laid out. Any thread. Returns false once the
     /// engine has shut down, so a stream can stop sending to it.
+    ///
+    /// - Parameter schedulesLayout: false when the caller calls `relayout`
+    ///   at once, which lays out the request on the main thread. The queue
+    ///   then does not lay it out first.
     @discardableResult
-    func submit(_ request: Request) -> Bool {
+    func submit(_ request: Request, schedulesLayout: Bool = true) -> Bool {
         var accepted = true
         let delay: CFTimeInterval? = lock.withLock {
             guard !isShutDown else { accepted = false; return nil }
@@ -238,7 +243,7 @@ final class LayoutEngine: @unchecked Sendable {
             guard request.sequence > lastSequence else { return nil }
             lastSequence = request.sequence
             pending = request
-            if drainScheduled { return nil }
+            if drainScheduled || !schedulesLayout { return nil }
             drainScheduled = true
             return max(lastDrain + frameInterval - CACurrentMediaTime(), 0)
         }

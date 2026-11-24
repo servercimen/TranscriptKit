@@ -5,7 +5,11 @@ import TranscriptKit
 struct DemoApp: App {
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            if ProcessInfo.processInfo.arguments.contains("-replacementCheck") {
+                ReplacementCheckView()
+            } else {
+                ContentView()
+            }
         }
     }
 }
@@ -175,6 +179,67 @@ enum Sample {
     [1]: https://example.com/paper
 
 
+    """
+}
+
+/// Launch with `-replacementCheck` to replace the text of a card every two
+/// seconds, with a short text and a long one in turn. Add `-crossfade` to lay
+/// out each new text at once and crossfade to it. Each swap logs when it
+/// happened, and each change of the card's height logs when SwiftUI saw it.
+struct ReplacementCheckView: View {
+    @State private var showsLong = false
+    @State private var swap = 0
+    @State private var swapTime: CFTimeInterval = 0
+    private let crossfades = ProcessInfo.processInfo.arguments.contains("-crossfade")
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                Text(crossfades ? "Crossfade, laid out at once" : "Laid out in the background")
+                    .font(.footnote.monospaced())
+                    .padding(.bottom, 8)
+                TranscriptText(MarkdownStreamParser.document(from: showsLong ? Self.long : Self.short))
+                    .crossfadesReplacedText(crossfades, duration: 0.6)
+                    .padding(12)
+                    .background(Color.yellow.opacity(0.35))
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                        let delay = (CACurrentMediaTime() - swapTime) * 1000
+                        print("replacement-check swap=\(swap) height=\(height) after=\(String(format: "%.1f", delay)) ms")
+                    }
+                Rectangle()
+                    .fill(.red)
+                    .frame(height: 8)
+            }
+            .padding(16)
+        }
+        .task {
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(2))
+                swap += 1
+                swapTime = CACurrentMediaTime()
+                print("replacement-check swap=\(swap) long=\(!showsLong)")
+                showsLong.toggle()
+            }
+        }
+    }
+
+    static let short = """
+    ## Summary
+
+    The build has **two steps**. The details come in two seconds.
+    """
+
+    static let long = """
+    ## Details
+
+    The first step compiles the package. The second step runs the tests on the device, and each step writes its \
+    log to the `build` folder.
+
+    1. Compile the package.
+    2. Run the tests.
+    3. Read the log, and run a step again with `--verbose` if it fails.
+
+    > A step that fails twice needs a look at the [guide](https://example.com/guide).
     """
 }
 

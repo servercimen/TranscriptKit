@@ -36,6 +36,8 @@ final class TailRenderer {
         var accent: CGColor
         /// Whether custom tags' colors take their dark values.
         var dark = false
+        /// Whether custom tags' colors take their Increase Contrast values.
+        var highContrast = false
     }
 
     /// One drawn tail: show `surface` at `top`, `TailRenderer.height` points tall.
@@ -160,7 +162,7 @@ final class TailRenderer {
             context.clip(to: band)
             context.clear(band)
             layout.draw(in: context, dirtyRect: band, text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent,
-                        dark: colors.dark, hiding: hiding)
+                        dark: colors.dark, highContrast: colors.highContrast, hiding: hiding)
             context.restoreGState()
         }
         let firstRow = max(0, min(pixelHeight, Int(((start - currentTop) * scale).rounded(.down))))

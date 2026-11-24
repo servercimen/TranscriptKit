@@ -208,7 +208,7 @@ private func layout(_ markdown: String, width: CGFloat = 320) -> DocumentLayout 
 private let textColor = CGColor(gray: 0, alpha: 1)
 
 /// `layout` drawn on white, as RGBA bytes.
-private func render(_ layout: DocumentLayout, dark: Bool, scale: CGFloat = 2) -> (bytes: [UInt8], width: Int) {
+private func render(_ layout: DocumentLayout, dark: Bool, highContrast: Bool = false, scale: CGFloat = 2) -> (bytes: [UInt8], width: Int) {
     let width = Int((layout.width * scale).rounded())
     let height = Int((max(layout.height, 1) * scale).rounded())
     let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
@@ -220,7 +220,7 @@ private func render(_ layout: DocumentLayout, dark: Bool, scale: CGFloat = 2) ->
     context.scaleBy(x: scale, y: -scale)
     let all = CGRect(x: 0, y: 0, width: layout.width, height: layout.height)
     layout.draw(in: context, dirtyRect: all, text: textColor, codeBackground: CGColor(gray: 0.9, alpha: 1),
-                accent: CGColor(gray: 0.6, alpha: 1), dark: dark)
+                accent: CGColor(gray: 0.6, alpha: 1), dark: dark, highContrast: highContrast)
     return (Array(UnsafeRawBufferPointer(start: context.data!, count: width * height * 4)), width)
 }
 
@@ -254,6 +254,23 @@ private func count(_ bytes: [UInt8], near color: (UInt8, UInt8, UInt8)) -> Int {
     #expect(count(light, near: (0, 122, 255)) == 0)
     // The highlight is behind the glyphs: dark text pixels remain inside it.
     #expect(count(light, near: (0, 0, 0)) > 100)
+}
+
+@Test func highlightsAreDrawnInTheirIncreaseContrastColors() {
+    let green = TranscriptColor(red: 0, green: 1, blue: 0)
+    let color = TranscriptColor(light: yellow, dark: blue, highContrastLight: red, highContrastDark: green)
+    var parser = MarkdownStreamParser(tags: [TranscriptTag("mark", TranscriptDecoration(background: color))])
+    parser.append("Some <mark>highlighted words</mark> here.")
+    let marked = DocumentLayout(document: parser.document, width: 320, style: TranscriptStyle())
+    let normal = render(marked, dark: false).bytes
+    let light = render(marked, dark: false, highContrast: true).bytes
+    let dark = render(marked, dark: true, highContrast: true).bytes
+    #expect(count(normal, near: (255, 255, 0)) > 500)
+    #expect(count(normal, near: (255, 0, 0)) == 0)
+    #expect(count(light, near: (255, 0, 0)) > 500)
+    #expect(count(light, near: (255, 255, 0)) == 0)
+    #expect(count(dark, near: (0, 255, 0)) > 500)
+    #expect(count(dark, near: (0, 0, 255)) == 0)
 }
 
 /// Text parsed again with another look for a tag (the way to re-theme it)

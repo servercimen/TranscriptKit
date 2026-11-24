@@ -152,8 +152,9 @@ public struct TranscriptTagImage: Equatable, @unchecked Sendable {
 }
 
 /// A color for decorations, with a value for light and one for dark
-/// appearance. Text is drawn off the main thread too, where dynamic UIKit
-/// colors can't be resolved, so both values are kept.
+/// appearance, and one for each when Increase Contrast is on. Text is drawn
+/// off the main thread too, where dynamic UIKit colors can't be resolved, so
+/// all four values are kept.
 public struct TranscriptColor: Hashable, Sendable {
     struct Components: Hashable, Sendable {
         var red: CGFloat
@@ -164,41 +165,58 @@ public struct TranscriptColor: Hashable, Sendable {
 
     var light: Components
     var dark: Components
+    var highContrastLight: Components
+    var highContrastDark: Components
 
-    /// Extended sRGB components, the same in light and dark appearance.
+    /// Extended sRGB components, the same in every appearance.
     public init(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat = 1) {
-        light = Components(red: red, green: green, blue: blue, alpha: alpha)
-        dark = light
+        self.init(all: Components(red: red, green: green, blue: blue, alpha: alpha))
     }
 
-    public init(light: TranscriptColor, dark: TranscriptColor) {
+    /// The light value of `light` and the dark value of `dark`. With
+    /// Increase Contrast on, the light value of `highContrastLight` and the
+    /// dark value of `highContrastDark`; nil keeps the high-contrast values
+    /// of `light` and `dark`.
+    public init(light: TranscriptColor, dark: TranscriptColor,
+                highContrastLight: TranscriptColor? = nil, highContrastDark: TranscriptColor? = nil) {
         self.light = light.light
         self.dark = dark.dark
+        self.highContrastLight = highContrastLight?.light ?? light.highContrastLight
+        self.highContrastDark = highContrastDark?.dark ?? dark.highContrastDark
     }
 
-    /// The same color in light and dark appearance. Nil if it can't be
-    /// converted to sRGB (a pattern, say).
+    /// The same color in every appearance. Nil if it can't be converted to
+    /// sRGB (a pattern, say).
     public init?(_ color: CGColor) {
         guard let components = Self.components(of: color) else { return nil }
+        self.init(all: components)
+    }
+
+    private init(all components: Components) {
         light = components
         dark = components
+        highContrastLight = components
+        highContrastDark = components
     }
 
     #if canImport(UIKit) && !os(watchOS)
-    /// A UIKit color, resolved for light and for dark appearance: dynamic
-    /// colors such as `.systemBlue` keep both of their values.
+    /// A UIKit color, resolved for light and for dark appearance, with
+    /// Increase Contrast off and on: dynamic colors such as `.systemBlue`
+    /// keep all four of their values.
     public init(_ color: UIColor) {
-        func resolved(_ style: UIUserInterfaceStyle) -> Components {
-            let cgColor = color.resolvedColor(with: UITraitCollection(userInterfaceStyle: style)).cgColor
-            return Self.components(of: cgColor) ?? Components(red: 0, green: 0, blue: 0, alpha: 1)
+        func resolved(_ style: UIUserInterfaceStyle, _ contrast: UIAccessibilityContrast) -> Components {
+            let traits = UITraitCollection(userInterfaceStyle: style).replacing(UITraitAccessibilityContrast.self, value: contrast)
+            return Self.components(of: color.resolvedColor(with: traits).cgColor) ?? Components(red: 0, green: 0, blue: 0, alpha: 1)
         }
-        light = resolved(.light)
-        dark = resolved(.dark)
+        light = resolved(.light, .normal)
+        dark = resolved(.dark, .normal)
+        highContrastLight = resolved(.light, .high)
+        highContrastDark = resolved(.dark, .high)
     }
     #endif
 
-    func cgColor(dark isDark: Bool) -> CGColor {
-        let value = isDark ? dark : light
+    func cgColor(dark isDark: Bool, highContrast: Bool) -> CGColor {
+        let value = highContrast ? (isDark ? highContrastDark : highContrastLight) : (isDark ? dark : light)
         return CGColor(colorSpace: Self.space, components: [value.red, value.green, value.blue, value.alpha])
             ?? CGColor(red: value.red, green: value.green, blue: value.blue, alpha: value.alpha)
     }

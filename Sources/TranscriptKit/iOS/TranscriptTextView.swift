@@ -625,17 +625,21 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         }
         let colors = resolvedColors()
         currentLayout.draw(in: context, dirtyRect: rect, text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent,
-                           dark: colors.dark, hiding: hiding)
+                           dark: colors.dark, highContrast: colors.highContrast, hiding: hiding)
     }
 
     private func resolvedColors() -> TailRenderer.Colors {
         let dark = traitCollection.userInterfaceStyle == .dark
+        let highContrast = traitCollection.accessibilityContrast == .high
         return TailRenderer.Colors(
-            text: style.textColor?.cgColor(dark: dark) ?? UIColor.label.resolvedColor(with: traitCollection).cgColor,
-            codeBackground: style.codeBackgroundColor?.cgColor(dark: dark)
+            text: style.textColor?.cgColor(dark: dark, highContrast: highContrast)
+                ?? UIColor.label.resolvedColor(with: traitCollection).cgColor,
+            codeBackground: style.codeBackgroundColor?.cgColor(dark: dark, highContrast: highContrast)
                 ?? UIColor.secondarySystemFill.resolvedColor(with: traitCollection).cgColor,
-            accent: style.accentColor?.cgColor(dark: dark) ?? UIColor.tertiaryLabel.resolvedColor(with: traitCollection).cgColor,
-            dark: dark
+            accent: style.accentColor?.cgColor(dark: dark, highContrast: highContrast)
+                ?? UIColor.tertiaryLabel.resolvedColor(with: traitCollection).cgColor,
+            dark: dark,
+            highContrast: highContrast
         )
     }
 
@@ -1093,7 +1097,8 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         let colors = resolvedColors()
         let scale = traitCollection.displayScale
         let sprites = TagAnimationPlayer.sprites(for: tag, animation: animation,
-                                                 appearance: .init(text: colors.text, dark: colors.dark, scale: scale))
+                                                 appearance: .init(text: colors.text, dark: colors.dark,
+                                                                   highContrast: colors.highContrast, scale: scale))
         let start = CACurrentMediaTime()
         // No transaction of its own: the layers go to the screen in the same
         // commit as the tiles and the tail that stop drawing the tag. (An

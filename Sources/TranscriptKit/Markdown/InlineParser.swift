@@ -787,7 +787,7 @@ enum InlineParser {
                     let piece = state.appendSealedPiece(EmptyCollection<UInt16>())
                     state.tags.append(Tag(name: name, traits: traits, piece: piece))
                 }
-                let breakEndsLine = name == "br" && newlinesAsLineBreaks && end < count && units[end] == newline
+                let breakEndsLine = name == "br" && !closing && newlinesAsLineBreaks && end < count && units[end] == newline
                 state.position = breakEndsLine ? end + 1 : end
             case .customTag(let definition, let attributes, let end):
                 let decoration = definition.decoration(for: attributes)

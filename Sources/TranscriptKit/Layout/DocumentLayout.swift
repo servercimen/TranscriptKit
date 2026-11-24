@@ -486,7 +486,7 @@ public final class DocumentLayout: @unchecked Sendable {
                     var top = frame.minY
                     if let above, Self.shareQuote(above.layout.block, block, at: depth) { top = above.frame.maxY }
                     // Square ends, so that segments of one bar meet cleanly.
-                    fill(CGRect(x: x, y: top, width: style.quoteBarWidth, height: frame.maxY - top), radius: 0, color: bar)
+                    fill(CGRect(x: x, y: top, width: max(style.quoteBarWidth, 0), height: frame.maxY - top), radius: 0, color: bar)
                 }
                 x += style.width(of: container)
             }

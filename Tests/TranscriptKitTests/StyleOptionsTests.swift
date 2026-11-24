@@ -206,6 +206,15 @@ private func taskBoxes(_ layout: DocumentLayout) -> (checked: CGRect, unchecked:
     #expect(after.count(in: row, near: (255, 0, 0), tolerance: 8) == 12)
 }
 
+@Test func aNegativeQuoteBarWidthDrawsNoBar() {
+    var style = TranscriptStyle()
+    style.quoteBarColor = TranscriptColor(red: 1, green: 0, blue: 0)
+    style.quoteBarWidth = -6
+    let drawn = layout("> > quoted text", style: style)
+    let all = CGRect(x: 0, y: 0, width: drawn.width, height: drawn.height)
+    #expect(Drawing(drawn).count(in: all, near: (255, 0, 0), tolerance: 8) == 0)
+}
+
 // MARK: Inline code
 
 @Test func inlineCodeTakesItsFill() {
@@ -269,6 +278,25 @@ private func taskBoxes(_ layout: DocumentLayout) -> (checked: CGRect, unchecked:
     // The weight changes how wide the text is, so the columns are measured with it.
     let bold = layout(markdown).entry(at: 0).layout.lines[0].frame.width
     #expect(layout(markdown, style: style).entry(at: 0).layout.lines[0].frame.width < bold)
+}
+
+@Test func codeInATableHeaderKeepsTheHeaderWeight() throws {
+    let markdown = "| `a` | b |\n| --- | --- |\n| c | d |"
+    func codeFont(_ style: TranscriptStyle) throws -> CTFont {
+        let table = layout(markdown, style: style).entry(at: 0).layout
+        let run = try #require((CTLineGetGlyphRuns(table.lines[0].ctLine) as! [CTRun]).first)
+        let font = (CTRunGetAttributes(run) as NSDictionary)[kCTFontAttributeName] as! CTFont
+        #expect(CTFontGetSymbolicTraits(font).contains(.traitMonoSpace))
+        return font
+    }
+    func isBold(_ font: CTFont) -> Bool { CTFontGetSymbolicTraits(font).contains(.traitBold) }
+    #expect(isBold(try codeFont(TranscriptStyle())))
+
+    var style = TranscriptStyle()
+    style.tableHeaderWeight = 0.4
+    #expect(isBold(try codeFont(style)))
+    style.tableHeaderWeight = 0
+    #expect(!isBold(try codeFont(style)))
 }
 
 @Test func tableHeadersTakeTheirFill() throws {

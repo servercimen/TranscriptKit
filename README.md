@@ -328,7 +328,8 @@ style.accentColor = TranscriptColor(UIColor.tertiaryLabel)           // quote ba
 ```
 
 To match an existing Markdown look, set how lists, task boxes, quotes, inline code and table headers look. The
-defaults keep the look of today. A color that is nil uses the text color, or the value in the comment:
+defaults keep the look of today. A color that is nil uses the text color (the quote text color in a block quote), or
+the value in the comment:
 
 ```swift
 var style = TranscriptStyle()
@@ -350,8 +351,9 @@ style.tableHeaderWeight = 0.3                        // nil: the bold body font
 ```
 
 A named body font has its own weight, so a weight does not change it. For such a font, a weight of 0.3 or more uses its
-bold face. Links, code colors and custom tags' colors win over the quote text color. A custom tag's highlight wins over
-the inline code fill. The inline code fill does not change where lines break.
+bold face. Inline code in a table header uses its bold face at a header weight of 0.3 or more. Links, code colors and
+custom tags' colors win over the quote text color. A custom tag's highlight wins over the inline code fill. The inline
+code fill does not change where lines break.
 
 ### Reading the selection
 

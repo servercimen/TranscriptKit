@@ -80,22 +80,23 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// body font has its own weight: a weight of 0.3 or more uses its bold
     /// face, and a lower weight uses the font as it is.
     public var listNumberWeight: CGFloat?
-    /// The color of the numbers of ordered list items. Nil uses the text color.
+    /// The color of the numbers of ordered list items. Nil uses the text
+    /// color, or `quoteTextColor` in a block quote.
     public var listNumberColor: TranscriptColor?
     /// The bullets of unordered list items: the first for level 1, the
     /// second for level 2, and so on. Levels past the end use the last one.
     /// Empty uses "•", "◦" and "▪".
-    public var bullets: [String] = ["•", "◦", "▪"]
+    public var bullets: [String] = TranscriptStyle.defaultBullets
     /// The colors of the bullets, by level as `bullets`. Empty uses the text
-    /// color.
+    /// color, or `quoteTextColor` in a block quote.
     public var bulletColors: [TranscriptColor] = []
     /// The fill of a task box that is checked. Nil uses blue (red 0, green
     /// 0.478, blue 1).
     public var taskCheckedColor: TranscriptColor?
     /// The check mark in a task box that is checked. Nil uses white.
     public var taskCheckmarkColor: TranscriptColor?
-    /// The outline of a task box that is not checked. Nil uses the text color
-    /// at 45% opacity.
+    /// The outline of a task box that is not checked. Nil uses the text color,
+    /// or `quoteTextColor` in a block quote, at 45% opacity.
     public var taskUncheckedColor: TranscriptColor?
     /// The color of the bar at the left of a block quote. Nil uses
     /// `accentColor`.
@@ -103,22 +104,23 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// The width of the bar at the left of a block quote. Keep it less than
     /// `quoteIndent`, or the bar covers the text.
     public var quoteBarWidth: CGFloat = 3
+    /// The color of the text in block quotes. Nil uses the text color. Links,
+    /// code colors and custom tags' colors win over it.
+    public var quoteTextColor: TranscriptColor?
+    /// The fill behind inline code. Nil draws no fill. A custom tag's
+    /// highlight wins over it.
+    public var inlineCodeBackgroundColor: TranscriptColor?
+    /// The corner radius of the fill behind inline code.
+    public var inlineCodeCornerRadius: CGFloat = 4
     /// The fill behind the header row of a table. Nil uses
     /// `codeBackgroundColor`.
     public var tableHeaderBackgroundColor: TranscriptColor?
     /// The weight of the text in the header row of a table, from -1 to 1 as
     /// `TranscriptFont.weight`. Nil uses the bold body font. A named body font
     /// has its own weight: a weight of 0.3 or more uses its bold face, and a
-    /// lower weight uses the font as it is.
+    /// lower weight uses the font as it is. Inline code in the header row uses
+    /// its bold face at a weight of 0.3 or more.
     public var tableHeaderWeight: CGFloat?
-    /// The fill behind inline code. Nil draws no fill. A custom tag's
-    /// highlight wins over it.
-    public var inlineCodeBackgroundColor: TranscriptColor?
-    /// The corner radius of the fill behind inline code.
-    public var inlineCodeCornerRadius: CGFloat = 4
-    /// The color of the text in block quotes. Nil uses the text color. Links,
-    /// code colors and custom tags' colors win over it.
-    public var quoteTextColor: TranscriptColor?
 
     public init() {}
 
@@ -150,9 +152,11 @@ public struct TranscriptStyle: Equatable, Sendable {
         containers.contains(.quote) ? quoteTextColor : nil
     }
 
+    static let defaultBullets = ["•", "◦", "▪"]
+
     /// The bullet of a list item at `level`, from 1, and its color.
     func bullet(at level: Int) -> (text: String, color: TranscriptColor?) {
-        let shapes = bullets.isEmpty ? ["•", "◦", "▪"] : bullets
+        let shapes = bullets.isEmpty ? Self.defaultBullets : bullets
         let color = bulletColors.isEmpty ? nil : bulletColors[min(max(level, 1), bulletColors.count) - 1]
         return (shapes[min(max(level, 1), shapes.count) - 1], color)
     }
@@ -251,6 +255,8 @@ public struct TranscriptStyle: Equatable, Sendable {
                 var custom = customFont(for: kind) ?? TranscriptFont(size: bodySize)
                 custom.weight = weight
                 font = custom.makeFont()
+                // The code font below replaces this font and its weight.
+                if weight >= 0.3, traits.contains(.code) { traits.insert(.bold) }
             }
         } else if let custom = customFont(for: kind) {
             font = custom.makeFont()

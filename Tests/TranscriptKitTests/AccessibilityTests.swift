@@ -77,8 +77,8 @@ private func limited(_ limit: Int?) -> TranscriptStyle {
     #expect(Array(added.accessibilityItems().map(\.key).prefix(2)) == keys)
     #expect(added.accessibilityItems().count == 3)
     // Text added to the last block keeps the shape; a new block changes it.
-    #expect(longer.accessibilityShape == before.accessibilityShape)
-    #expect(added.accessibilityShape != longer.accessibilityShape)
+    #expect(longer.accessibilityGeometry.hasSameElements(as: before.accessibilityGeometry))
+    #expect(!added.accessibilityGeometry.hasSameElements(as: longer.accessibilityGeometry))
 }
 
 @Test func blocksWithTheSameIdGetDifferentKeys() {
@@ -97,7 +97,7 @@ private func limited(_ limit: Int?) -> TranscriptStyle {
     let filled = DocumentLayout(document: document, width: 300, reusing: empty)
     #expect(empty.accessibilityItems().count == 1)
     #expect(filled.accessibilityItems().count == 2)
-    #expect(empty.accessibilityShape != filled.accessibilityShape)
+    #expect(!empty.accessibilityGeometry.hasSameElements(as: filled.accessibilityGeometry))
 }
 
 private func items(_ markdown: String, width: CGFloat = 300) -> [AccessibilityItem] {
@@ -151,7 +151,7 @@ private func items(_ markdown: String, width: CGFloat = 300) -> [AccessibilityIt
     let before = DocumentLayout(document: parser.document, width: 300)
     parser.append(" 2 |")
     let after = DocumentLayout(document: parser.document, width: 300, reusing: before)
-    #expect(before.accessibilityShape != after.accessibilityShape)
+    #expect(!before.accessibilityGeometry.hasSameElements(as: after.accessibilityGeometry))
     #expect(after.accessibilityItems().first?.table?.cells.count == 4)
 }
 
@@ -174,8 +174,9 @@ private func items(_ markdown: String, width: CGFloat = 300) -> [AccessibilityIt
 }
 
 private func isNeeded(from old: DocumentLayout, to new: DocumentLayout, isAppend: Bool) -> Bool {
-    AccessibilityLayoutChange.isNeeded(isAppend: isAppend, oldShape: old.accessibilityShape, oldItems: old.accessibilityItems(),
-                                       newShape: new.accessibilityShape, newItems: { new.accessibilityItems() })
+    var watch = AccessibilityLayoutWatch()
+    watch.start(with: old)
+    return watch.install(new, isAppend: isAppend)
 }
 
 @Test func aLayoutChangeIsPostedOnlyWhenElementsChange() {
@@ -189,8 +190,6 @@ private func isNeeded(from old: DocumentLayout, to new: DocumentLayout, isAppend
     parser.append(" and more")
     let longer = DocumentLayout(document: parser.document, width: 300, reusing: before)
     #expect(!isNeeded(from: before, to: longer, isAppend: true))
-    // The same layout installed as a new one: the label changed.
-    #expect(isNeeded(from: before, to: longer, isAppend: false))
     parser.append("\n\nA new paragraph")
     let added = DocumentLayout(document: parser.document, width: 300, reusing: longer)
     #expect(isNeeded(from: longer, to: added, isAppend: true))
@@ -249,4 +248,25 @@ private func isNeeded(from old: DocumentLayout, to new: DocumentLayout, isAppend
     parser.append(" text\n\n[d]: https://example.com/docs\n")
     let after = DocumentLayout(document: parser.document, width: 300, reusing: before)
     #expect(after.accessibilityItems(words: words)[0].links.map(\.url.absoluteString) == ["https://example.com/docs"])
+}
+
+@Test func newColorsAfterTextStreamedInPostNothing() {
+    var parser = MarkdownStreamParser()
+    parser.append("Intro.\n\n```swift\nlet a = 1")
+    var layout = DocumentLayout(document: parser.document, width: 300)
+    var watch = AccessibilityLayoutWatch()
+    watch.start(with: layout)
+    var posts = 0
+    for line in ["\nlet b = 2", "\nlet c = 3", "\nlet d = 4"] {
+        parser.append(line)
+        layout = DocumentLayout(document: parser.document, width: 300, reusing: layout)
+        if watch.install(layout, isAppend: true) { posts += 1 }
+    }
+    #expect(posts == 0)
+    // The same text laid out again, as after the code's colors arrive.
+    if watch.install(DocumentLayout(document: parser.document, width: 300), isAppend: false) { posts += 1 }
+    #expect(posts == 0)
+    // A new width moves the elements.
+    let moved = watch.install(DocumentLayout(document: parser.document, width: 200), isAppend: false)
+    #expect(moved)
 }

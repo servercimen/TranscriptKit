@@ -15,8 +15,7 @@ extension TranscriptTextView {
         if cache.layout === layout { return cache.elements }
         var byKey: [AccessibilityItem.Key: UIAccessibilityElement] = [:]
         var elements: [UIAccessibilityElement] = []
-        let items = layout.accessibilityItems(math: mathAccessibilityLabel ?? \.tex, words: cache.words)
-        for item in items {
+        for item in layout.accessibilityItems(math: mathAccessibilityLabel ?? \.tex, words: cache.words) {
             let element: UIAccessibilityElement
             if let table = item.table {
                 let tableElement = cache.byKey[item.key] as? TableAccessibilityElement
@@ -32,9 +31,8 @@ extension TranscriptTextView {
             byKey[item.key] = element
             elements.append(element)
         }
+        if cache.watch.geometry == nil { cache.watch.start(with: layout) }
         cache.layout = layout
-        cache.shape = layout.accessibilityShape
-        cache.items = items
         cache.byKey = byKey
         cache.elements = elements
         return elements
@@ -49,21 +47,15 @@ extension TranscriptTextView {
         UIAccessibility.post(notification: .layoutChanged, argument: nil)
     }
 
-    /// Tells assistive technologies that elements came or went, or changed,
-    /// after `layout` was installed (see `AccessibilityLayoutChange`).
+    /// Tells assistive technologies that elements came or went, or moved,
+    /// after `layout` was installed (see `AccessibilityLayoutWatch`).
     /// Elements keep their identity, so VoiceOver focus stays on its block.
     /// Nothing is posted before an assistive technology has asked for the
     /// elements.
     func postAccessibilityLayoutChangeIfNeeded(for layout: DocumentLayout, isAppend: Bool) {
-        guard let cache = accessibilityCache, cache.layout != nil, window != nil else { return }
-        let shape = layout.accessibilityShape
-        let isNeeded = AccessibilityLayoutChange.isNeeded(isAppend: isAppend, oldShape: cache.shape, oldItems: cache.items,
-                                                          newShape: shape) {
-            _ = accessibilityElements(for: layout)
-            return cache.items
-        }
-        cache.shape = shape
-        if isNeeded { UIAccessibility.post(notification: .layoutChanged, argument: nil) }
+        guard let cache = accessibilityCache, cache.layout != nil else { return }
+        let isNeeded = cache.watch.install(layout, isAppend: isAppend)
+        if isNeeded, window != nil { UIAccessibility.post(notification: .layoutChanged, argument: nil) }
     }
 }
 
@@ -245,10 +237,8 @@ final class CellAccessibilityElement: TextAccessibilityElement, UIAccessibilityC
 final class AccessibilityCache {
     /// The layout that the elements were last brought up to date for.
     var layout: DocumentLayout?
-    /// The shape of the layout that assistive technologies last heard about.
-    var shape: AccessibilityShape?
-    /// The items that the elements were last brought up to date with.
-    var items: [AccessibilityItem] = []
+    /// The geometry of the layout installed last, from the first request on.
+    var watch = AccessibilityLayoutWatch()
     /// The words of those items, for the current `mathAccessibilityLabel`.
     var words = AccessibilityWords()
     var byKey: [AccessibilityItem.Key: UIAccessibilityElement] = [:]

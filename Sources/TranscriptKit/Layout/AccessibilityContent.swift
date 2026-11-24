@@ -170,17 +170,23 @@ extension DocumentLayout {
         return model.rows.prefix(rows).reduce(0) { $0 + min($1.count, columns) }
     }
 
-    /// What decides which items the layout has, found without making them.
-    /// A layout that only adds text to the end of another has the same
-    /// items as that one, with longer text, if their shapes are equal.
-    var accessibilityShape: AccessibilityShape {
-        guard entryCount > 0 else {
-            return AccessibilityShape(entries: 0, lastHasNoItem: false, lastTableCells: 0, hasRemainder: hasAccessibilityRemainder)
+    /// Which items the layout has and where they are, found without
+    /// reading the text of its blocks.
+    var accessibilityGeometry: AccessibilityGeometry {
+        var entries: [AccessibilityGeometry.Entry] = []
+        entries.reserveCapacity(entryCount)
+        for index in 0..<entryCount {
+            let entry = entry(at: index)
+            let block = entry.layout.block
+            let elements: Int
+            if let model = block.kind.table, let grid = entry.layout.table {
+                elements = Self.accessibilityCellCount(model, grid: grid)
+            } else {
+                elements = block.text.isEmpty && block.kind != .rule ? 0 : 1
+            }
+            entries.append(.init(id: block.id, elements: elements, frame: entry.frame))
         }
-        let block = entry(at: entryCount - 1).layout.block
-        return AccessibilityShape(entries: entryCount, lastHasNoItem: block.text.isEmpty && block.kind != .rule,
-                                  lastTableCells: block.kind.table?.rows.reduce(0) { $0 + $1.count } ?? 0,
-                                  hasRemainder: hasAccessibilityRemainder)
+        return AccessibilityGeometry(entries: entries, hasRemainder: hasAccessibilityRemainder)
     }
 
     /// Whether the text that a line limit leaves out gets an item of its
@@ -203,33 +209,51 @@ extension DocumentLayout {
     }
 }
 
-struct AccessibilityShape: Equatable {
-    let entries: Int
-    /// The last block has no text yet, so it has no item.
-    let lastHasNoItem: Bool
-    /// The number of cells in the last block, if it is a table: a row that
-    /// streams in adds elements.
-    let lastTableCells: Int
+/// The blocks of a layout, with the number of elements and the frame of
+/// each, and whether the text that a line limit leaves out has an item.
+struct AccessibilityGeometry: Equatable {
+    struct Entry: Equatable {
+        let id: String
+        /// 0 for a block without an item, the number of cells for a table,
+        /// and 1 for other blocks.
+        let elements: Int
+        let frame: CGRect
+    }
+
+    let entries: [Entry]
     /// See `DocumentLayout.hasAccessibilityRemainder`.
     let hasRemainder: Bool
+
+    /// Whether the two have the same elements, wherever they are.
+    func hasSameElements(as other: AccessibilityGeometry) -> Bool {
+        hasRemainder == other.hasRemainder && entries.count == other.entries.count
+            && zip(entries, other.entries).allSatisfy { $0.id == $1.id && $0.elements == $1.elements }
+    }
 }
 
-/// When assistive technologies must hear that the layout changed.
-enum AccessibilityLayoutChange {
-    /// Whether a new layout needs a layout-changed notification.
-    ///
-    /// A layout that only adds text to the end of the old one needs it only
-    /// when elements come or go, which the shape tells. Other layouts, such
-    /// as the ones that a new width or an image start, need it when an item
-    /// changed, for example its frame. A layout that only gives code other
-    /// colors has the same items, so it needs none.
-    ///
-    /// - Parameter newItems: the items of the new layout, made only when
-    ///   they are needed.
-    static func isNeeded(isAppend: Bool, oldShape: AccessibilityShape?, oldItems: [AccessibilityItem],
-                         newShape: AccessibilityShape, newItems: () -> [AccessibilityItem]) -> Bool {
-        guard let oldShape, oldShape == newShape else { return true }
-        return !isAppend && newItems() != oldItems
+/// Decides when assistive technologies must hear that the layout changed.
+///
+/// A layout that only adds text to the end of the one before needs a
+/// layout-changed notification only when elements come or go. Other
+/// layouts, such as the ones that a new width or an image start, need it
+/// also when an element moved or changed its size. A layout that only gives
+/// code other colors has the same geometry, so it needs none.
+struct AccessibilityLayoutWatch {
+    /// The geometry of the layout installed last.
+    private(set) var geometry: AccessibilityGeometry?
+
+    /// Takes in a layout that was installed, and tells whether it needs a
+    /// notification.
+    mutating func install(_ layout: DocumentLayout, isAppend: Bool) -> Bool {
+        let new = layout.accessibilityGeometry
+        defer { geometry = new }
+        guard let old = geometry else { return true }
+        return isAppend ? !new.hasSameElements(as: old) : new != old
+    }
+
+    /// Starts from `layout`, whose elements assistive technologies just got.
+    mutating func start(with layout: DocumentLayout) {
+        geometry = layout.accessibilityGeometry
     }
 }
 

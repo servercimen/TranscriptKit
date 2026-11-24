@@ -27,7 +27,10 @@ final class PendingWork: @unchecked Sendable {
 
     func end() {
         let handler: (@Sendable () -> Void)? = lock.withLock {
-            precondition(count > 0, "PendingWork.end() without a begin()")
+            guard count > 0 else {
+                assertionFailure("PendingWork.end() without a begin()")
+                return nil
+            }
             count -= 1
             return count == 0 ? onIdle : nil
         }

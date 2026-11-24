@@ -77,10 +77,14 @@ final class ContentSettledWaiters {
         if let stream = stream(), !stream.isIdle {
             if watchedStream !== stream {
                 watchedStream = stream
+                // `flush()` runs this inline, so the check must not lay out
+                // or draw inside the caller's call.
                 stream.whenIdle { [weak self, weak stream] in
                     guard let self else { return }
                     if self.watchedStream === stream { self.watchedStream = nil }
-                    self.check()
+                    DispatchQueue.main.async { [weak self] in
+                        MainActor.assumeIsolated { self?.check() }
+                    }
                 }
             }
             return false

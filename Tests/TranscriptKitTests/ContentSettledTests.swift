@@ -70,8 +70,7 @@ private let image = TranscriptImage(source: "https://x.y/c.png", alt: "a chart")
     engine.submit(.init(document: MarkdownStreamParser.document(from: "Some text"), source: 1, sequence: 1))
     #expect(!engine.work.isIdle)
     await waitUntil { posted.raised > 0 }
-    try? await Task.sleep(for: .milliseconds(50))
-    // Laid out, and waiting in the mailbox.
+    // Laid out, and waiting in the mailbox until the test takes it.
     #expect(!engine.work.isIdle)
 
     #expect(engine.takeOutput() != nil)
@@ -118,10 +117,21 @@ private let image = TranscriptImage(source: "https://x.y/c.png", alt: "a chart")
     })
     _ = store.picture(for: image)
     await waitUntil { changes.raised > 0 }
-    try? await Task.sleep(for: .milliseconds(50))
+    // Busy until the test ends the work that the change began.
     #expect(!work.isIdle)
     work.end()
     #expect(work.isIdle)
+}
+
+@Test func settlingFadesIsPendingWork() async {
+    let engine = LayoutEngine()
+    let release = DispatchSemaphore(value: 0)
+    engine.queue.async { release.wait() }
+    engine.settleFinishedFades()
+    #expect(!engine.work.isIdle)
+    release.signal()
+    await waitUntil { engine.work.isIdle }
+    #expect(engine.work.isIdle)
 }
 
 @Test func formulasAndCodeColorsArePendingUntilTheyArrive() async {
@@ -158,8 +168,11 @@ private final class Host {
     private(set) var stream: TranscriptStream?
     private(set) var installed: DocumentLayout?
     private(set) var draws = 0
+    var width: CGFloat
+    private var source = 0
 
-    init() {
+    init(width: CGFloat = 300) {
+        self.width = width
         waiters = ContentSettledWaiters(work: engine.work)
         engine.setOutputHandler { [weak self] in
             DispatchQueue.main.async {
@@ -180,8 +193,8 @@ private final class Host {
         if let output = engine.takeOutput() { installed = output.layout }
     }
 
-    private func relayout() {
-        installed = engine.relayout(width: 300, style: TranscriptStyle())?.layout
+    func relayout() {
+        installed = engine.relayout(width: width, style: TranscriptStyle())?.layout
     }
 
     func setLoader(_ loader: @escaping @Sendable (TranscriptImage) async -> CGImage?) {
@@ -197,11 +210,13 @@ private final class Host {
 
     func show(_ stream: TranscriptStream) {
         self.stream = stream
+        source += 1
+        let source = source
         let engine = engine
         let attachment = stream.attachSink { update in
-            engine.submit(.init(document: update.document, source: 1, sequence: update.sequence, isFinished: update.isFinished))
+            engine.submit(.init(document: update.document, source: source, sequence: update.sequence, isFinished: update.isFinished))
         }
-        engine.submit(.init(document: attachment.latest.document, source: 1, sequence: attachment.latest.sequence,
+        engine.submit(.init(document: attachment.latest.document, source: source, sequence: attachment.latest.sequence,
                             isFinished: attachment.latest.isFinished))
     }
 }
@@ -315,4 +330,88 @@ private func picture() -> CGImage? {
     await second.value
     #expect(host.waiters.count == 0)
     #expect(host.draws == 1)
+}
+
+@MainActor
+@Test(.timeLimit(.minutes(1))) func aFlushDoesNotSettleInsideTheCall() async {
+    let host = Host()
+    let stream = TranscriptStream()
+    host.show(stream)
+    stream.append("One two")
+    await host.waiters.wait()
+    let draws = host.draws
+
+    // Text that the parser holds back starts no layout work.
+    stream.append("\n\n#")
+    let waiting = Task { @MainActor in await host.waiters.wait() }
+    for _ in 0..<100 where host.waiters.count == 0 {
+        await Task.yield()
+    }
+    #expect(host.waiters.count == 1)
+    stream.flush()
+    #expect(host.draws == draws)
+    await waiting.value
+    #expect(host.draws == draws + 1)
+}
+
+@MainActor
+@Test(.timeLimit(.minutes(1))) func workThatTheLayoutStartsHoldsTheWaitBack() async throws {
+    let host = Host(width: 0)
+    let gate = Gate()
+    host.setLoader { _ in
+        await gate.wait()
+        return picture()
+    }
+    host.engine.submit(.init(document: MarkdownStreamParser.document(from: "see ![a chart](https://x.y/c.png) here"),
+                             source: 1, sequence: 1, isFinished: true))
+    // No width yet: the drain keeps the document and lays out nothing.
+    await waitOnMain { host.engine.work.isIdle }
+    #expect(host.installed == nil)
+
+    // As a view does when it gets its width: the layout asks for the picture.
+    host.waiters.layOut = { [weak host] in
+        guard let host, host.width == 0 else { return }
+        host.width = 300
+        host.relayout()
+    }
+    var settled = false
+    let waiting = Task { @MainActor in
+        await host.waiters.wait()
+        settled = true
+    }
+    await waitOnMain { host.installed != nil }
+    try await Task.sleep(for: .milliseconds(100))
+    #expect(!settled)
+    #expect(host.draws == 0)
+    #expect(try #require(host.installed).entry(at: 0).layout.attachments.first?.attachment.picture == nil)
+
+    gate.open()
+    await waiting.value
+    #expect(host.draws == 1)
+    #expect(try #require(host.installed).entry(at: 0).layout.attachments.first?.attachment.picture != nil)
+}
+
+@MainActor
+@Test(.timeLimit(.minutes(1))) func aStreamThatChangesWhileATaskWaitsSettlesOnTheNewStream() async {
+    let host = Host()
+    let gate = Gate()
+    host.setLoader { _ in
+        await gate.wait()
+        return nil
+    }
+    let first = TranscriptStream()
+    host.show(first)
+    first.append("see ![a chart](https://x.y/c.png) here")
+    first.flush()
+    await waitOnMain { host.text.hasPrefix("see") }
+
+    let waiting = Task { @MainActor in await host.waiters.wait() }
+    await waitOnMain { host.waiters.count == 1 }
+    let second = TranscriptStream()
+    host.show(second)
+    second.append("Other text")
+    gate.open()
+    await waiting.value
+    #expect(second.isIdle)
+    #expect(host.text == "Other text")
 }

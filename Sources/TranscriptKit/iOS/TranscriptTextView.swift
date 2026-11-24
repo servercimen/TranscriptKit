@@ -1345,9 +1345,20 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         return TranscriptTextPosition(offset: target)
     }
 
+    /// `.left` and `.right` swapped in a right-to-left paragraph, where the
+    /// text goes on to the left: then `.right` goes back in the text.
+    private func textDirection(_ direction: UITextLayoutDirection, at offset: Int) -> UITextLayoutDirection {
+        guard currentLayout.isRightToLeft(at: offset) else { return direction }
+        switch direction {
+        case .left: return .right
+        case .right: return .left
+        default: return direction
+        }
+    }
+
     public func position(from position: UITextPosition, in direction: UITextLayoutDirection, offset: Int) -> UITextPosition? {
         let start = self.offset(of: position)
-        switch direction {
+        switch textDirection(direction, at: start) {
         case .left: return TranscriptTextPosition(offset: clamp(start - offset))
         case .right: return TranscriptTextPosition(offset: clamp(start + offset))
         case .up, .down:
@@ -1371,7 +1382,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     public func position(within range: UITextRange, farthestIn direction: UITextLayoutDirection) -> UITextPosition? {
         let range = self.range(of: range)
-        switch direction {
+        switch textDirection(direction, at: range.lowerBound) {
         case .left, .up: return TranscriptTextPosition(offset: range.lowerBound)
         case .right, .down: return TranscriptTextPosition(offset: range.upperBound)
         @unknown default: return nil
@@ -1380,7 +1391,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     public func characterRange(byExtending position: UITextPosition, in direction: UITextLayoutDirection) -> UITextRange? {
         let start = offset(of: position)
-        switch direction {
+        switch textDirection(direction, at: start) {
         case .left, .up: return TranscriptTextRange(range: clamp(start - 1)..<start)
         case .right, .down: return TranscriptTextRange(range: start..<clamp(start + 1))
         @unknown default: return nil
@@ -1409,13 +1420,16 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     public func firstRect(for range: UITextRange) -> CGRect {
         let range = self.range(of: range)
-        return currentLayout.selectionRects(for: range).first ?? currentLayout.caretRect(at: range.lowerBound)
+        let segments = currentLayout.selectionSegments(for: range)
+        guard let first = segments.first else { return currentLayout.caretRect(at: range.lowerBound) }
+        // All of the first line, which text of mixed direction splits into several rects.
+        return segments.prefix { $0.rect.minY == first.rect.minY }.reduce(first.rect) { $0.union($1.rect) }
     }
 
     public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
-        let rects = currentLayout.selectionRects(for: self.range(of: range))
-        return rects.enumerated().map { index, rect in
-            TranscriptSelectionRect(rect: rect, containsStart: index == 0, containsEnd: index == rects.count - 1)
+        currentLayout.selectionSegments(for: self.range(of: range)).map { segment in
+            TranscriptSelectionRect(rect: segment.rect, writingDirection: segment.isRightToLeft ? .rightToLeft : .leftToRight,
+                                    containsStart: segment.containsStart, containsEnd: segment.containsEnd)
         }
     }
 
@@ -1436,7 +1450,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     }
 
     public func baseWritingDirection(for position: UITextPosition, in direction: UITextStorageDirection) -> NSWritingDirection {
-        .leftToRight
+        currentLayout.isRightToLeft(at: clamp(offset(of: position)), backward: direction == .backward) ? .rightToLeft : .leftToRight
     }
 
     public func setBaseWritingDirection(_ writingDirection: NSWritingDirection, for range: UITextRange) {}
@@ -1509,18 +1523,20 @@ final class TranscriptTextRange: UITextRange {
 
 final class TranscriptSelectionRect: UITextSelectionRect {
     private let storedRect: CGRect
+    private let storedWritingDirection: NSWritingDirection
     private let storedContainsStart: Bool
     private let storedContainsEnd: Bool
 
-    init(rect: CGRect, containsStart: Bool, containsEnd: Bool) {
+    init(rect: CGRect, writingDirection: NSWritingDirection, containsStart: Bool, containsEnd: Bool) {
         storedRect = rect
+        storedWritingDirection = writingDirection
         storedContainsStart = containsStart
         storedContainsEnd = containsEnd
         super.init()
     }
 
     override var rect: CGRect { storedRect }
-    override var writingDirection: NSWritingDirection { .leftToRight }
+    override var writingDirection: NSWritingDirection { storedWritingDirection }
     override var containsStart: Bool { storedContainsStart }
     override var containsEnd: Bool { storedContainsEnd }
     override var isVertical: Bool { false }

@@ -25,6 +25,15 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// Whether `TranscriptText` scales the sizes with Dynamic Type; see
     /// `scaled(for:)`.
     public var scalesWithDynamicType = false
+    /// Whether the view sets the text heavier when the Bold Text setting is
+    /// on, as UIKit does with the system font. On by default. Regular text
+    /// becomes semibold, and bold text becomes heavy. A named font, such as
+    /// "Avenir-Book", keeps its own weight; the default code font takes its
+    /// bold face. Off, the text keeps the same weights in both settings.
+    public var followsBoldText = true
+    /// Set by the view from its trait collection: Bold Text is on and
+    /// `followsBoldText` lets it change the fonts.
+    var usesBoldText = false
 
     public var bodySize: CGFloat = 17
     public var lineSpacing: CGFloat = 3
@@ -99,6 +108,7 @@ public struct TranscriptStyle: Equatable, Sendable {
             var traits: Int
             var font: TranscriptFont?
             var code: TranscriptFont?
+            var boldText: Bool
         }
 
         private let lock = NSLock()
@@ -127,7 +137,7 @@ public struct TranscriptStyle: Equatable, Sendable {
         case .code: role = 7
         }
         let key = FontCache.Key(role: role, size: bodySize, traits: traits.rawValue, font: customFont(for: kind),
-                                code: traits.contains(.code) ? codeFont : nil)
+                                code: traits.contains(.code) ? codeFont : nil, boldText: usesBoldText)
         return Self.fontCache.font(for: key) { makeFont(for: kind, traits: traits) }
     }
 
@@ -175,7 +185,46 @@ public struct TranscriptStyle: Equatable, Sendable {
         if !symbolic.isEmpty, let styled = CTFontCreateCopyWithSymbolicTraits(font, 0, nil, symbolic, symbolic) {
             font = styled
         }
-        return font
+        var isCode = traits.contains(.code)
+        if case .code = kind { isCode = true }
+        let source = traits.contains(.code) ? codeFont : customFont(for: kind)
+        return adjustedForBoldText(font, source: source, isCode: isCode, italic: traits.contains(.italic))
+    }
+
+    /// The style that layout uses when the Bold Text setting is `isOn`.
+    func withBoldText(_ isOn: Bool) -> TranscriptStyle {
+        var copy = self
+        copy.usesBoldText = isOn && followsBoldText
+        return copy
+    }
+
+    /// `font` as Bold Text sets it, when `usesBoldText` is on.
+    ///
+    /// - Parameters:
+    ///   - source: the app's font that `font` was made from, or nil for a
+    ///     default one.
+    ///   - isCode: a default font is the fixed-pitch one, not the system font.
+    func adjustedForBoldText(_ font: CTFont, source: TranscriptFont?, isCode: Bool, italic: Bool) -> CTFont {
+        guard usesBoldText else { return font }
+        let weight = Self.weight(of: font)
+        let target = TranscriptFont.boldTextWeight(weight)
+        // A font that is already as heavy, for instance because the system
+        // made it so, is not made heavier again.
+        guard weight < target - 0.01 else { return font }
+        if let source, source.name != nil { return font }
+        if source == nil, isCode {
+            return CTFontCreateCopyWithSymbolicTraits(font, 0, nil, .traitBold, .traitBold) ?? font
+        }
+        var heavier = TranscriptFont(size: CTFontGetSize(font), weight: target, monospaced: source?.monospaced ?? false).makeFont()
+        if italic, let styled = CTFontCreateCopyWithSymbolicTraits(heavier, 0, nil, .traitItalic, .traitItalic) {
+            heavier = styled
+        }
+        return heavier
+    }
+
+    static func weight(of font: CTFont) -> CGFloat {
+        let traits = CTFontCopyTraits(font) as NSDictionary
+        return (traits[kCTFontWeightTrait] as? NSNumber).map { CGFloat($0.doubleValue) } ?? 0
     }
 
     static let fontKey = NSAttributedString.Key(kCTFontAttributeName as String)
@@ -338,7 +387,8 @@ final class ImageAttachment: @unchecked Sendable {
             self.ascent = size.height - formula.baseline * scale
         } else {
             let size = CTFontGetSize(font) * 0.85
-            let code = style.codeFont?.makeFont(size: size) ?? CTFontCreateUIFontForLanguage(.userFixedPitch, size, nil)!
+            let code = style.adjustedForBoldText(style.codeFont?.makeFont(size: size) ?? CTFontCreateUIFontForLanguage(.userFixedPitch, size, nil)!,
+                                                 source: style.codeFont, isCode: true, italic: false)
             let attributes: [NSAttributedString.Key: Any] = [
                 TranscriptStyle.fontKey: code,
                 NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String): true,

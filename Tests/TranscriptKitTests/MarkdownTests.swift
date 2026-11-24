@@ -267,6 +267,22 @@ func displayedTextOnlyGrowsWhileStreaming(newlinesAsLineBreaks: Bool) {
     #expect(document.copyText(in: 0..<5) == "Intro")
 }
 
+@Test func copyTextPrefixesEveryLineOfABlock() {
+    let document = MarkdownStreamParser.document(from: "> quoted\n> ```\n> a\n> b\n> ```\n\n- item\n\n  ```\n  x\n  y\n  ```\n- last\n")
+    #expect(document.copyText(in: 0..<document.utf16Count) == """
+    > quoted
+
+    > a
+    > b
+
+    - item
+      x
+      y
+    - last
+    """)
+    #expect(document.copyText(in: 3..<document.utf16Count).hasPrefix("ted\n\n> a\n> b"))
+}
+
 @Test func linkHitTestingFindsOnlyTheLinkGlyphs() {
     let document = MarkdownStreamParser.document(from: "Go to [the site](https://example.com) now")
     let layout = DocumentLayout(document: document, width: 400)

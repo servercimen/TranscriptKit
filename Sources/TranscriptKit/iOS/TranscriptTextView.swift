@@ -1800,6 +1800,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// the view resign, and the selection must stay for them.
     @discardableResult
     public override func becomeFirstResponder() -> Bool {
+        addTextInteractionIfNeeded()
         let became = super.becomeFirstResponder()
         if became { NotificationCenter.default.post(name: Self.didBecomeFirstResponder, object: self) }
         return became
@@ -1860,10 +1861,14 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         }
     }
 
+    /// Puts the selected text on the pasteboard as plain text, readable as
+    /// Markdown (see `TranscriptDocument.copyText(in:)`), and as rich text
+    /// with the fonts, links, strikethrough and underline of the text. In the
+    /// rich text, Helvetica Neue takes the place of the system font.
     nonisolated public override func copy(_ sender: Any?) {
         onMainThread {
             guard let range = selectedRange else { return }
-            UIPasteboard.general.string = shownDocument.copyText(in: range)
+            UIPasteboard.general.setItems([shownDocument.pasteboardItem(in: range, style: currentLayout.style)])
         }
     }
 

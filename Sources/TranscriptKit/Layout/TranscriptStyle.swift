@@ -26,10 +26,10 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// `scaled(for:)`.
     public var scalesWithDynamicType = false
     /// Whether the view sets the text heavier when the Bold Text setting is
-    /// on, as UIKit does with the system font. On by default. Regular text
-    /// becomes semibold, and bold text becomes heavy. A named font, such as
-    /// "Avenir-Book", keeps its own weight; the default code font takes its
-    /// bold face. Off, the text keeps the same weights in both settings.
+    /// on. On by default. Regular text becomes semibold, and bold text
+    /// becomes heavy. A named font, such as "Avenir-Book", keeps its own
+    /// weight; the default code font takes its bold face. Off, the text
+    /// keeps the same weights in both settings.
     public var followsBoldText = true
     /// Set by the view from its trait collection: Bold Text is on and
     /// `followsBoldText` lets it change the fonts.

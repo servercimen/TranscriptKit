@@ -62,12 +62,52 @@ extension DocumentLayout {
         return found
     }
 
+    /// Every animated tag in this layout that has closed, as its lines hold
+    /// them: those a line limit cuts off are left out.
+    func closedAnimatedTags() -> Set<TagKey> {
+        var keys: Set<TagKey> = []
+        for index in 0..<entryCount {
+            for line in entry(at: index).layout.lines {
+                guard let animated = line.decorations?.animated, !animated.isEmpty else { continue }
+                for fragment in animated { keys.insert(fragment.key) }
+            }
+        }
+        return keys
+    }
+
+    /// The tags of `keys` that are in this layout and have closed, in text
+    /// order, each with its place among them: for tags whose animations
+    /// start together.
+    func tagsStartingTogether(_ keys: some Collection<TagKey>) -> [(tag: AnimatedTag, group: TranscriptAnimationGroup)] {
+        // One look from the end finds every block, as tags of a first text
+        // can be in all of them.
+        var unfound = Set(keys.map(\.block))
+        var indices: [String: Int] = [:]
+        var index = entryCount - 1
+        while index >= 0, !unfound.isEmpty {
+            let id = entry(at: index).layout.block.id
+            if unfound.remove(id) != nil { indices[id] = index }
+            index -= 1
+        }
+        var found: [(tag: AnimatedTag, block: Int)] = []
+        for key in keys {
+            guard let index = indices[key.block], let tag = animatedTag(key, inEntry: index) else { continue }
+            found.append((tag, index))
+        }
+        found.sort { ($0.block, $0.tag.key.start, $0.tag.key.name) < ($1.block, $1.tag.key.start, $1.tag.key.name) }
+        return found.enumerated().map { ($1.tag, TranscriptAnimationGroup(index: $0, count: found.count)) }
+    }
+
     /// The tag `key` names, if it is in this layout and has closed.
     func animatedTag(_ key: TagKey) -> AnimatedTag? {
         // Animated tags are almost always in the last blocks.
         var index = entryCount - 1
         while index >= 0, entry(at: index).layout.block.id != key.block { index -= 1 }
         guard index >= 0 else { return nil }
+        return animatedTag(key, inEntry: index)
+    }
+
+    private func animatedTag(_ key: TagKey, inEntry index: Int) -> AnimatedTag? {
         let entry = entry(at: index)
         var parts: [(fragment: AnimatedFragment, origin: CGPoint)] = []
         var animation: TranscriptDecoration.Animation?
@@ -84,5 +124,169 @@ extension DocumentLayout {
         }
         guard let animation, !parts.isEmpty else { return nil }
         return AnimatedTag(key: key, animation: animation, parts: parts, band: top...bottom)
+    }
+}
+
+/// The animated tags of a view that have closed and wait for the view's
+/// `TranscriptAnimationTiming` to let them play, and which of them may play.
+struct WaitingTags: Sendable {
+    private(set) var keys: Set<TagKey> = []
+    /// Waiting tags the app has asked to play (`playTagAnimations()`).
+    private(set) var requested: Set<TagKey> = []
+    /// The rows each waiting tag takes up in the layout on screen, kept from
+    /// one look to the next: a scroll looks at every waiting tag.
+    private var bands: [TagKey: ClosedRange<CGFloat>] = [:]
+
+    /// Where the view is and what it shows, for `takeReady`.
+    struct Viewer {
+        var isInWindow: Bool
+        /// The view or one of its ancestors is hidden or fully transparent.
+        var isHidden: Bool
+        /// The part of the view on screen, in its coordinates.
+        var visibleRect: CGRect
+        /// No more text is coming.
+        var isFinished: Bool
+    }
+
+    var isEmpty: Bool { keys.isEmpty }
+
+    mutating func add(_ keys: some Sequence<TagKey>) {
+        self.keys.formUnion(keys)
+    }
+
+    /// Lets every tag waiting now play once the rest of the timing allows.
+    mutating func request() {
+        requested.formUnion(keys)
+    }
+
+    /// Lets the waiting tags of `keys` play once the rest of the timing
+    /// allows, as if the app had asked.
+    mutating func request(_ keys: Set<TagKey>) {
+        requested.formUnion(keys.intersection(self.keys))
+    }
+
+    /// Keeps only the tags in `kept`, for a layout that holds only those.
+    mutating func keep(_ kept: Set<TagKey>) {
+        keys.formIntersection(kept)
+        requested.formIntersection(keys)
+        bands = bands.filter { keys.contains($0.key) }
+    }
+
+    /// Forgets where the tags are, for a new layout on screen.
+    mutating func forgetBands() {
+        bands.removeAll()
+    }
+
+    /// Empties the list, and returns the tags that waited.
+    mutating func removeAll() -> Set<TagKey> {
+        defer {
+            keys.removeAll()
+            requested.removeAll()
+            bands.removeAll()
+        }
+        return keys
+    }
+
+    /// Takes the waiting tags that `timing` lets play now out of the list.
+    /// A view that is not in a window plays none: nothing would show them.
+    ///
+    /// - Parameter band: the rows of the document a tag takes up, or nil
+    ///   if the view's layout does not hold it. It is asked once for each
+    ///   tag until `forgetBands()`.
+    mutating func takeReady(timing: TranscriptAnimationTiming, viewer: Viewer,
+                            band: (TagKey) -> ClosedRange<CGFloat>?) -> [TagKey] {
+        guard !keys.isEmpty, viewer.isInWindow else { return [] }
+        if timing.contains(.afterStreamFinishes), !viewer.isFinished { return [] }
+        if timing.contains(.whenVisible), viewer.isHidden { return [] }
+        var ready: [TagKey] = []
+        for key in keys {
+            if timing.contains(.whenRequested), !requested.contains(key) { continue }
+            if timing.contains(.whenVisible) {
+                if bands[key] == nil { bands[key] = band(key) }
+                guard let band = bands[key], Self.isOnScreen(band, in: viewer.visibleRect) else { continue }
+            }
+            ready.append(key)
+        }
+        for key in ready {
+            keys.remove(key)
+            requested.remove(key)
+            bands[key] = nil
+        }
+        return ready
+    }
+
+    /// The animations of a view that go on, or wait to play, when the view
+    /// shows a new layout.
+    struct Carried: Equatable {
+        /// Playing tags that go on playing.
+        var playing: Set<TagKey> = []
+        /// Tags that wait to play: waiting tags that go on waiting, tags
+        /// held back to play for the first time, and `replayed`.
+        var waiting: Set<TagKey> = []
+        /// Playing tags that the layout moved: they play again from the
+        /// start, with no need to ask again for `.whenRequested`.
+        var replayed: Set<TagKey> = []
+    }
+
+    /// What goes on when a view shows a new layout.
+    ///
+    /// - Parameters:
+    ///   - isAppend: the layout adds text at the end of the one on screen.
+    ///     The view keeps its waiting tags and starts or holds `started`, the
+    ///     tags that closed in it.
+    ///   - keepsText: the layout is not an append, but the view laid out the
+    ///     same text again, as when an image arrives or the width changes.
+    ///     Other layouts that are not appends draw every tag at rest.
+    ///   - firstText: the layout is the first with text that the view shows,
+    ///     and its closed tags play one time (`animatesTagsInFirstText`).
+    ///   - closed: the layout's closed animated tags.
+    ///   - waiting: the tags that wait now.
+    ///   - playing: the tags that play now.
+    ///   - isPlacedAsBefore: whether the layout draws a playing tag's glyphs
+    ///     where they were.
+    static func carried(isAppend: Bool, keepsText: Bool, firstText: Bool, closed: Set<TagKey>, waiting: Set<TagKey>,
+                        started: Set<TagKey>, playing: Set<TagKey>, isPlacedAsBefore: (TagKey) -> Bool) -> Carried {
+        var carried = Carried()
+        if isAppend {
+            if firstText { carried.waiting = closed.subtracting(started).subtracting(playing).subtracting(waiting) }
+            return carried
+        }
+        if keepsText {
+            for key in playing where closed.contains(key) {
+                if isPlacedAsBefore(key) { carried.playing.insert(key) } else { carried.replayed.insert(key) }
+            }
+            carried.waiting = waiting.intersection(closed).union(carried.replayed)
+        }
+        if firstText { carried.waiting.formUnion(closed.subtracting(carried.playing)) }
+        return carried
+    }
+
+    /// Whether the tags wait only for a hidden view to show: nothing tells
+    /// the view when an ancestor shows again, so it looks again later.
+    func waitForHiddenView(timing: TranscriptAnimationTiming, viewer: Viewer) -> Bool {
+        !keys.isEmpty && timing.contains(.whenVisible) && viewer.isInWindow && viewer.isHidden
+    }
+
+    /// Whether waiting tags keep waiting while the view is out of its
+    /// window: they wait to be seen, or for the app, and neither has
+    /// happened yet.
+    static func keepWaitingOutsideWindow(_ timing: TranscriptAnimationTiming) -> Bool {
+        !timing.isDisjoint(with: [.whenVisible, .whenRequested])
+    }
+
+    /// Whether a tag's rows count as on screen: all of them, or for a tag
+    /// taller than what is visible, some of them.
+    static func isOnScreen(_ band: ClosedRange<CGFloat>, in visible: CGRect) -> Bool {
+        guard !visible.isNull, visible.height > 0 else { return false }
+        if band.upperBound - band.lowerBound > visible.height {
+            return band.upperBound > visible.minY && band.lowerBound < visible.maxY
+        }
+        return band.lowerBound >= visible.minY && band.upperBound <= visible.maxY
+    }
+
+    /// Whether a view is hidden: it or one of its ancestors, from the view
+    /// up, is hidden or has an alpha of 0 (below 0.01, as hit testing has it).
+    static func isHidden(_ chain: some Sequence<(isHidden: Bool, alpha: CGFloat)>) -> Bool {
+        chain.contains { $0.isHidden || $0.alpha < 0.01 }
     }
 }

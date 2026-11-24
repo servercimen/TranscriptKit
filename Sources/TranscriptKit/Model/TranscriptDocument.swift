@@ -44,7 +44,9 @@ public struct InlineSpan: Equatable, Sendable {
     }
 
     /// For text inside a custom tag (see `TranscriptTag`): the tag and its
-    /// decoration. Its traits and link are also in `traits` and `link`.
+    /// decoration. In a parsed span, and in one made with
+    /// `InlineSpan(range:tagged:)`, its traits and link are also in `traits`
+    /// and `link`. Setting it does not change them.
     public var customTag: CustomTag? {
         get { extras?.customTag }
         set { extras = Extras.make(image: image, reference: reference, customTag: newValue, math: math) }
@@ -56,6 +58,13 @@ public struct InlineSpan: Equatable, Sendable {
         self.traits = traits
         self.link = link
         self.extras = Extras.make(image: image, reference: reference, customTag: customTag, math: math)
+    }
+
+    /// A span for text inside a custom tag, as the parser makes it: with
+    /// the tag's decoration, its traits, and its link. For a document that
+    /// the app builds without the parser.
+    public init(range: Range<Int>, tagged tag: CustomTag) {
+        self.init(range: range, traits: tag.decoration.traits, link: tag.decoration.link, customTag: tag)
     }
 
     init(range: Range<Int>, traits: Traits, link: String?, extras: Extras?) {
@@ -132,6 +141,10 @@ public struct TranscriptTable: Equatable, Sendable {
     public var alignments: [Alignment]
     /// Cell ranges, row by row; the first row is the header.
     public var rows: [[Range<Int>]]
+    /// The columns whose delimiter cell has a colon on one side only, as in
+    /// ":---" or "---:". Their alignment is a side of the screen, the left
+    /// or the right, so a right-to-left table does not mirror it.
+    var sidedColumns: Set<Int> = []
 
     public init(alignments: [Alignment], rows: [[Range<Int>]]) {
         self.alignments = alignments
@@ -144,7 +157,7 @@ public struct TranscriptTable: Equatable, Sendable {
     /// end, and the last cell perhaps longer: the structure of a table whose
     /// text grew at its end.
     func isExtended(by newer: TranscriptTable) -> Bool {
-        guard alignments == newer.alignments, newer.rows.count >= rows.count else { return false }
+        guard alignments == newer.alignments, sidedColumns == newer.sidedColumns, newer.rows.count >= rows.count else { return false }
         guard let lastRow = rows.indices.last else { return true }
         for index in 0..<lastRow where rows[index] != newer.rows[index] { return false }
         let old = rows[lastRow]

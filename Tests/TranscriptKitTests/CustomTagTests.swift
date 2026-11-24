@@ -122,6 +122,27 @@ private func tagged(_ result: InlineParser.Result) -> [String] {
     #expect(inline("a <mark>b</ma", open: true).text == "a b")
 }
 
+/// A span that the app makes itself, for a document built without the
+/// parser, gives what a parsed tag gives.
+@Test func appMadeTagSpansMatchParsedOnes() throws {
+    let parsed = MarkdownStreamParser.document(from: #"Ask <mention id="42">@ana</mention> now."#, idPrefix: "a", tags: tags)
+    let mention = try #require(tags.first { $0.name == "mention" })
+    let made = TranscriptDocument(blocks: [
+        TranscriptBlock(id: "a-0", text: "Ask @ana now.",
+                        spans: [InlineSpan(range: 4..<8, tagged: InlineSpan.CustomTag(mention, attributes: ["id": "42"]))]),
+    ])
+    #expect(made.blocks[0].spans == parsed.blocks[0].spans)
+    #expect(made.blocks[0].spans[0].traits == .bold)
+    #expect(made.blocks[0].spans[0].link == "app://people/42")
+
+    let named = InlineSpan.CustomTag(name: "Mention", attributes: ["id": "42"], decoration: mention.decoration(for: ["id": "42"]))
+    #expect(named == made.blocks[0].spans[0].customTag)
+    // The plain initializer keeps the span's own traits and link.
+    let plain = InlineSpan(range: 0..<1, link: "app://other", customTag: named)
+    #expect(plain.link == "app://other" && plain.traits.isEmpty && plain.customTag == named)
+    #expect(InlineSpan(range: 0..<1, customTag: named).link == nil)
+}
+
 // MARK: Streaming
 
 private let streamedSamples = [
@@ -208,7 +229,7 @@ private func layout(_ markdown: String, width: CGFloat = 320) -> DocumentLayout 
 private let textColor = CGColor(gray: 0, alpha: 1)
 
 /// `layout` drawn on white, as RGBA bytes.
-private func render(_ layout: DocumentLayout, dark: Bool, scale: CGFloat = 2) -> (bytes: [UInt8], width: Int) {
+private func render(_ layout: DocumentLayout, dark: Bool, highContrast: Bool = false, scale: CGFloat = 2) -> (bytes: [UInt8], width: Int) {
     let width = Int((layout.width * scale).rounded())
     let height = Int((max(layout.height, 1) * scale).rounded())
     let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
@@ -220,7 +241,7 @@ private func render(_ layout: DocumentLayout, dark: Bool, scale: CGFloat = 2) ->
     context.scaleBy(x: scale, y: -scale)
     let all = CGRect(x: 0, y: 0, width: layout.width, height: layout.height)
     layout.draw(in: context, dirtyRect: all, text: textColor, codeBackground: CGColor(gray: 0.9, alpha: 1),
-                accent: CGColor(gray: 0.6, alpha: 1), dark: dark)
+                accent: CGColor(gray: 0.6, alpha: 1), dark: dark, highContrast: highContrast)
     return (Array(UnsafeRawBufferPointer(start: context.data!, count: width * height * 4)), width)
 }
 
@@ -254,6 +275,23 @@ private func count(_ bytes: [UInt8], near color: (UInt8, UInt8, UInt8)) -> Int {
     #expect(count(light, near: (0, 122, 255)) == 0)
     // The highlight is behind the glyphs: dark text pixels remain inside it.
     #expect(count(light, near: (0, 0, 0)) > 100)
+}
+
+@Test func highlightsAreDrawnInTheirIncreaseContrastColors() {
+    let green = TranscriptColor(red: 0, green: 1, blue: 0)
+    let color = TranscriptColor(light: yellow, dark: blue, highContrastLight: red, highContrastDark: green)
+    var parser = MarkdownStreamParser(tags: [TranscriptTag("mark", TranscriptDecoration(background: color))])
+    parser.append("Some <mark>highlighted words</mark> here.")
+    let marked = DocumentLayout(document: parser.document, width: 320, style: TranscriptStyle())
+    let normal = render(marked, dark: false).bytes
+    let light = render(marked, dark: false, highContrast: true).bytes
+    let dark = render(marked, dark: true, highContrast: true).bytes
+    #expect(count(normal, near: (255, 255, 0)) > 500)
+    #expect(count(normal, near: (255, 0, 0)) == 0)
+    #expect(count(light, near: (255, 0, 0)) > 500)
+    #expect(count(light, near: (255, 255, 0)) == 0)
+    #expect(count(dark, near: (0, 255, 0)) > 500)
+    #expect(count(dark, near: (0, 0, 255)) == 0)
 }
 
 /// Text parsed again with another look for a tag (the way to re-theme it)

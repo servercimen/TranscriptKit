@@ -18,6 +18,8 @@ enum TagAnimationPlayer {
         var text: CGColor
         /// Whether custom colors take their dark values.
         var dark: Bool
+        /// Whether custom colors take their Increase Contrast values.
+        var highContrast = false
         var scale: CGFloat
     }
 
@@ -222,7 +224,8 @@ enum TagAnimationPlayer {
         let ink = CGRect(x: x + box.minX, y: baseline - box.maxY, width: box.width, height: box.height).insetBy(dx: -2, dy: -2)
         let frame = pixelAligned(ink, scale: appearance.scale)
         guard let context = context(for: frame, scale: appearance.scale) else { return nil }
-        DocumentLayout.setGlyphColor(of: attributes, in: context, text: appearance.text, dark: appearance.dark)
+        DocumentLayout.setGlyphColor(of: attributes, in: context, text: appearance.text, dark: appearance.dark,
+                                    highContrast: appearance.highContrast)
         context.textPosition = origin
         CTRunDraw(run, context, CFRange(location: source.index, length: 1))
         return context.makeImage().map { ($0, frame) }
@@ -234,7 +237,7 @@ enum TagAnimationPlayer {
         let frame = pixelAligned(ink.offsetBy(dx: origin.x, dy: origin.y).insetBy(dx: -1, dy: -1), scale: appearance.scale)
         guard let context = context(for: frame, scale: appearance.scale) else { return nil }
         context.translateBy(x: origin.x, y: origin.y)
-        path.draw(in: context, dark: appearance.dark)
+        path.draw(in: context, dark: appearance.dark, highContrast: appearance.highContrast)
         guard let image = context.makeImage() else { return nil }
         // `anchor` carries the fragment's origin x, which the reveal mask
         // needs to find the path's left edge.

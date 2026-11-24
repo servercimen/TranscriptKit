@@ -211,7 +211,7 @@ private func attachment(in layout: DocumentLayout) -> ImageAttachment? {
     return nil
 }
 
-@Test func aFormulaShowsItsLatexUntilTheRendererDrawsIt() async {
+@Test func aFormulaIsEmptySpaceUntilTheRendererDrawsIt() async {
     let store = TranscriptImageStore()
     store.setMathRenderer { _, fontSize in
         boxFormula(width: 40, height: Int(fontSize), baseline: 5)
@@ -220,7 +220,10 @@ private func attachment(in layout: DocumentLayout) -> ImageAttachment? {
     let revision = store.revision
     let first = DocumentLayout(document: document, width: 300, style: TranscriptStyle(), reusing: nil, images: store)
     #expect(attachment(in: first)?.picture == nil)
-    #expect(attachment(in: first)?.label != nil)
+    #expect(attachment(in: first)?.label == nil)
+    #expect((attachment(in: first)?.size.width ?? 0) > 0)
+    // Copy still gives the LaTeX.
+    #expect(document.copyText(in: 0..<document.utf16Count) == "So \\(x\\) here")
     await waitUntil { store.revision > revision }
     let second = DocumentLayout(document: document, width: 300, style: TranscriptStyle(), reusing: first, images: store)
     let drawn = attachment(in: second)
@@ -262,4 +265,118 @@ private func attachment(in layout: DocumentLayout) -> ImageAttachment? {
     #expect(middle.0 > 200 && middle.1 < 60 && middle.2 < 60)
     let side = pixel(line.frame.midX - 25)
     #expect(side.0 > 200 && side.1 > 200 && side.2 > 200)
+}
+
+@Test func aFormulaWhoseLatexChangesKeepsItsImageUntilTheNewOneIsDrawn() async {
+    let store = TranscriptImageStore()
+    store.setMathRenderer { math, _ in
+        try? await Task.sleep(for: .milliseconds(50))
+        return boxFormula(width: 20 * math.tex.count, height: 20, baseline: 4)
+    }
+    let style = TranscriptStyle()
+    let first = MarkdownStreamParser.document(from: "$$x$$")
+    var revision = store.revision
+    _ = DocumentLayout(document: first, width: 300, style: style, reusing: nil, images: store)
+    await waitUntil { store.revision > revision }
+    let drawn = DocumentLayout(document: first, width: 300, style: style, reusing: nil, images: store)
+    #expect(attachment(in: drawn)?.size.width == 20)
+    // The same block, as when an app parses each new snapshot of the text.
+    let grown = MarkdownStreamParser.document(from: "$$x+y$$")
+    #expect(grown.blocks[0].id == first.blocks[0].id)
+    revision = store.revision
+    let meanwhile = DocumentLayout(document: grown, width: 300, style: style, reusing: drawn, images: store)
+    #expect(attachment(in: meanwhile)?.isMask == true)
+    #expect(attachment(in: meanwhile)?.size.width == 20)
+    await waitUntil { store.revision > revision }
+    let after = DocumentLayout(document: grown, width: 300, style: style, reusing: meanwhile, images: store)
+    #expect(attachment(in: after)?.size.width == 60)
+}
+
+@Test func aFormulaShowsItsLatexWithoutARendererOrWhenTheRendererFails() async {
+    let document = MarkdownStreamParser.document(from: "So \\(x\\) here")
+    let plain = DocumentLayout(document: document, width: 300, style: TranscriptStyle(), reusing: nil, images: TranscriptImageStore())
+    #expect(attachment(in: plain)?.label != nil)
+
+    let store = TranscriptImageStore(settle: { $0() })
+    store.setMathRenderer { _, _ in nil }
+    let revision = store.revision
+    let first = DocumentLayout(document: document, width: 300, style: TranscriptStyle(), reusing: nil, images: store)
+    #expect(attachment(in: first)?.label == nil)
+    await waitUntil { store.revision > revision }
+    let failed = DocumentLayout(document: document, width: 300, style: TranscriptStyle(), reusing: first, images: store)
+    #expect(attachment(in: failed)?.label != nil)
+}
+
+@Test func aFormulaBeingDrawnDrawsNothing() {
+    let store = TranscriptImageStore()
+    store.setMathRenderer { _, _ in
+        try? await Task.sleep(for: .seconds(5))
+        return nil
+    }
+    let layout = DocumentLayout(document: MarkdownStreamParser.document(from: "$$\\frac{a}{b}$$"), width: 200,
+                                style: TranscriptStyle(), reusing: nil, images: store)
+    #expect(attachment(in: layout)?.label == nil)
+    let width = 200
+    let height = Int(layout.height.rounded(.up))
+    let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    layout.draw(in: context, dirtyRect: CGRect(x: 0, y: 0, width: width, height: height),
+                text: CGColor(red: 1, green: 0, blue: 0, alpha: 1), codeBackground: CGColor(gray: 0.9, alpha: 1),
+                accent: CGColor(gray: 0.6, alpha: 1), dark: false)
+    let bytes = UnsafeRawBufferPointer(start: context.data!, count: width * height * 4)
+    #expect(bytes.allSatisfy { $0 == 0 })
+}
+
+@Test func theSpaceForAFormulaFollowsItsLatex() {
+    func shape(_ tex: String) -> (Int, Int, Bool) {
+        let shape = LatexShape(tex)
+        return (shape.symbols, shape.rows, shape.isTall)
+    }
+    #expect(shape("x^2 + y^2") == (5, 1, false))
+    #expect(shape("\\frac{a}{\\alpha}") == (2, 1, true))
+    #expect(shape("\\begin{aligned} a &= b \\\\ c &= d \\end{aligned}") == (6, 2, false))
+    #expect(shape("\\{ x \\, y \\}") == (4, 1, false))
+
+    let font = CTFontCreateWithName("Helvetica" as CFString, 20, nil)
+    let line = ceil(CTFontGetAscent(font) + CTFontGetDescent(font))
+    let inline = ImageAttachment.reservedSpace(for: TranscriptMath(tex: "x^2 + y^2", isDisplay: false), font: font, maximumWidth: 300)
+    #expect(inline.size == CGSize(width: 55, height: line))
+    #expect(inline.ascent == ceil(CTFontGetAscent(font)))
+    let fraction = ImageAttachment.reservedSpace(for: TranscriptMath(tex: "\\frac{a}{b}", isDisplay: true), font: font, maximumWidth: 300)
+    #expect(fraction.size.height == line * 2)
+    #expect(fraction.size.width == 22)
+    let wide = ImageAttachment.reservedSpace(for: TranscriptMath(tex: String(repeating: "x+", count: 100), isDisplay: true),
+                                             font: font, maximumWidth: 300)
+    #expect(wide.size.width == 300)
+}
+
+@Test func formulasOnScreenAreNotDrawnAgainWhenTheCacheRemovesThem() async {
+    // Room for 3 of the 5 formulas, which are 4 by 4 pixels: 16 bytes as a mask, which costs 256.
+    let cache = TranscriptMathCache(byteLimit: 256 * 3)
+    let store = TranscriptImageStore(mathCache: cache)
+    let calls = RenderCount()
+    store.setMathRenderer { _, _ in
+        calls.add()
+        return boxFormula(width: 2, height: 2, baseline: 0)
+    }
+    let document = MarkdownStreamParser.document(from: "\\(a\\) \\(b\\) \\(c\\) \\(d\\) \\(e\\)")
+    var layout = DocumentLayout(document: document, width: 300, style: TranscriptStyle(), reusing: nil, images: store)
+    for _ in 0..<20 {
+        let revision = store.revision
+        await waitUntil { store.revision > revision }
+        if store.revision == revision { break }
+        layout = DocumentLayout(document: document, width: 300, style: TranscriptStyle(), reusing: layout, images: store)
+    }
+    let attachments = layout.entry(at: 0).layout.attachments
+    #expect(attachments.count == 5)
+    #expect(attachments.allSatisfy { $0.attachment.picture != nil })
+    #expect(calls.value == 5)
+    #expect(cache.usage.count == 3)
+}
+
+private final class RenderCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func add() { lock.withLock { count += 1 } }
+    var value: Int { lock.withLock { count } }
 }

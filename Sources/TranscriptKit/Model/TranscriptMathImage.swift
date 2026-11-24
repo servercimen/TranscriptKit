@@ -21,7 +21,8 @@ public struct TranscriptMathImage: @unchecked Sendable {
 
 /// Draws a formula at a font size: the size of the text around inline math,
 /// or of the paragraph for display math. Called off the main thread, once
-/// for each formula and size. Nil keeps the LaTeX shown as written.
+/// for each formula and size in a `TranscriptMathCache`, and again only if
+/// the cache removed the formula. Nil shows the LaTeX as written.
 public typealias TranscriptMathRenderer = @Sendable (_ math: TranscriptMath, _ fontSize: CGFloat) async -> TranscriptMathImage?
 
 extension TranscriptMathImage {

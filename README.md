@@ -238,7 +238,8 @@ A single `$` is text, so prices stay as written. TranscriptKit does not read Mar
 
 Without a renderer, a formula shows its LaTeX in the code font. A renderer gets the formula and the font size of the
 text around it. It returns an image, the image's size in points, and its baseline: the distance from the bottom edge
-up to the baseline. TranscriptKit calls it off the main thread, once for each formula and font size.
+up to the baseline. TranscriptKit calls it off the main thread, once for each formula and font size. If it returns
+nil, the formula shows its LaTeX as written.
 
 ```swift
 TranscriptText(stream: stream)
@@ -255,6 +256,25 @@ formula in the text color, so it follows light and dark appearance. A formula th
 scaled down to fit. A paragraph that holds only display math is centered. While a formula streams in, it shows
 nothing until it closes, so the text on screen only grows. Copy gives the LaTeX with its delimiters, and VoiceOver
 reads the LaTeX.
+
+Until the renderer draws a formula, the formula is empty space of about its size. The LaTeX of a formula can change
+from one update to the next, for example when your app closes an open formula in each new snapshot of the text. Then
+the formula keeps its last image until the new one is drawn. Each formula has at most one drawing in progress, and
+newer LaTeX replaces the LaTeX that waits for its turn. Images that arrive together cause one layout.
+
+Drawn formulas are kept in a `TranscriptMathCache`. All views share `TranscriptMathCache.shared` by default, so a
+formula that shows in many messages is drawn once. The cache removes the least recently used formulas when they use
+more than its byte limit, 16 MB by default. Give views whose renderers draw a formula differently a cache each:
+
+```swift
+let cache = TranscriptMathCache(byteLimit: 8 * 1024 * 1024)
+
+TranscriptText(stream: stream)
+    .mathRenderer(myRenderer, cache: cache)
+```
+
+In UIKit, set `mathCache` on `TranscriptTextView`. Call `removeAll()` on a cache after your renderer changes how it
+draws.
 
 ### Selection
 

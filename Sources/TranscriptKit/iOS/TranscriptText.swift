@@ -21,6 +21,7 @@ public struct TranscriptText: UIViewRepresentable {
     private var loader: (@Sendable (TranscriptImage) async -> CGImage?)?
     private var highlighter: TranscriptCodeHighlighter?
     private var mathRenderer: TranscriptMathRenderer?
+    private var mathCache: TranscriptMathCache = .shared
     private var animatesTags = true
     private var textFadeInDuration: TimeInterval?
     private var animationTiming: TranscriptAnimationTiming = .immediately
@@ -78,11 +79,13 @@ public struct TranscriptText: UIViewRepresentable {
         return copy
     }
 
-    /// Draws LaTeX formulas; see `TranscriptTextView.mathRenderer`. Read once,
-    /// when the view is created.
-    public func mathRenderer(_ renderer: @escaping TranscriptMathRenderer) -> TranscriptText {
+    /// Draws LaTeX formulas; see `TranscriptTextView.mathRenderer`. The
+    /// drawn formulas are kept in `cache`, which views share by default; see
+    /// `TranscriptTextView.mathCache`. Read once, when the view is created.
+    public func mathRenderer(_ renderer: @escaping TranscriptMathRenderer, cache: TranscriptMathCache = .shared) -> TranscriptText {
         var copy = self
         copy.mathRenderer = renderer
+        copy.mathCache = cache
         return copy
     }
 
@@ -165,7 +168,10 @@ public struct TranscriptText: UIViewRepresentable {
         view.setContentHuggingPriority(.required, for: .vertical)
         if let loader { view.imageLoader = loader }
         if let highlighter { view.codeHighlighter = highlighter }
-        if let mathRenderer { view.mathRenderer = mathRenderer }
+        if let mathRenderer {
+            view.mathCache = mathCache
+            view.mathRenderer = mathRenderer
+        }
         return view
     }
 

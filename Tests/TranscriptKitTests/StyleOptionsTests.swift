@@ -287,3 +287,35 @@ private func taskBoxes(_ layout: DocumentLayout) -> (checked: CGRect, unchecked:
     #expect(after.count(in: header, near: (232, 232, 232), tolerance: 4) == 0)
     #expect(after.count(in: header, near: (255, 0, 0), tolerance: 8) > 100)
 }
+
+// MARK: Dark appearance
+
+@Test func shapeColorsTakeTheirDarkValues() throws {
+    let markdown = "> quoted\n\n- [x] done\n- [ ] open\n\n| Name | Value |\n| --- | --- |\n| a | 1 |"
+    let red = TranscriptColor(red: 1, green: 0, blue: 0)
+    let green = TranscriptColor(red: 0, green: 1, blue: 0)
+    var style = TranscriptStyle()
+    style.quoteBarColor = TranscriptColor(light: red, dark: green)
+    style.taskCheckedColor = TranscriptColor(light: red, dark: green)
+    style.tableHeaderBackgroundColor = TranscriptColor(light: red, dark: green)
+    let drawn = layout(markdown, style: style)
+    let quote = drawn.entry(at: 0).frame
+    let bar = CGRect(x: 0, y: quote.midY, width: 10, height: 0.5)
+    guard case .checkbox(let box, true)? = drawn.entry(at: 1).layout.marker else {
+        Issue.record("A checked task has a checkbox")
+        return
+    }
+    let checked = box.offsetBy(dx: 0, dy: drawn.entry(at: 1).y)
+    let table = try #require(drawn.entry(at: 3).layout.table)
+    let header = CGRect(x: table.columnX[0] + 2, y: drawn.entry(at: 3).y + table.rowY[0] + 2,
+                        width: table.columnX[1] - table.columnX[0] - 4, height: table.rowY[1] - table.rowY[0] - 4)
+    for (dark, expected, other) in [(false, (255, 0, 0), (0, 255, 0)), (true, (0, 255, 0), (255, 0, 0))] {
+        let pixels = Drawing(drawn, dark: dark)
+        #expect(pixels.count(in: bar, near: expected, tolerance: 8) == 6, "dark: \(dark)")
+        #expect(pixels.count(in: bar, near: other, tolerance: 8) == 0, "dark: \(dark)")
+        #expect(pixels.count(in: checked, near: expected) > 20, "dark: \(dark)")
+        #expect(pixels.count(in: checked, near: other) == 0, "dark: \(dark)")
+        #expect(pixels.count(in: header, near: expected, tolerance: 8) > 100, "dark: \(dark)")
+        #expect(pixels.count(in: header, near: other, tolerance: 8) == 0, "dark: \(dark)")
+    }
+}

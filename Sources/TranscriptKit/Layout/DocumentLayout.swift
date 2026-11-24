@@ -333,8 +333,9 @@ public final class DocumentLayout: @unchecked Sendable {
     // MARK: Drawing
 
     /// Draws the blocks intersecting `dirtyRect` into a top-left-origin context.
-    /// `accent` colors quote bars and rules. `dark` picks the dark values of
-    /// custom tags' colors.
+    /// `accent` colors quote bars and rules, and `codeBackground` code blocks
+    /// and table headers, unless the style sets their own colors. `dark`
+    /// picks the dark values of the style's colors and custom tags' colors.
     public func draw(in context: CGContext, dirtyRect: CGRect, text: CGColor, codeBackground: CGColor, accent: CGColor,
                      dark: Bool = false) {
         draw(in: context, dirtyRect: dirtyRect, text: text, codeBackground: codeBackground, accent: accent, dark: dark, hiding: .none)

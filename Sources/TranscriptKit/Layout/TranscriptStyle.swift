@@ -70,7 +70,7 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// it for table headers.
     public var codeBackgroundColor: TranscriptColor?
     /// Quote bars, thematic breaks and table lines. Nil uses the system's
-    /// tertiary label color.
+    /// tertiary label color. `quoteBarColor` wins over it for quote bars.
     public var accentColor: TranscriptColor?
 
     /// How the numbers of ordered list items are written.

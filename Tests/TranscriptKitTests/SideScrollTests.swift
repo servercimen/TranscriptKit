@@ -328,3 +328,46 @@ private func drawn(_ layout: DocumentLayout, scroll: SideScroll, scale: CGFloat 
     // The long line starts out of the box, to the left, and its end is in the box now.
     #expect(pieces.contains { $0.frame.minX == 0 && $0.frame.maxX > 280 })
 }
+
+// MARK: Pans
+
+@Test func aPanScrollsABlockOnlySidewaysAndOnlyWhereItCanMove() {
+    let (layout, block, end) = scrolledCode()
+    let point = CGPoint(x: 150, y: layout.entry(at: 1).frame.midY)
+    let left = CGPoint(x: -300, y: 40)
+    // At the start, a pan to the left moves the lines; a pan to the right, or up and down, does not.
+    #expect(layout.sidePanEntryIndex(at: point, velocity: left, scroll: .none) == 1)
+    #expect(layout.sidePanEntryIndex(at: point, velocity: CGPoint(x: 300, y: 0), scroll: .none) == nil)
+    #expect(layout.sidePanEntryIndex(at: point, velocity: CGPoint(x: -100, y: 300), scroll: .none) == nil)
+    var scroll = SideScroll()
+    scroll["c"] = block.maximumScrollOffset
+    #expect(layout.sidePanEntryIndex(at: point, velocity: left, scroll: scroll) == nil)
+    #expect(layout.sidePanEntryIndex(at: point, velocity: CGPoint(x: 300, y: 0), scroll: scroll) == 1)
+    // Outside a block that scrolls.
+    #expect(layout.sidePanEntryIndex(at: CGPoint(x: 150, y: layout.entry(at: 0).frame.midY), velocity: left, scroll: .none) == nil)
+    // On a selection handle.
+    let handle = layout.caretRect(at: end, scroll: .none)
+    let onHandle = CGPoint(x: handle.midX - 5, y: handle.midY)
+    #expect(layout.sidePanEntryIndex(at: onHandle, velocity: left, scroll: .none) == 1)
+    #expect(layout.sidePanEntryIndex(at: onHandle, velocity: left, scroll: .none, handles: [3, end]) == nil)
+}
+
+@Test func aBlockSlowsDownAsInAScrollView() {
+    let first = SideScroll.decelerate(velocity: 1000, for: 1.0 / 60)
+    #expect(first.velocity < 1000 && first.velocity > 960)
+    #expect(first.distance > 16 && first.distance < 17)
+    // In steps or in one go, it goes as far.
+    var velocity: CGFloat = 1000
+    var distance: CGFloat = 0
+    for _ in 0..<60 {
+        let step = SideScroll.decelerate(velocity: velocity, for: 1.0 / 60)
+        distance += step.distance
+        velocity = step.velocity
+    }
+    let whole = SideScroll.decelerate(velocity: 1000, for: 1)
+    #expect(abs(distance - whole.distance) < 0.01)
+    #expect(abs(velocity - whole.velocity) < 0.01)
+    // It stops after about 500 points: the speed divided by the rate's logarithm.
+    #expect(abs(SideScroll.decelerate(velocity: 1000, for: 10).distance - 1000 / (-1000 * log(0.998))) < 1)
+    #expect(SideScroll.decelerate(velocity: -1000, for: 0.1).distance < 0)
+}

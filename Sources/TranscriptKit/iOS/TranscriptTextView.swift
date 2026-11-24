@@ -826,7 +826,9 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         canvas.layer.add(transition, forKey: Self.crossfadeKey)
     }
 
-    private static let crossfadeKey = "replacement"
+    /// Core Animation keeps a `CATransition` under this key, whatever key
+    /// `add(_:forKey:)` gets.
+    private static let crossfadeKey = kCATransition
 
     /// Puts `layout` on screen.
     ///

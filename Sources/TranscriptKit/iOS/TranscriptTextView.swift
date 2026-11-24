@@ -1204,7 +1204,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         animationLayer.frame = canvas.bounds
         fadeLayer.frame = canvas.bounds
         if bounds.width > 0 { unsizedWidth = 0 }
-        if bounds.width > 0, installed?.width != bounds.width {
+        if bounds.width > 0, installed?.width != bounds.width || installed?.style != layoutStyle {
             relayoutNow()
             refreshSelectionDisplay()
         }

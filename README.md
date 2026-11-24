@@ -301,10 +301,13 @@ an English word is left to right, also when it holds words in other scripts.
 
 In a right-to-left block, the leading edge is on the right. Lines start there, and `textAlignment` counts from there:
 `.trailing` puts the lines at the left. The indents of lists and quotes, list markers and quote bars are on the right,
-and a table puts its first column on the right. Code blocks are always left to right.
+and a table puts its first column on the right. A table column with no colon in its delimiter cell (`---`) starts at
+the leading edge. A colon on one side (`:---` or `---:`) puts the column's text at the left or at the right, in both
+directions. Code blocks are always left to right.
 
-A selection follows the glyphs. In text of mixed direction, one line can have several selection rects. Copy gives the
-text in the order it was written.
+A selection follows the glyphs. In text of mixed direction, one line can have several selection rects. In a line with
+right-to-left text, the left and right arrow keys move the caret to the next caret on that side of the screen. Copy
+gives the text in the order it was written.
 
 ### Styling
 

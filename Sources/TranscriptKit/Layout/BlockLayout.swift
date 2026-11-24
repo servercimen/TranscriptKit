@@ -399,7 +399,7 @@ final class BlockLayout: @unchecked Sendable {
         var kept = 0
         var old: Table?
         if let previous, let oldTable = previous.table, let oldModel = previous.block.kind.table,
-           oldModel.alignments == model.alignments {
+           oldModel.alignments == model.alignments, oldModel.sidedColumns == model.sidedColumns {
             let limit = min(oldModel.rows.count - 1, model.rows.count)
             while kept < limit, oldModel.rows[kept] == model.rows[kept] { kept += 1 }
             old = oldTable
@@ -514,7 +514,11 @@ final class BlockLayout: @unchecked Sendable {
                     let metrics = fitted(lineMetrics(ctLine, isEmpty: range.isEmpty, font: font), to: fixedHeight)
                     let slack = max(textWidth - metrics.width, 0)
                     let offset: CGFloat
-                    switch column < model.alignments.count ? model.alignments[column] : .leading {
+                    var alignment = column < model.alignments.count ? model.alignments[column] : .leading
+                    if direction == .rightToLeft, model.sidedColumns.contains(column) {
+                        alignment = alignment == .leading ? .trailing : .leading
+                    }
+                    switch alignment {
                     case .leading: offset = 0
                     case .center: offset = (slack / 2).rounded()
                     case .trailing: offset = slack

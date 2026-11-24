@@ -119,6 +119,35 @@ private func lineSummary(_ layout: BlockLayout) -> [String] {
     #expect(table.minimumWidths[0].allSatisfy { $0 > TranscriptStyle().tableCellPadding * 2 })
 }
 
+@Test func columnAlignedToASideKeepsThatSideInRightToLeftText() {
+    let padding = TranscriptStyle().tableCellPadding
+    // ":---" is left, "---:" is right, and "---" is the leading edge: the right.
+    let markdown = "| א | ב | ג |\n|:---|---:|---|\n| אחת ארוכה מאוד | שתיים ארוכה מאוד | שלוש ארוכה מאוד |"
+    let block = layout(markdown, width: 400).entry(at: 0).layout
+    #expect(block.isRightToLeft)
+    guard let table = block.table else { Issue.record("no table"); return }
+    let count = table.columnX.count
+    func cell(_ column: Int) -> (line: BlockLayout.Line, left: CGFloat, right: CGFloat) {
+        (block.lines[table.cellLines[0][column].lowerBound], table.columnX[count - 2 - column], table.columnX[count - 1 - column])
+    }
+    let left = cell(0)
+    #expect(abs(left.line.frame.minX - (left.left + padding)) < 0.5)
+    #expect(left.line.frame.maxX < left.right - padding - 1)
+    let right = cell(1)
+    #expect(abs(right.line.frame.maxX - (right.right - padding)) < 0.5)
+    #expect(right.line.frame.minX > right.left + padding + 1)
+    let leading = cell(2)
+    #expect(abs(leading.line.frame.maxX - (leading.right - padding)) < 0.5)
+
+    // The same marks in left-to-right text.
+    let english = layout("| a | b |\n|:---|---:|\n| one long text | two long text |", width: 400).entry(at: 0).layout
+    guard let grid = english.table else { Issue.record("no table"); return }
+    let first = english.lines[grid.cellLines[0][0].lowerBound]
+    let second = english.lines[grid.cellLines[0][1].lowerBound]
+    #expect(abs(first.frame.minX - (grid.columnX[0] + padding)) < 0.5)
+    #expect(abs(second.frame.maxX - (grid.columnX[2] - padding)) < 0.5)
+}
+
 @Test func eachTableCellKeepsTheDirectionOfItsOwnText() {
     let block = layout("| Word | Meaning |\n|---|---|\n| \(arabic)! | hello |").entry(at: 0).layout
     #expect(!block.isRightToLeft)

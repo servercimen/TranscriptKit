@@ -158,8 +158,8 @@ public struct MarkdownStreamParser: Sendable {
                                    containers: raw.containers, marker: raw.marker)
         case .rule:
             return TranscriptBlock(id: id, kind: .rule, text: "", containers: raw.containers, marker: raw.marker)
-        case .table(let alignments):
-            return makeTable(&raw, id: id, alignments: alignments, open: open, completeRows: completeRows)
+        case .table(let alignments, let sided):
+            return makeTable(&raw, id: id, alignments: alignments, sided: sided, open: open, completeRows: completeRows)
         case .math(let closer, let closed):
             let source = raw.mathLines.joined(separator: "\n")
             let tex = closed ? source.dropFirst(2).dropLast(closer.count).trimmingCharacters(in: .whitespacesAndNewlines) : ""
@@ -192,7 +192,7 @@ public struct MarkdownStreamParser: Sendable {
     /// rows are padded or cut to the column count; a row still being written
     /// shows only the cells it has so far, so its text only grows.
     private func makeTable(_ raw: inout BlockParser.RawBlock, id: String, alignments: [TranscriptTable.Alignment],
-                           open: Bool, completeRows: Int) -> TranscriptBlock {
+                           sided: Set<Int>, open: Bool, completeRows: Int) -> TranscriptBlock {
         let columns = alignments.count
         var text: [UInt16] = []
         var spans: [InlineSpan] = []
@@ -228,7 +228,8 @@ public struct MarkdownStreamParser: Sendable {
             }
             rows.append(ranges)
         }
-        let table = TranscriptTable(alignments: alignments, rows: rows)
+        var table = TranscriptTable(alignments: alignments, rows: rows)
+        table.sidedColumns = sided
         return TranscriptBlock(id: id, kind: .table(table), text: String(decoding: text, as: UTF16.self), spans: spans,
                                containers: raw.containers, marker: raw.marker)
     }

@@ -54,8 +54,11 @@ public final class TranscriptStream {
     ///     messages. It is parsed right away. Can be called from any thread.
     ///   - tags: custom tags the text may use, and how they look; see
     ///     `TranscriptTag`. Other tags show as written.
-    public nonisolated init(markdown: String = "", tags: [TranscriptTag] = []) {
-        var parser = MarkdownStreamParser(tags: tags)
+    ///   - newlinesAsLineBreaks: if true, a single newline inside a paragraph
+    ///     is a line break. If false (the default), it is a space, as in
+    ///     CommonMark. See `MarkdownStreamParser.init`.
+    public nonisolated init(markdown: String = "", tags: [TranscriptTag] = [], newlinesAsLineBreaks: Bool = false) {
+        var parser = MarkdownStreamParser(tags: tags, newlinesAsLineBreaks: newlinesAsLineBreaks)
         if !markdown.isEmpty {
             parser.append(markdown)
         }

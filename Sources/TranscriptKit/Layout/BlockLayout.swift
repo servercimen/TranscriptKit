@@ -533,9 +533,10 @@ final class BlockLayout: @unchecked Sendable {
                 attributes = style.attributes(for: .paragraph, weight: style.listNumberWeight)
                 if let color = style.listNumberColor { attributes[TranscriptStyle.foregroundKey] = color }
             } else {
-                let depth = block.listLevel
-                text = depth <= 1 ? "•" : (depth == 2 ? "◦" : "▪")
+                let bullet = style.bullet(at: block.listLevel)
+                text = bullet.text
                 attributes = style.attributes(for: .paragraph)
+                if let color = bullet.color { attributes[TranscriptStyle.foregroundKey] = color }
             }
             let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
             let markerWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))

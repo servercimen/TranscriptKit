@@ -60,3 +60,34 @@ private func color(of attributes: NSDictionary) -> TranscriptColor? {
     #expect(CTFontGetSymbolicTraits(font).contains(.traitBold))
     #expect(CTFontGetSize(font) == 16)
 }
+
+// MARK: Bullets
+
+@Test func bulletsTakeTheirShapeAndColorByLevel() throws {
+    let style = TranscriptStyle()
+    #expect(style.bullet(at: 1).text == "•")
+    #expect(style.bullet(at: 2).text == "◦")
+    #expect(style.bullet(at: 5).text == "▪")
+    #expect(style.bullet(at: 1).color == nil)
+
+    var custom = TranscriptStyle()
+    let red = TranscriptColor(red: 1, green: 0, blue: 0)
+    let blue = TranscriptColor(red: 0, green: 0, blue: 1)
+    custom.bullets = ["–", "→ "]
+    custom.bulletColors = [red, blue]
+    #expect(custom.bullet(at: 1).text == "–")
+    #expect(custom.bullet(at: 4).text == "→ ")
+    #expect(custom.bullet(at: 1).color == red)
+    #expect(custom.bullet(at: 3).color == blue)
+    custom.bullets = []
+    #expect(custom.bullet(at: 2).text == "◦")
+
+    custom.bullets = ["–", "→ "]
+    let drawn = layout("- one\n  - two", style: custom)
+    let outer = try #require(textMarker(drawn, at: 0))
+    let inner = try #require(textMarker(drawn, at: 1))
+    #expect(CTLineGetGlyphCount(outer.line) == 1)
+    #expect(CTLineGetGlyphCount(inner.line) == 2)
+    #expect(color(of: outer.attributes) == red)
+    #expect(color(of: inner.attributes) == blue)
+}

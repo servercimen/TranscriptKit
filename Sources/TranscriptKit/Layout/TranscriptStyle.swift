@@ -81,6 +81,13 @@ public struct TranscriptStyle: Equatable, Sendable {
     public var listNumberWeight: CGFloat?
     /// The color of the numbers of ordered list items. Nil uses the text color.
     public var listNumberColor: TranscriptColor?
+    /// The bullets of unordered list items: the first for level 1, the
+    /// second for level 2, and so on. Levels past the end use the last one.
+    /// Empty uses "•", "◦" and "▪".
+    public var bullets: [String] = ["•", "◦", "▪"]
+    /// The colors of the bullets, by level as `bullets`. Empty uses the text
+    /// color.
+    public var bulletColors: [TranscriptColor] = []
 
     public init() {}
 
@@ -103,6 +110,13 @@ public struct TranscriptStyle: Equatable, Sendable {
         case .quote: return quoteIndent
         case .listItem: return listIndent
         }
+    }
+
+    /// The bullet of a list item at `level`, from 1, and its color.
+    func bullet(at level: Int) -> (text: String, color: TranscriptColor?) {
+        let shapes = bullets.isEmpty ? ["•", "◦", "▪"] : bullets
+        let color = bulletColors.isEmpty ? nil : bulletColors[min(max(level, 1), bulletColors.count) - 1]
+        return (shapes[min(max(level, 1), shapes.count) - 1], color)
     }
 
     /// Where the block's own box starts: after the indents of its containers.

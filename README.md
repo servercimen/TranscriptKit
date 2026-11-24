@@ -111,6 +111,10 @@ let tags = [
 let stream = TranscriptStream(tags: tags)
 ```
 
+A pill that breaks across two lines is open where it breaks. To keep a tag on one line, set `keepsTogether: true`
+in its decoration: a tag that does not fit at the end of a line then goes to the next line as a whole. A tag wider
+than a line, or with a line break in it, still breaks.
+
 A tag can also show a small image before its text, such as an icon in a pill. The image takes room after the tag's
 padding, so the tag's shapes surround it, and it is centred on the text's cap height. A tag with an animation shows
 its image once the animation has played; with `showsDuringAnimation: true`, the image shows from the start, while

@@ -105,10 +105,15 @@ public struct TranscriptDecoration: Equatable, Sendable {
     /// A small image before the text, such as an icon in a pill. It sits in
     /// the space where the tag starts, after `padding`, so shapes surround it.
     public var image: TranscriptTagImage?
+    /// Whether the tag's text stays on one line, as a pill should: a tag
+    /// that does not fit at the end of a line goes to the next line as a
+    /// whole. A tag wider than a line, or with a line break in it, still
+    /// breaks. Off by default.
+    public var keepsTogether: Bool
 
     public init(traits: InlineSpan.Traits = [], foreground: TranscriptColor? = nil, background: TranscriptColor? = nil,
                 link: String? = nil, padding: CGFloat = 0, shapes: [Shape] = [], animation: Animation? = nil,
-                image: TranscriptTagImage? = nil) {
+                image: TranscriptTagImage? = nil, keepsTogether: Bool = false) {
         self.traits = traits
         self.foreground = foreground
         self.background = background
@@ -117,10 +122,11 @@ public struct TranscriptDecoration: Equatable, Sendable {
         self.shapes = shapes
         self.animation = animation
         self.image = image
+        self.keepsTogether = keepsTogether
     }
 
     /// Whether layout has to do anything for it beyond styling the text.
-    var shapesText: Bool { padding > 0 || !shapes.isEmpty || animation != nil || image != nil }
+    var shapesText: Bool { padding > 0 || !shapes.isEmpty || animation != nil || image != nil || keepsTogether }
 }
 
 /// A small image before a custom tag's text; see `TranscriptDecoration.image`.

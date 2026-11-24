@@ -169,6 +169,10 @@ final class BlockLayout: @unchecked Sendable {
                     line.range.allSatisfy { text.character(at: $0) == 0x0A }
                 }
                 while keep > 0, holdsOnlyLineBreaks(previous.lines[keep]) { keep -= 1 }
+                // A tag that keeps together may have gone down a line, and
+                // may no longer fit on a line of its own: its lines and the
+                // line above them are laid out again.
+                while keep > 0, DecoratedTags.keepsTogether(at: previous.lines[keep].range.lowerBound, in: block) { keep -= 1 }
             }
             if keep > 0 {
                 lines = previous.lines.prefix(keep)
@@ -216,8 +220,15 @@ final class BlockLayout: @unchecked Sendable {
                 let local = start - restart
                 // A padded tag that starts the line has no character before it
                 // on the line to carry its padding, so the line moves over.
-                let leading = min(decorated?.startPadding[start] ?? 0, available / 2)
-                let count = max(CTTypesetterSuggestLineBreak(typesetter, local, Double(available - leading)), 1)
+                func room(at offset: Int) -> CGFloat { min(decorated?.startPadding[offset] ?? 0, available / 2) }
+                let leading = room(at: start)
+                var count = max(CTTypesetterSuggestLineBreak(typesetter, local, Double(available - leading)), 1)
+                if let decorated, start + count < length {
+                    count = decorated.lineEnd(from: start, to: start + count) { range in
+                        CTTypesetterSuggestLineBreak(typesetter, range.lowerBound - restart, Double(available - room(at: range.lowerBound)))
+                            >= range.count
+                    } - start
+                }
                 let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: local, length: count))
                 add(ctLine, range: start..<(start + count), indexBase: restart, leading: leading, text: attributed)
                 start += count
@@ -493,7 +504,13 @@ final class BlockLayout: @unchecked Sendable {
                 }
                 var start = 0
                 while start < cell.text.length {
-                    let count = max(CTTypesetterSuggestLineBreak(cell.typesetter, start, Double(textWidth)), 1)
+                    var count = max(CTTypesetterSuggestLineBreak(cell.typesetter, start, Double(textWidth)), 1)
+                    if let decorated, start + count < cell.text.length {
+                        let base = cell.range.lowerBound
+                        count = decorated.lineEnd(from: base + start, to: base + start + count) { range in
+                            CTTypesetterSuggestLineBreak(cell.typesetter, range.lowerBound - base, Double(textWidth)) >= range.count
+                        } - base - start
+                    }
                     let ctLine = CTTypesetterCreateLine(cell.typesetter, CFRange(location: start, length: count))
                     add(ctLine, range: (cell.range.lowerBound + start)..<(cell.range.lowerBound + start + count))
                     start += count

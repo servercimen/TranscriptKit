@@ -20,6 +20,8 @@ private let shapeTags: [TranscriptTag] = [
     TranscriptTag("marker", TranscriptDecoration(shapes: [.underline(.marker, color: yellow)])),
     TranscriptTag("wave", TranscriptDecoration(shapes: [.underline(.wavy, color: border)])),
     TranscriptTag("probe", TranscriptDecoration(padding: 3, shapes: [.custom(FragmentProbe())])),
+    TranscriptTag("whole", TranscriptDecoration(padding: 6, shapes: [.pill(fill: indigo.opacity(0.2))], keepsTogether: true)),
+    TranscriptTag("word", TranscriptDecoration(traits: .bold, keepsTogether: true)),
 ]
 
 /// Fills each fragment's box with a color that says which ends it has.
@@ -146,6 +148,10 @@ private let streamedShapes = [
     "An open <pill>pill with a line break<br>after it, and more</pill> text, <marker>a <pill>pill in a marker</pill> here</marker>.\n",
     "Two breaks <pill>in an open pill<br><br>then more</pill>, and <marker>a marker<br><br>too</marker>.\n",
     "| Who | Note |\n| --- | --- |\n| <pill id=1>@a</pill> | <marker>yes, and a long cell that wraps</marker> |\n\n- <key>item</key> one\n- <probe>two</probe>\n",
+    // Goes down a line whole, then grows wider than a line and breaks.
+    "Some words before it and <whole>a pill that keeps together until it grows wider than one whole line</whole> after.\n\n"
+        + "Then <word>two words</word> at the end of <whole>a line</whole> and <whole>one<br>with a break</whole> too.\n",
+    "| A | B |\n| --- | --- |\n| x | some text then <whole>a kept pill</whole> in a narrow cell |\n",
 ]
 
 /// Every line's geometry and shapes, to compare two layouts.
@@ -362,5 +368,57 @@ private struct VisibleArea: TranscriptShapeRecipe {
         #expect(abs(area.minX - (-indent - side)) < 0.01)
         #expect(abs(area.width - (300 + 2 * side)) < 0.01)
         #expect(abs(area.minY - (line.frame.minY - line.baseline - TranscriptPath.maximumOverhang)) < 0.01)
+    }
+}
+
+// MARK: Keeping together
+
+/// The lines that hold text of the tag that starts at `offset` in block 0.
+private func linesHolding(_ layout: DocumentLayout, tagAt offset: Int) -> [Range<Int>] {
+    let block = layout.entry(at: 0).layout
+    let tag = block.block.spans.first { $0.range.lowerBound == offset && $0.customTag != nil }!
+    return block.lines.map(\.range).filter { $0.overlaps(tag.range) }
+}
+
+@Test func aTagThatKeepsTogetherGoesToTheNextLineWhole() {
+    // At 230 points, "a long pill" does not fit after the words before it.
+    let text = "Some words to fill a line, then <TAG>a long pill</TAG> after it."
+    let start = 32
+    var moved = 0
+    for width: CGFloat in [200, 230, 260, 300] {
+        let broken = layout(text.replacingOccurrences(of: "TAG", with: "pill"), width: width)
+        let kept = layout(text.replacingOccurrences(of: "TAG", with: "whole"), width: width)
+        let keptLines = linesHolding(kept, tagAt: start)
+        #expect(keptLines.count == 1, "\(width): \(keptLines)")
+        if linesHolding(broken, tagAt: start).count > 1 {
+            moved += 1
+            // It starts the next line, with its padding before it.
+            #expect(keptLines[0].lowerBound == start)
+            let line = kept.entry(at: 0).layout.lines.first { $0.range == keptLines[0] }!
+            #expect(line.frame.minX >= 6 - 0.01)
+        }
+    }
+    #expect(moved > 0)
+}
+
+@Test func aTagWiderThanALineStillBreaks() {
+    let text = "Words then <whole>a pill much too long to fit on any one line of this narrow view</whole>."
+    let kept = layout(text, width: 160)
+    let broken = layout(text.replacingOccurrences(of: "whole", with: "pill"), width: 160)
+    #expect(signature(kept).count == signature(broken).count)
+    #expect(kept.entry(at: 0).layout.lines.map(\.range) == broken.entry(at: 0).layout.lines.map(\.range))
+    // A line break in it breaks it too.
+    let withBreak = layout("Some words to fill a line, then <whole>one<br>two</whole> after it.", width: 230)
+    #expect(linesHolding(withBreak, tagAt: 32).count == 2)
+}
+
+@Test func aTagThatKeepsTogetherStaysWholeInATableCell() throws {
+    let markdown = "| A | B |\n| --- | --- |\n| x | some text then <whole>a kept pill</whole> in a narrow cell |\n"
+    for width: CGFloat in [160, 200, 240] {
+        let laidOut = layout(markdown, width: width)
+        let block = laidOut.entry(at: 0).layout
+        let span = try #require(block.block.spans.first { $0.customTag?.name == "whole" })
+        let holding = block.lines.filter { $0.range.overlaps(span.range) }
+        #expect(holding.count == 1, "\(width): \(holding.map(\.range))")
     }
 }

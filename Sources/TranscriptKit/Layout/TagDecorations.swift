@@ -62,6 +62,28 @@ struct DecoratedTags {
         self.startPadding = startPadding
     }
 
+    /// Where a line that starts at block offset `start` and would end at
+    /// `end` ends instead, so that it does not cut a tag that keeps together:
+    /// at the start of the first such tag that starts on the line after
+    /// `start`, goes on past `end`, and fits on a line of its own.
+    ///
+    /// - Parameter fits: whether the text in a range, from a tag's start,
+    ///   fits on one line.
+    func lineEnd(from start: Int, to end: Int, fits: (Range<Int>) -> Bool) -> Int {
+        for tag in tags where tag.tag.decoration.keepsTogether
+            && tag.range.lowerBound > start && tag.range.lowerBound < end && tag.textEnd > end {
+            if fits(tag.range.lowerBound..<tag.textEnd) { return tag.range.lowerBound }
+        }
+        return end
+    }
+
+    /// Whether a tag that keeps together starts at `offset` in `block`, or
+    /// goes on past it: a line that starts there may depend on where the
+    /// line before it ends.
+    static func keepsTogether(at offset: Int, in block: TranscriptBlock) -> Bool {
+        block.spans.contains { $0.range.contains(offset) && $0.customTag?.decoration.keepsTogether == true }
+    }
+
     /// Whether `inner` is `outer` or inside it.
     private func isWithin(_ inner: Tag, _ outer: Tag) -> Bool {
         outer.range.lowerBound <= inner.range.lowerBound && inner.range.upperBound <= outer.range.upperBound

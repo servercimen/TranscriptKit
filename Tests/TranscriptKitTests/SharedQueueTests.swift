@@ -86,7 +86,7 @@ private func markdown(paragraphs: Int) -> String {
 
 private let longMarkdown = markdown(paragraphs: 800)
 private let longDocument = MarkdownStreamParser.document(from: longMarkdown, idPrefix: "long")
-/// Long enough that the work of many queues overlaps, for the bound tests.
+/// Long enough that the layouts of many queues overlap, for the bound test.
 private let mediumMarkdown = markdown(paragraphs: 300)
 private let mediumDocument = MarkdownStreamParser.document(from: mediumMarkdown, idPrefix: "medium")
 private let shortDocument = MarkdownStreamParser.document(from: "Short text.", idPrefix: "short")
@@ -197,7 +197,7 @@ struct SharedQueueTests {
                 let worker = workers[index]
                 worker.queue.async {
                     meter.enter()
-                    _ = worker.apply(mediumMarkdown, finish: true)
+                    _ = worker.apply(longMarkdown, finish: true)
                     meter.leave()
                     done()
                 }
@@ -232,19 +232,27 @@ struct SharedQueueTests {
     /// While every thread of the pool is busy with long layouts, short work
     /// that a person waits to see starts at once: the parse of a streamed
     /// chunk, a short document on another view, and text added to the end of
-    /// a long document on a third view.
+    /// a long document on a third view. On a fourth view, the append comes
+    /// within a frame of the last layout, so it waits for the frame first.
     @Test func shortWorkDoesNotWaitForTheBusyPool() throws {
         let busy = engines(manyQueues)
         let worker = StreamWorker(parser: MarkdownStreamParser())
         let short = LayoutEngine()
         _ = short.relayout(width: 200, style: TranscriptStyle())
         var parser = MarkdownStreamParser()
-        parser.append(longMarkdown)
+        parser.append(longMarkdown + "\n\n- One item\n- Two items")
         let growing = LayoutEngine()
         growing.submit(.init(document: parser.document, source: 1, sequence: 1))
         _ = growing.relayout(width: 200, style: TranscriptStyle())
-        parser.append("\n\nMore text at the end.")
+        parser.append("\n- Three items")
         let grown = parser.document
+        parser.append("\n\nMore text at the end.")
+        let grownMore = parser.document
+        let delayed = LayoutEngine()
+        delayed.setFramesPerSecond(30)
+        delayed.submit(.init(document: grown, source: 1, sequence: 1))
+        _ = delayed.relayout(width: 200, style: TranscriptStyle())
+        delayed.setOutputHandler { _ = delayed.takeOutput() }
 
         let lock = NSLock()
         nonisolated(unsafe) var waits: [String: TimeInterval] = [:]
@@ -255,21 +263,26 @@ struct SharedQueueTests {
         }
         let waitForBusy = startLongLayouts(on: busy)
         Thread.sleep(forTimeInterval: 0.02)
+        delayed.submit(.init(document: grown, source: 2, sequence: 1))
+        delayed.drainNow()
 
-        for _ in 0..<3 { done.enter() }
+        for _ in 0..<4 { done.enter() }
         let start = Date()
         worker.parse("Some **text** here.", finish: true) { _ in record("parse", start) }
         short.setOutputHandler { record("short layout", start) }
         short.submit(.init(document: shortDocument, source: 1, sequence: 1))
         growing.setOutputHandler { record("append layout", start) }
         growing.submit(.init(document: grown, source: 1, sequence: 2))
+        delayed.setOutputHandler { record("append within a frame", start) }
+        delayed.submit(.init(document: grownMore, source: 2, sequence: 2))
         done.wait()
         let busyTime = waitForBusy()
 
-        let longest = try #require(waits.values.max())
+        // The append within a frame waits for the frame of 1/30 s first.
+        let longest = try #require(waits.map { $0.key == "append within a frame" ? $0.value - 1.0 / 30 : $0.value }.max())
         print("While \(busy.count) engines lay out for \(busyTime * 1000) ms: "
               + waits.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value * 1000) ms" }.joined(separator: ", "))
-        #expect(waits.count == 3)
+        #expect(waits.count == 4)
         #expect(worker.latest.isFinished)
         #expect(longest < busyTime / 10)
     }

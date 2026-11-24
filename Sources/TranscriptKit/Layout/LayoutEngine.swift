@@ -272,9 +272,10 @@ final class LayoutEngine: @unchecked Sendable {
         let length = document.utf16Count
         if length <= WorkQueue.shortLength { return true }
         // Documents that share no storage, as when the app parses each
-        // version itself, would compare every block.
+        // version itself, would compare every block. A stream shares all
+        // but its last block or two.
         guard laidOut.count > 0, length - laidOut.utf16Count <= WorkQueue.shortLength,
-              laidOut.count - document.knownSharedPrefix(with: laidOut) <= 2 else { return false }
+              laidOut.count - document.knownSharedPrefix(with: laidOut) <= 8 else { return false }
         return document.extends(laidOut)
     }
 

@@ -32,9 +32,11 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// Spacing above a list item that follows other list content.
     public var listItemSpacing: CGFloat = 6
     public var codePadding: CGFloat = 12
-    /// Indent added by each list item; the marker sits inside it.
+    /// Indent added by each list item; the marker sits inside it, on the
+    /// right of right-to-left text.
     public var listIndent: CGFloat = 24
-    /// Indent added by each block quote; its bar sits at the left of it.
+    /// Indent added by each block quote; its bar sits at the left of it, or
+    /// at the right of right-to-left text.
     public var quoteIndent: CGFloat = 14
     /// Space between a table cell's border and its text.
     public var tableCellPadding: CGFloat = 8
@@ -59,7 +61,8 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// text that is shown. Tables are shown whole or not at all.
     public var lineLimit: Int?
     /// Where the lines of paragraphs and headings sit in their column. Lists,
-    /// quotes, code and tables stay at the leading edge.
+    /// quotes, code and tables stay at the leading edge. The leading edge is
+    /// the left edge, or the right edge of a right-to-left paragraph.
     public var textAlignment: TranscriptTextAlignment = .leading
 
     struct Insets {

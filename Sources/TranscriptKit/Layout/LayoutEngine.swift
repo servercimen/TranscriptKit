@@ -14,6 +14,9 @@ import QuartzCore
 /// The main thread lays out synchronously only when it cannot wait: the
 /// first layout, and a change of width or style. It does so through
 /// `queue.sync`, so the engine's state is only ever touched on its queue.
+/// When the queue is idle, the main thread does that work itself and does
+/// not wait for a thread. The queue shares its threads with the queues of
+/// all other views and streams (see `WorkQueue`).
 ///
 /// While text is being appended, the engine also draws the end of the
 /// document into a surface (see `TailRenderer`), which travels with the
@@ -76,7 +79,7 @@ final class LayoutEngine: @unchecked Sendable {
         }
     }
 
-    let queue = DispatchQueue(label: "TranscriptKit.layout", qos: .userInitiated)
+    let queue = WorkQueue.serial(label: "TranscriptKit.layout")
     /// Pictures for the documents' images, if the view was given a loader.
     let images = TranscriptImageStore()
 

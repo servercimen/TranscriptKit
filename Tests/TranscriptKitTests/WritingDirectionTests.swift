@@ -15,6 +15,11 @@ import Testing
     ("\u{2067}abc\u{2069} שלום", .rightToLeft),
     ("\u{200F}123", .rightToLeft),
     ("日本語", .leftToRight),
+    ("Ⅳ שלום", .leftToRight),
+    ("🇺🇸 שלום", .leftToRight),
+    ("😀 שלום", .rightToLeft),
+    ("\u{02B9}שלום", .rightToLeft),
+    ("१२ שלום", .leftToRight),
     ("123 !?", nil),
     ("", nil),
 ])
@@ -28,6 +33,8 @@ func firstStrongCharacterSetsTheDirection(text: String, expected: WritingDirecti
     #expect(DirectionScan("שלום and more").paragraphDirection == .rightToLeft)
     // No strong character before the first right-to-left one.
     #expect(DirectionScan("12 \u{0661}\u{0662}").paragraphDirection == .leftToRight)
+    // A zero width no-break space is not right to left.
+    #expect(DirectionScan("\u{FEFF}Plain text").paragraphDirection == nil)
 }
 
 @Test func scanGoesOnFromWhereItStopped() {
@@ -56,7 +63,7 @@ private func runLayout(_ text: String, direction: WritingDirection?) -> [[Double
     }
 }
 
-@Test(arguments: ["שלום עולם ", "123 שלום", "hello שלום world ", "(\"مرحبا\") hello", "١٢٣ abc", "\u{2067}abc\u{2069} שלום"])
+@Test(arguments: ["שלום עולם ", "123 שלום", "Ⅳ שלום", "🇺🇸 שלום", "😀 שלום", "hello שלום world ", "(\"مرحبا\") hello", "١٢٣ abc", "\u{2067}abc\u{2069} שלום"])
 func scanFindsTheDirectionThatCoreTextFinds(text: String) {
     let direction = DirectionScan(text).firstStrong
     #expect(runLayout(text, direction: nil) == runLayout(text, direction: direction))

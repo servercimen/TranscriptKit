@@ -44,7 +44,9 @@ public struct InlineSpan: Equatable, Sendable {
     }
 
     /// For text inside a custom tag (see `TranscriptTag`): the tag and its
-    /// decoration. Its traits and link are also in `traits` and `link`.
+    /// decoration. In a parsed span, and in one made with
+    /// `InlineSpan(range:tagged:)`, its traits and link are also in `traits`
+    /// and `link`. Setting it does not change them.
     public var customTag: CustomTag? {
         get { extras?.customTag }
         set { extras = Extras.make(image: image, reference: reference, customTag: newValue, math: math) }
@@ -56,6 +58,13 @@ public struct InlineSpan: Equatable, Sendable {
         self.traits = traits
         self.link = link
         self.extras = Extras.make(image: image, reference: reference, customTag: customTag, math: math)
+    }
+
+    /// A span for text inside a custom tag, as the parser makes it: with
+    /// the tag's decoration, its traits, and its link. For a document that
+    /// the app builds without the parser.
+    public init(range: Range<Int>, tagged tag: CustomTag) {
+        self.init(range: range, traits: tag.decoration.traits, link: tag.decoration.link, customTag: tag)
     }
 
     init(range: Range<Int>, traits: Traits, link: String?, extras: Extras?) {

@@ -22,7 +22,7 @@ public struct MarkdownStreamParser: Sendable {
     /// Sum of the frozen blocks' UTF-16 lengths.
     private var frozenLength = 0
     /// Blocks not frozen yet, after every complete line so far.
-    private var state = BlockParser.State()
+    private var state: BlockParser.State
     /// The unterminated last line.
     private var partial = ""
     /// `partial` as UTF-16, extended chunk by chunk.
@@ -38,9 +38,16 @@ public struct MarkdownStreamParser: Sendable {
     ///     distinct prefixes if several parsers feed one document.
     ///   - tags: custom tags the text may use, and how they look; see
     ///     `TranscriptTag`. Other tags show as written.
-    public init(idPrefix: String = String(UUID().uuidString.prefix(8)), tags: [TranscriptTag] = []) {
+    ///   - newlinesAsLineBreaks: if true, a single newline inside a paragraph
+    ///     or a heading is a line break, as models often intend. A line that
+    ///     ends in a backslash, two spaces or `<br>` still gives one line
+    ///     break, not two. A newline in a code span is still a space. If false
+    ///     (the default), the newline is a space, as in CommonMark.
+    public init(idPrefix: String = String(UUID().uuidString.prefix(8)), tags: [TranscriptTag] = [],
+                newlinesAsLineBreaks: Bool = false) {
         self.idPrefix = idPrefix
         self.tags = TranscriptTag.byName(tags)
+        state = BlockParser.State(newlinesAsLineBreaks: newlinesAsLineBreaks)
     }
 
     /// Adds the next piece of the stream. Chunks can split anywhere.
@@ -68,8 +75,10 @@ public struct MarkdownStreamParser: Sendable {
     }
 
     /// Parses a complete Markdown string, with the custom `tags` it may use.
-    public static func document(from markdown: String, idPrefix: String = "md", tags: [TranscriptTag] = []) -> TranscriptDocument {
-        var parser = MarkdownStreamParser(idPrefix: idPrefix, tags: tags)
+    /// `newlinesAsLineBreaks` is as in `init`.
+    public static func document(from markdown: String, idPrefix: String = "md", tags: [TranscriptTag] = [],
+                                newlinesAsLineBreaks: Bool = false) -> TranscriptDocument {
+        var parser = MarkdownStreamParser(idPrefix: idPrefix, tags: tags, newlinesAsLineBreaks: newlinesAsLineBreaks)
         parser.append(markdown)
         parser.finish()
         return parser.document
@@ -173,7 +182,8 @@ public struct MarkdownStreamParser: Sendable {
             paragraph.becomeParagraph()
             let text = paragraph.inlineSource()
             let result = InlineParser.parse(text.units, open: false, stableLength: text.units.count,
-                                            resumingFrom: &paragraph.checkpoint, tags: tags)
+                                            resumingFrom: &paragraph.checkpoint, tags: tags,
+                                            newlinesAsLineBreaks: raw.newlinesAsLineBreaks)
             return TranscriptBlock(id: id, kind: .paragraph, text: result.text, spans: result.spans,
                                    containers: raw.containers, marker: raw.marker)
         case .heading(let level):
@@ -183,7 +193,7 @@ public struct MarkdownStreamParser: Sendable {
         }
         let source = raw.inlineSource()
         let result = InlineParser.parse(source.units, open: open, stableLength: source.stableLength, resumingFrom: &raw.checkpoint,
-                                        tags: tags)
+                                        tags: tags, newlinesAsLineBreaks: raw.newlinesAsLineBreaks)
         return TranscriptBlock(id: id, kind: kind, text: result.text, spans: result.spans,
                                containers: raw.containers, marker: raw.marker)
     }

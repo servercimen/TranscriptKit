@@ -194,7 +194,7 @@ private func render(_ layout: DocumentLayout, hiding: TagHiding = .none, sprites
     context.setFillColor(CGColor(gray: 1, alpha: 1))
     context.fill(all)
     layout.draw(in: context, dirtyRect: all, text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent,
-                dark: false, hiding: hiding)
+                dark: false, highContrast: false, hiding: hiding)
     // Sprites at rest, as their layers show them: upright, at their frames.
     for sprite in sprites {
         context.saveGState()
@@ -298,7 +298,7 @@ func spritesAtRestRedrawTheTagExactly(scale: CGFloat) throws {
     context.translateBy(x: TailRenderer.sideMargin, y: -tail.top)
     final.draw(in: context, dirtyRect: CGRect(x: -TailRenderer.sideMargin, y: tail.top, width: final.width + 2 * TailRenderer.sideMargin,
                                               height: TailRenderer.height),
-               text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent, dark: false, hiding: TagHiding(playing: [key]))
+               text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent, dark: false, highContrast: false, hiding: TagHiding(playing: [key]))
     let expected = Array(UnsafeRawBufferPointer(start: context.data!, count: width * height * 4))
     #expect(zip(pixels, expected).allSatisfy { abs(Int($0) - Int($1)) <= 2 })
 }
@@ -357,6 +357,49 @@ func textAfterATagKeepsItsAnimationGoing(next: String) throws {
     let before = try #require(closed.animatedTag(key))
     let after = try #require(later.animatedTag(key))
     #expect(before.isPlaced(like: after))
+}
+
+// MARK: Tags that start together
+
+/// Delays each tag by its place among the tags that start with it.
+private struct Stagger: TranscriptAnimationRecipe {
+    func animation(for fragments: [TranscriptFragment]) -> TranscriptAnimation {
+        animation(for: fragments, in: .single)
+    }
+
+    func animation(for fragments: [TranscriptFragment], in group: TranscriptAnimationGroup) -> TranscriptAnimation {
+        var animation = TranscriptAnimation()
+        let start = Double(group.index) * 0.1
+        for (line, fragment) in fragments.enumerated() {
+            for index in fragment.glyphs.indices {
+                animation.glyphs.append(.init(fragment: line, glyph: index, offsetY: .ramp(from: -2, to: 0, start: start, duration: 0.2)))
+            }
+        }
+        return animation
+    }
+}
+
+@Test func tagsThatStartTogetherAreNumberedInTextOrder() throws {
+    let staggered = [TranscriptTag("lift", TranscriptDecoration(animation: .custom(Stagger())))]
+    // Twelve paragraphs: block ids "s-2" and "s-10" sort the other way as text.
+    let paragraphs = (0..<12).map { $0 == 2 || $0 == 10 ? "Para <lift>\($0)</lift> here" : "Para \($0)" }
+    let layout = DocumentLayout(document: MarkdownStreamParser.document(from: paragraphs.joined(separator: "\n\n"), idPrefix: "s",
+                                                                       tags: staggered), width: 300)
+    let late = TagKey(block: "s-10", start: 5, name: "lift")
+    let early = TagKey(block: "s-2", start: 5, name: "lift")
+    let missing = TagKey(block: "s-3", start: 0, name: "lift")
+    let batch = layout.tagsStartingTogether([late, missing, early])
+    #expect(batch.map(\.tag.key) == [early, late])
+    #expect(batch.map(\.group) == [TranscriptAnimationGroup(index: 0, count: 2), TranscriptAnimationGroup(index: 1, count: 2)])
+    let starts = batch.map { item in
+        item.tag.animation.animation(for: item.tag.fragments, in: item.group).glyphs.compactMap { $0.offsetY?.startTime }.min()
+    }
+    #expect(starts == [0, 0.1])
+
+    // A recipe that ignores the group plays the same for every tag.
+    let hop = try #require(DocumentLayout(document: document(sample), width: 260).animatedTag(TagKey(block: "a-0", start: 21, name: "hop")))
+    #expect(hop.animation.animation(for: hop.fragments, in: TranscriptAnimationGroup(index: 3, count: 4)).duration
+        == hop.animation.animation(for: hop.fragments).duration)
 }
 
 // MARK: Timing
@@ -494,4 +537,196 @@ private enum TailRendererProbe {
         #expect(abs(layer.frame.minX - sprite.frame.minX) < 0.001 && abs(layer.frame.width - sprite.frame.width) < 0.001)
         #expect(abs(layer.frame.minY - sprite.frame.minY) < 0.001 && abs(layer.frame.height - sprite.frame.height) < 0.001)
     }
+}
+
+// MARK: Which waiting tags play
+
+private let shown = WaitingTags.Viewer(isInWindow: true, isHidden: false, visibleRect: CGRect(x: 0, y: 0, width: 300, height: 400),
+                                       isFinished: true)
+
+private func waitingList(_ keys: [TagKey]) -> WaitingTags {
+    var list = WaitingTags()
+    list.add(keys)
+    return list
+}
+
+private let first = TagKey(block: "w-0", start: 0, name: "hop")
+private let second = TagKey(block: "w-1", start: 4, name: "hop")
+
+@Test func waitingTagsPlayWhenTheirTimingAllows() {
+    let bands = [first: CGFloat(10)...30, second: CGFloat(500)...520]
+    var list = waitingList([first, second])
+    #expect(Set(list.takeReady(timing: .immediately, viewer: shown) { bands[$0] }) == [first, second])
+    #expect(list.isEmpty)
+
+    list = waitingList([first, second])
+    #expect(list.takeReady(timing: .whenVisible, viewer: shown) { bands[$0] } == [first])
+    #expect(list.keys == [second])
+
+    list = waitingList([first, second])
+    var streaming = shown
+    streaming.isFinished = false
+    #expect(list.takeReady(timing: .afterStreamFinishes, viewer: streaming) { bands[$0] }.isEmpty)
+
+    // Requested: only the tags waiting when the app asked.
+    list = waitingList([first])
+    list.request()
+    list.add([second])
+    #expect(list.takeReady(timing: .whenRequested, viewer: shown) { bands[$0] } == [first])
+    #expect(list.keys == [second] && list.requested.isEmpty)
+}
+
+/// Out of its window, a view plays nothing, and tags that wait to be seen
+/// or for the app keep waiting until it comes back.
+@Test func waitingTagsWaitForTheViewToBeInAWindow() {
+    var away = shown
+    away.isInWindow = false
+    let band: (TagKey) -> ClosedRange<CGFloat>? = { _ in 10...30 }
+    for timing: TranscriptAnimationTiming in [.immediately, .whenVisible, .whenRequested, .afterStreamFinishes] {
+        var list = waitingList([first])
+        list.request()
+        #expect(list.takeReady(timing: timing, viewer: away, band: band).isEmpty)
+        #expect(list.keys == [first])
+        // Back in the window, they play.
+        #expect(list.takeReady(timing: timing, viewer: shown, band: band) == [first])
+    }
+    #expect(WaitingTags.keepWaitingOutsideWindow(.whenVisible))
+    #expect(WaitingTags.keepWaitingOutsideWindow(.whenRequested))
+    #expect(WaitingTags.keepWaitingOutsideWindow([.whenVisible, .afterStreamFinishes]))
+    #expect(!WaitingTags.keepWaitingOutsideWindow(.immediately))
+    #expect(!WaitingTags.keepWaitingOutsideWindow(.afterStreamFinishes))
+}
+
+@Test func aHiddenViewIsNotVisible() {
+    var hidden = shown
+    hidden.isHidden = true
+    let band: (TagKey) -> ClosedRange<CGFloat>? = { _ in 10...30 }
+    var list = waitingList([first])
+    #expect(list.takeReady(timing: .whenVisible, viewer: hidden, band: band).isEmpty)
+    #expect(list.waitForHiddenView(timing: .whenVisible, viewer: hidden))
+    #expect(!list.waitForHiddenView(timing: .whenVisible, viewer: shown))
+    #expect(!list.waitForHiddenView(timing: .whenRequested, viewer: hidden))
+    // Other timings do not look.
+    #expect(list.takeReady(timing: .afterStreamFinishes, viewer: hidden, band: band) == [first])
+
+    #expect(!WaitingTags.isHidden([(isHidden: false, alpha: 1), (isHidden: false, alpha: 0.5)]))
+    #expect(WaitingTags.isHidden([(isHidden: false, alpha: 1), (isHidden: true, alpha: 1)]))
+    #expect(WaitingTags.isHidden([(isHidden: false, alpha: 1), (isHidden: false, alpha: 0)]))
+    #expect(WaitingTags.isHidden([(isHidden: false, alpha: 0.001)]))
+}
+
+@Test func keptWaitingTagsAreTheOnesStillLaidOut() {
+    var list = waitingList([first, second])
+    list.request()
+    list.keep([second])
+    #expect(list.keys == [second] && list.requested == [second])
+    #expect(list.removeAll() == [second])
+    #expect(list.isEmpty && list.requested.isEmpty)
+}
+
+// MARK: Text that is complete when it is shown
+
+/// A document built directly, with its tags closed: the view can hold each
+/// of them back to play, and the engine draws the tail without their shapes
+/// until the view starts them.
+@Test func closedTagsOfAFirstLayoutCanWaitToPlay() throws {
+    let hop = try #require(tags.first { $0.name == "hop" })
+    let text = "Done: login timeouts. Next: billing."
+    let blocks = [
+        TranscriptBlock(id: "d-0", text: text, spans: [
+            InlineSpan(range: 6..<20, tagged: InlineSpan.CustomTag(hop)),
+            InlineSpan(range: 28..<35, tagged: InlineSpan.CustomTag(hop)),
+        ]),
+    ]
+    let document = TranscriptDocument(blocks: blocks)
+    let layout = DocumentLayout(document: document, width: 300)
+    let keys: Set<TagKey> = [TagKey(block: "d-0", start: 6, name: "hop"), TagKey(block: "d-0", start: 28, name: "hop")]
+    #expect(layout.closedAnimatedTags() == keys)
+    // Settled blocks are not newly closed: the engine does not start their tags on its own.
+    #expect(layout.newlyClosedAnimatedTags(since: DocumentLayout(document: document, width: 300)).isEmpty)
+    #expect(layout.tagsStartingTogether(keys).map(\.group.index) == [0, 1])
+
+    let engine = LayoutEngine()
+    engine.setTailStyle(colors: colors, scale: 2)
+    engine.setAnimationsEnabled(true, immediately: false)
+    engine.submit(.init(document: document, source: 1, sequence: 1, isFinished: true))
+    let laidOut = try #require(engine.relayout(width: 300, style: TranscriptStyle()))
+    engine.holdAnimations(laidOut.layout.closedAnimatedTags())
+    var more = document
+    more.append(TranscriptBlock(id: "d-1", text: "More."))
+    engine.submit(.init(document: more, source: 1, sequence: 2, isFinished: true))
+    engine.drainNow()
+    #expect(try #require(engine.takeOutput()).hidden == TagHiding(waiting: keys))
+    engine.playAnimations(keys)
+    var last = more
+    last.append(TranscriptBlock(id: "d-2", text: "Last."))
+    engine.submit(.init(document: last, source: 1, sequence: 3, isFinished: true))
+    engine.drainNow()
+    #expect(try #require(engine.takeOutput()).hidden == TagHiding(playing: keys))
+}
+
+/// A view asks where each waiting tag is only once for each layout: a
+/// scroll looks at every waiting tag.
+@Test func waitingTagsRememberWhereTheyAre() {
+    var asked: [TagKey] = []
+    var list = waitingList([first, second])
+    let offScreen = WaitingTags.Viewer(isInWindow: true, isHidden: false, visibleRect: CGRect(x: 0, y: 1000, width: 300, height: 400),
+                                       isFinished: true)
+    for _ in 0..<3 {
+        #expect(list.takeReady(timing: .whenVisible, viewer: offScreen) { asked.append($0); return 10...30 }.isEmpty)
+    }
+    #expect(asked.count == 2)
+    list.forgetBands()
+    _ = list.takeReady(timing: .whenVisible, viewer: offScreen) { asked.append($0); return 10...30 }
+    #expect(asked.count == 4)
+    #expect(Set(list.takeReady(timing: .whenVisible, viewer: shown) { asked.append($0); return 10...30 }) == [first, second])
+    #expect(asked.count == 4)
+}
+
+@Test func someWaitingTagsCanBeRequested() {
+    var list = waitingList([first])
+    list.request([first, second])
+    #expect(list.requested == [first])
+}
+
+// MARK: What goes on when a view shows a new layout
+
+private let third = TagKey(block: "w-2", start: 0, name: "hop")
+
+@Test func aRelayoutOfTheSameTextKeepsTagsThatWaitOrPlay() {
+    let closed: Set<TagKey> = [first, second, third]
+    let carried = WaitingTags.carried(isAppend: false, keepsText: true, firstText: false, closed: closed,
+                                      waiting: [first], started: [], playing: [second, third]) { $0 == second }
+    // The second still plays where it was; the third moved, so it plays again.
+    #expect(carried == WaitingTags.Carried(playing: [second], waiting: [first, third], replayed: [third]))
+
+    // Tags the layout no longer holds go.
+    let fewer = WaitingTags.carried(isAppend: false, keepsText: true, firstText: false, closed: [second],
+                                    waiting: [first], started: [], playing: [second, third]) { _ in true }
+    #expect(fewer == WaitingTags.Carried(playing: [second]))
+}
+
+@Test func aNewDocumentShowsEveryTagAtRest() {
+    let carried = WaitingTags.carried(isAppend: false, keepsText: false, firstText: false, closed: [first, second],
+                                      waiting: [first], started: [], playing: [second]) { _ in true }
+    #expect(carried == WaitingTags.Carried())
+}
+
+@Test func theFirstTextHoldsItsClosedTagsBack() {
+    // Laid out directly, every closed tag waits to play.
+    let direct = WaitingTags.carried(isAppend: false, keepsText: false, firstText: true, closed: [first, second],
+                                     waiting: [], started: [], playing: []) { _ in true }
+    #expect(direct == WaitingTags.Carried(waiting: [first, second]))
+    // Appended to an empty layout: the tags that the engine did not start or hold.
+    let appended = WaitingTags.carried(isAppend: true, keepsText: false, firstText: true, closed: [first, second, third],
+                                       waiting: [], started: [first], playing: [first]) { _ in true }
+    #expect(appended == WaitingTags.Carried(waiting: [second, third]))
+    // With animations off in the engine, as out of a window, it started none.
+    let unstarted = WaitingTags.carried(isAppend: true, keepsText: false, firstText: true, closed: [first, second],
+                                        waiting: [], started: [], playing: []) { _ in true }
+    #expect(unstarted == WaitingTags.Carried(waiting: [first, second]))
+    // Later appends hold nothing back.
+    let later = WaitingTags.carried(isAppend: true, keepsText: false, firstText: false, closed: [first, second],
+                                    waiting: [], started: [], playing: []) { _ in true }
+    #expect(later == WaitingTags.Carried())
 }

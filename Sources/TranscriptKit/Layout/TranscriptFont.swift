@@ -57,6 +57,22 @@ public struct TranscriptFont: Hashable, Sendable {
         #endif
     }
 
+    /// The weights of the system font, lightest first, as `UIFont.Weight`'s
+    /// raw values: ultra light, thin, light, regular, medium, semibold, bold,
+    /// heavy and black.
+    static let systemWeights: [CGFloat] = [-0.8, -0.6, -0.4, 0, 0.23, 0.3, 0.4, 0.56, 0.62]
+
+    /// The weight that Bold Text gives a system font of `weight`. A weight
+    /// below semibold goes two steps up `systemWeights`, and a heavier one
+    /// goes one step, to at most black: regular becomes semibold, and bold
+    /// becomes heavy.
+    static func boldTextWeight(_ weight: CGFloat) -> CGFloat {
+        let steps = systemWeights
+        let index = steps.lastIndex { $0 <= weight + 0.01 } ?? 0
+        let target = steps[min(index + (steps[index] < 0.3 ? 2 : 1), steps.count - 1)]
+        return max(target, weight)
+    }
+
     /// The same font with its size and line height passed through `scale`.
     func scaled(_ scale: (CGFloat) -> CGFloat) -> TranscriptFont {
         var copy = self

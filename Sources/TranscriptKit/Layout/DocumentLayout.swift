@@ -67,6 +67,7 @@ public final class DocumentLayout: @unchecked Sendable {
         self.document = document
         let imageRevision = images?.revision ?? 0
         self.imageRevision = imageRevision
+        images?.keepFormulas(of: document)
 
         // A line-limited layout may hold a block cut short, so it is not reused.
         let previous = style.lineLimit == nil ? previous.flatMap { $0.width == width && $0.style == style ? $0 : nil } : nil
@@ -165,6 +166,18 @@ public final class DocumentLayout: @unchecked Sendable {
         a.containers.count > index && b.containers.count > index && a.containers[...index] == b.containers[...index]
     }
 
+    /// Whether a line limit left some of the document's text out.
+    var leavesTextOut: Bool { length < document.utf16Count }
+
+    /// The part of the document that a selection of this layout stands for.
+    /// Under a line limit, a selection that reaches the end of the text
+    /// shown also covers the text that the limit leaves out, so Select All
+    /// followed by Copy copies all of the text.
+    func documentRange(forSelection range: Range<Int>) -> Range<Int> {
+        guard !range.isEmpty, range.upperBound >= length, leavesTextOut else { return range }
+        return range.lowerBound..<document.utf16Count
+    }
+
     /// The quote bars drawn beside the block at `index`, one for each quote
     /// it is in: on the left, or on the right of right-to-left text. A bar
     /// runs on through the gap from the block above when that block is in
@@ -173,13 +186,15 @@ public final class DocumentLayout: @unchecked Sendable {
         let entry = entry(at: index)
         let layout = entry.layout
         let above = index > 0 ? self.entry(at: index - 1) : nil
+        let width = max(style.quoteBarWidth, 0)
         var bars: [CGRect] = []
         var x: CGFloat = 0
         for (depth, container) in layout.block.containers.enumerated() {
             if container == .quote {
                 var top = entry.y
                 if let above, Self.shareQuote(above.layout.block, layout.block, at: depth) { top = above.frame.maxY }
-                bars.append(CGRect(x: layout.isRightToLeft ? layout.width - x - 3 : x, y: top, width: 3, height: entry.frame.maxY - top))
+                bars.append(CGRect(x: layout.isRightToLeft ? layout.width - x - width : x, y: top, width: width,
+                                   height: entry.frame.maxY - top))
             }
             x += style.width(of: container)
         }
@@ -205,6 +220,43 @@ public final class DocumentLayout: @unchecked Sendable {
         lastEntryIndex(where: { CGFloat($0.start) }, isAtMost: CGFloat(offset))
     }
 
+    /// The index of the entry of the block with `id`. `hint` is where it was
+    /// last, which is checked first.
+    func entryIndex(ofBlock id: String, hint: Int? = nil) -> Int? {
+        if let hint, hint >= 0, hint < entryCount, entry(at: hint).layout.block.id == id { return hint }
+        return (0..<entryCount).last { entry(at: $0).layout.block.id == id }
+    }
+
+    /// The index of the entry whose block scrolls sideways at `point`: its
+    /// lines are wider than its box, and the point is inside the box.
+    func sideScrollingEntryIndex(at point: CGPoint) -> Int? {
+        guard let index = lastEntryIndex(where: { $0.y }, isAtMost: point.y) else { return nil }
+        let entry = entry(at: index)
+        guard entry.layout.maximumScrollOffset > 0, point.y < entry.frame.maxY else { return nil }
+        let box = entry.layout.scrollBox
+        return point.x >= box.minX && point.x < box.maxX ? index : nil
+    }
+
+    /// Whether `a` and `b` scroll alike every block that reaches below `y`,
+    /// shapes' overhang included: drawn with either, that part looks the same.
+    func scrollsAlike(_ a: SideScroll, _ b: SideScroll, below y: CGFloat) -> Bool {
+        guard a != b else { return true }
+        return scrollsAlike(a, b, from: lastEntryIndex(where: { $0.y }, isAtMost: y - TranscriptPath.maximumOverhang) ?? 0)
+    }
+
+    /// Whether `a` and `b` scroll alike every block with text at or after `offset`.
+    func scrollsAlike(_ a: SideScroll, _ b: SideScroll, fromOffset offset: Int) -> Bool {
+        guard a != b else { return true }
+        return scrollsAlike(a, b, from: entryIndex(forOffset: offset) ?? 0)
+    }
+
+    private func scrollsAlike(_ a: SideScroll, _ b: SideScroll, from first: Int) -> Bool {
+        (first..<entryCount).allSatisfy {
+            let layout = entry(at: $0).layout
+            return a.offset(of: layout) == b.offset(of: layout)
+        }
+    }
+
     /// The lines with text at or after `offset`, in order, with their blocks.
     func lines(from offset: Int) -> [(entry: Entry, line: BlockLayout.Line)] {
         guard let first = entryIndex(forOffset: offset) else { return [] }
@@ -219,15 +271,31 @@ public final class DocumentLayout: @unchecked Sendable {
     }
 
     public func caretRect(at offset: Int) -> CGRect {
+        caretRect(at: offset, scroll: .none)
+    }
+
+    /// The caret at `offset` with blocks scrolled sideways by `scroll`. In a
+    /// block that scrolls, a caret outside the block's box is moved to its edge.
+    func caretRect(at offset: Int, scroll: SideScroll) -> CGRect {
         guard let index = entryIndex(forOffset: offset) else {
             return CGRect(x: 0, y: 0, width: 2, height: style.effectiveBodySize * 1.2)
         }
         let entry = entry(at: index)
         let local = min(max(offset - entry.start, 0), entry.layout.length)
-        return entry.layout.caretRect(atOffset: local).offsetBy(dx: 0, dy: entry.y)
+        let rect = entry.layout.caretRect(atOffset: local).offsetBy(dx: 0, dy: entry.y)
+        guard entry.layout.maximumScrollOffset > 0 else { return rect }
+        let box = entry.layout.scrollBox
+        var shifted = rect.offsetBy(dx: -scroll.offset(of: entry.layout), dy: 0)
+        shifted.origin.x = min(max(shifted.minX, box.minX), box.maxX - shifted.width)
+        return shifted
     }
 
     public func closestOffset(to point: CGPoint) -> Int {
+        closestOffset(to: point, scroll: .none)
+    }
+
+    /// The offset nearest to `point`, with blocks scrolled sideways by `scroll`.
+    func closestOffset(to point: CGPoint, scroll: SideScroll) -> Int {
         guard var index = lastEntryIndex(where: { $0.y }, isAtMost: point.y) else { return 0 }
         // A point in the gap below a block goes to whichever block is nearer.
         if index + 1 < entryCount {
@@ -236,16 +304,26 @@ public final class DocumentLayout: @unchecked Sendable {
             if point.y >= (current.frame.maxY + next.y) / 2 { index += 1 }
         }
         let entry = entry(at: index)
-        let local = entry.layout.closestOffset(to: CGPoint(x: point.x, y: point.y - entry.y))
+        let local = entry.layout.closestOffset(to: CGPoint(x: point.x + scroll.offset(of: entry.layout), y: point.y - entry.y))
         return entry.start + local
     }
 
     /// The destination of the link drawn under `point`, if any.
     public func link(at point: CGPoint) -> String? {
+        link(at: point, scroll: .none)
+    }
+
+    /// The destination of the link drawn under `point`, with blocks scrolled
+    /// sideways by `scroll`. In a block that scrolls, only its box shows links.
+    func link(at point: CGPoint, scroll: SideScroll) -> String? {
         guard let index = lastEntryIndex(where: { $0.y }, isAtMost: point.y) else { return nil }
         let entry = entry(at: index)
         guard entry.frame.contains(point) else { return nil }
-        let local = CGPoint(x: point.x, y: point.y - entry.y)
+        if entry.layout.maximumScrollOffset > 0 {
+            let box = entry.layout.scrollBox
+            guard point.x >= box.minX, point.x < box.maxX else { return nil }
+        }
+        let local = CGPoint(x: point.x + scroll.offset(of: entry.layout), y: point.y - entry.y)
         if let link = entry.layout.decorationLink(at: local) { return link }
         guard let offset = entry.layout.characterOffset(at: local) else { return nil }
         // A reference link's destination may have been defined further down.
@@ -259,12 +337,21 @@ public final class DocumentLayout: @unchecked Sendable {
     /// spans. A line with right-to-left text can have several: one for each
     /// stretch of glyphs that go the same way.
     public func selectionRects(for range: Range<Int>) -> [CGRect] {
-        selectionSegments(for: range).map(\.rect)
+        selectionRects(for: range, scroll: .none)
+    }
+
+    /// One rect per line covered by `range`, with blocks scrolled sideways by
+    /// `scroll`. In a block that scrolls, the rects are cut to its box; a rect
+    /// outside the box becomes an empty one at its edge.
+    func selectionRects(for range: Range<Int>, scroll: SideScroll) -> [CGRect] {
+        selectionSegments(for: range, scroll: scroll).map(\.rect)
     }
 
     /// The parts of the selection of `range`, line by line, with their
-    /// direction. One holds the start of the range, and one the end.
-    func selectionSegments(for range: Range<Int>) -> [BlockLayout.SelectionSegment] {
+    /// direction, and with blocks scrolled sideways by `scroll` as in
+    /// `selectionRects(for:scroll:)`. One holds the start of the range, and
+    /// one the end.
+    func selectionSegments(for range: Range<Int>, scroll: SideScroll = .none) -> [BlockLayout.SelectionSegment] {
         guard !range.isEmpty, let first = entryIndex(forOffset: range.lowerBound) else { return [] }
         var segments: [BlockLayout.SelectionSegment] = []
         var start: Int?
@@ -276,7 +363,7 @@ public final class DocumentLayout: @unchecked Sendable {
             let upper = min(range.upperBound - entry.start, entry.layout.length)
             guard lower < upper else { continue }
             for var segment in entry.layout.selectionSegments(for: lower..<upper) {
-                segment.rect = segment.rect.offsetBy(dx: 0, dy: entry.y)
+                segment.rect = shown(segment.rect, in: entry, scroll: scroll)
                 segment.characters = (segment.characters.lowerBound + entry.start)...(segment.characters.upperBound + entry.start)
                 if segment.containsStart, start == nil { start = segments.count }
                 if segment.containsEnd { end = segments.count }
@@ -290,10 +377,25 @@ public final class DocumentLayout: @unchecked Sendable {
         return segments
     }
 
+    /// `rect`, of a line of `entry`'s block, in the document, with the block
+    /// scrolled sideways by `scroll`. In a block that scrolls, it is cut to
+    /// the block's box.
+    private func shown(_ rect: CGRect, in entry: Entry, scroll: SideScroll) -> CGRect {
+        var shifted = rect.offsetBy(dx: -scroll.offset(of: entry.layout), dy: entry.y)
+        guard entry.layout.maximumScrollOffset > 0 else { return shifted }
+        let box = entry.layout.scrollBox
+        let minX = min(max(shifted.minX, box.minX), box.maxX)
+        let maxX = min(max(shifted.maxX, box.minX), box.maxX)
+        shifted.origin.x = minX
+        shifted.size.width = maxX - minX
+        return shifted
+    }
+
     /// The rect of the first line of the selection of `range`: all of it,
     /// though text of mixed direction splits it into several rects. Nil
-    /// when nothing is selected.
-    func firstLineRect(for range: Range<Int>) -> CGRect? {
+    /// when nothing is selected. Blocks are scrolled sideways by `scroll` as
+    /// in `selectionRects(for:scroll:)`.
+    func firstLineRect(for range: Range<Int>, scroll: SideScroll = .none) -> CGRect? {
         guard !range.isEmpty, let first = entryIndex(forOffset: range.lowerBound) else { return nil }
         for index in first..<entryCount {
             let entry = entry(at: index)
@@ -304,7 +406,7 @@ public final class DocumentLayout: @unchecked Sendable {
             let segments = entry.layout.selectionSegments(for: lower..<upper)
             guard let line = segments.first?.line else { continue }
             let rect = segments.filter { $0.line == line }.map(\.rect).reduce(CGRect.null) { $0.union($1) }
-            return rect.offsetBy(dx: 0, dy: entry.y)
+            return shown(rect, in: entry, scroll: scroll)
         }
         return nil
     }
@@ -432,55 +534,64 @@ public final class DocumentLayout: @unchecked Sendable {
     // MARK: Drawing
 
     /// Draws the blocks intersecting `dirtyRect` into a top-left-origin context.
-    /// `accent` colors quote bars and rules. `dark` picks the dark values of
-    /// custom tags' colors.
+    /// `accent` colors quote bars and rules, and `codeBackground` code blocks
+    /// and table headers, unless the style sets their own colors. `dark`
+    /// picks the dark values of the style's colors and custom tags' colors,
+    /// and `highContrast` their Increase Contrast values.
     public func draw(in context: CGContext, dirtyRect: CGRect, text: CGColor, codeBackground: CGColor, accent: CGColor,
-                     dark: Bool = false) {
-        draw(in: context, dirtyRect: dirtyRect, text: text, codeBackground: codeBackground, accent: accent, dark: dark, hiding: .none)
+                     dark: Bool = false, highContrast: Bool = false) {
+        draw(in: context, dirtyRect: dirtyRect, text: text, codeBackground: codeBackground, accent: accent, dark: dark,
+             highContrast: highContrast, hiding: .none)
     }
 
     /// - Parameter hiding: animated tags whose animation is playing, drawn
     ///   above the text instead (their glyphs and shapes are left out), or
     ///   waiting to play (their shapes are left out).
+    /// - Parameter scroll: how far blocks that scroll sideways are scrolled.
+    ///   Their lines are drawn moved left by it, inside their box.
     func draw(in context: CGContext, dirtyRect: CGRect, text: CGColor, codeBackground: CGColor, accent: CGColor,
-              dark: Bool, hiding: TagHiding) {
+              dark: Bool, highContrast: Bool, hiding: TagHiding, scroll: SideScroll = .none) {
         context.saveGState()
         defer { context.restoreGState() }
         // Core Text draws y-up; flip glyphs so they are upright in a y-down context.
         context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
 
-        // Custom tags' highlights, behind the whole line's glyphs. Runs next
-        // to each other with the same color share one highlight, and it stays
-        // within the line, so drawing a band of lines never cuts one off.
+        // Custom tags' highlights and inline code fills, behind the whole
+        // line's glyphs. Runs next to each other with the same fill share one
+        // highlight, and it stays within the line, so drawing a band of lines
+        // never cuts one off.
         func drawHighlights(_ runs: [CTRun], at origin: CGPoint) {
-            var current: (rect: CGRect, color: TranscriptColor)?
+            var current: (rect: CGRect, color: TranscriptColor, radius: CGFloat)?
             func flush() {
                 guard let highlight = current else { return }
                 current = nil
                 context.saveGState()
-                context.setFillColor(highlight.color.cgColor(dark: dark))
+                context.setFillColor(highlight.color.cgColor(dark: dark, highContrast: highContrast))
                 let rect = highlight.rect.insetBy(dx: -1.5, dy: 0)
-                context.addPath(CGPath(roundedRect: rect, cornerWidth: 3, cornerHeight: 3, transform: nil))
+                let radius = min(max(highlight.radius, 0), rect.width / 2, rect.height / 2)
+                context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
                 context.fillPath()
                 context.restoreGState()
             }
             for run in runs {
                 let attributes = CTRunGetAttributes(run) as NSDictionary
-                guard let color = attributes[Self.backgroundKey] as? TranscriptColor, attributes[Self.imageKey] == nil,
+                let tag = attributes[Self.backgroundKey] as? TranscriptColor
+                guard let color = tag ?? attributes[Self.inlineCodeBackgroundKey] as? TranscriptColor, attributes[Self.imageKey] == nil,
                       let font = attributes[kCTFontAttributeName].map({ $0 as! CTFont }) else {
                     flush()
                     continue
                 }
+                let radius: CGFloat = tag != nil ? 3 : style.inlineCodeCornerRadius
                 var position = CGPoint.zero
                 CTRunGetPositions(run, CFRange(location: 0, length: 1), &position)
                 let width = CGFloat(CTRunGetTypographicBounds(run, CFRange(location: 0, length: 0), nil, nil, nil))
                 let ascent = CTFontGetAscent(font)
                 let rect = CGRect(x: origin.x + position.x, y: origin.y - ascent, width: width, height: ascent + CTFontGetDescent(font))
-                if let highlight = current, highlight.color == color, abs(highlight.rect.maxX - rect.minX) < 0.5 {
-                    current = (highlight.rect.union(rect), color)
+                if let highlight = current, highlight.color == color, highlight.radius == radius, abs(highlight.rect.maxX - rect.minX) < 0.5 {
+                    current = (highlight.rect.union(rect), color, radius)
                 } else {
                     flush()
-                    current = (rect, color)
+                    current = (rect, color, radius)
                 }
             }
             flush()
@@ -491,9 +602,10 @@ public final class DocumentLayout: @unchecked Sendable {
         // Strikethrough and underline are drawn here too; images separately.
         // The glyphs for the characters in `hidden` (the line's string
         // indexes) are left out.
-        func drawLine(_ line: CTLine, at origin: CGPoint, hidden: [Range<Int>] = []) {
+        func drawLine(_ line: CTLine, at origin: CGPoint, hidden: [Range<Int>] = [], visible: ClosedRange<CGFloat>? = nil) {
             drawHighlights(CTLineGetGlyphRuns(line) as! [CTRun], at: origin)
-            Self.drawGlyphs(of: line, at: origin, hidden: hidden, in: context, text: text, dark: dark)
+            Self.drawGlyphs(of: line, at: origin, hidden: hidden, visible: visible, in: context, text: text, dark: dark,
+                            highContrast: highContrast)
         }
 
         func fill(_ rect: CGRect, radius: CGFloat, color: CGColor) {
@@ -505,11 +617,11 @@ public final class DocumentLayout: @unchecked Sendable {
         }
 
         /// A line's tag images, clipped like its shapes.
-        func drawTagImages(of line: BlockLayout.Line, in entry: Entry) {
+        func drawTagImages(of line: BlockLayout.Line, in entry: Entry, shift: CGFloat) {
             guard let decorations = line.decorations, !decorations.images.isEmpty else { return }
             context.saveGState()
             let side = TranscriptPath.maximumSideOverhang
-            context.clip(to: CGRect(x: -side, y: entry.y + line.frame.minY - decorations.inkAbove, width: entry.layout.width + 2 * side,
+            context.clip(to: CGRect(x: shift - side, y: entry.y + line.frame.minY - decorations.inkAbove, width: entry.layout.width + 2 * side,
                                     height: line.frame.height + decorations.inkAbove + decorations.inkBelow))
             context.translateBy(x: line.frame.minX, y: entry.y + line.baseline)
             for item in decorations.images {
@@ -522,7 +634,7 @@ public final class DocumentLayout: @unchecked Sendable {
                 context.interpolationQuality = .high
                 if let tint = item.image.tint {
                     context.clip(to: box, mask: item.image.image)
-                    context.setFillColor(tint.cgColor(dark: dark))
+                    context.setFillColor(tint.cgColor(dark: dark, highContrast: highContrast))
                     context.fill(box)
                 } else {
                     context.draw(item.image.image, in: box)
@@ -533,20 +645,21 @@ public final class DocumentLayout: @unchecked Sendable {
         }
 
         /// A line's tag shapes on one layer, clipped to what the line may
-        /// draw, as invalidation knows it.
-        func drawShapes(of line: BlockLayout.Line, in entry: Entry, over: Bool) {
+        /// draw, as invalidation knows it. `shift` is how far the context
+        /// was moved left for a block that scrolls sideways.
+        func drawShapes(of line: BlockLayout.Line, in entry: Entry, over: Bool, shift: CGFloat) {
             guard let decorations = line.decorations else { return }
             let paths = over ? decorations.over : decorations.behind
             guard !paths.isEmpty else { return }
             let owners = over ? decorations.overTags : decorations.behindTags
             context.saveGState()
             let side = TranscriptPath.maximumSideOverhang
-            context.clip(to: CGRect(x: -side, y: entry.y + line.frame.minY - decorations.inkAbove, width: entry.layout.width + 2 * side,
+            context.clip(to: CGRect(x: shift - side, y: entry.y + line.frame.minY - decorations.inkAbove, width: entry.layout.width + 2 * side,
                                     height: line.frame.height + decorations.inkAbove + decorations.inkBelow))
             context.translateBy(x: line.frame.minX, y: entry.y + line.baseline)
             for (index, path) in paths.enumerated() {
                 if !hiding.isEmpty, index < owners.count, let owner = owners[index], hiding.hidesShapes(of: owner) { continue }
-                path.draw(in: context, dark: dark)
+                path.draw(in: context, dark: dark, highContrast: highContrast)
             }
             context.restoreGState()
         }
@@ -570,8 +683,9 @@ public final class DocumentLayout: @unchecked Sendable {
             let layout = entry.layout
             let block = layout.block
 
-            // Square ends, so that segments of one bar meet cleanly.
-            for bar in quoteBars(at: index) { fill(bar, radius: 0, color: accent) }
+            // Quote bars. Square ends, so that segments of one bar meet cleanly.
+            let bar = style.quoteBarColor?.cgColor(dark: dark, highContrast: highContrast) ?? accent
+            for rect in quoteBars(at: index) { fill(rect, radius: 0, color: bar) }
             if frame.minY - overhang > dirtyRect.maxY { break }
 
             let box = CGRect(x: layout.contentLeading, y: frame.minY, width: max(frame.width - layout.contentLeading, 0), height: frame.height)
@@ -581,7 +695,10 @@ public final class DocumentLayout: @unchecked Sendable {
             case .rule:
                 fill(CGRect(x: box.minX, y: frame.midY - 0.5, width: box.width, height: 1), radius: 0, color: accent)
             case .table:
-                if let table = layout.table { drawGrid(table, top: entry.y, in: context, header: codeBackground, lines: accent) }
+                if let table = layout.table {
+                    let header = style.tableHeaderBackgroundColor?.cgColor(dark: dark, highContrast: highContrast) ?? codeBackground
+                    drawGrid(table, top: entry.y, in: context, header: header, lines: accent)
+                }
             case .paragraph, .heading:
                 break
             }
@@ -611,62 +728,101 @@ public final class DocumentLayout: @unchecked Sendable {
                 visible = first..<end
             }
 
+            // The lines of a block that scrolls sideways, moved by its offset
+            // and cut to its box.
+            let scrolls = layout.maximumScrollOffset > 0
+            let dx = scroll.offset(of: layout)
+            func inScrolledBox(_ body: () -> Void) {
+                guard scrolls else { return body() }
+                context.saveGState()
+                context.clip(to: CGRect(x: box.minX, y: frame.minY - overhang, width: box.width, height: frame.height + 2 * overhang))
+                context.translateBy(x: -dx, y: 0)
+                body()
+                context.restoreGState()
+            }
+
             // Behind the text: tags' shapes, so that none covers a glyph of
             // the line above; then the text; then shapes over it.
-            for index in visible {
-                drawShapes(of: lines[index], in: entry, over: false)
-                drawTagImages(of: lines[index], in: entry)
+            inScrolledBox {
+                for index in visible {
+                    drawShapes(of: lines[index], in: entry, over: false, shift: dx)
+                    drawTagImages(of: lines[index], in: entry, shift: dx)
+                }
             }
 
             switch layout.marker {
             case .text(let line, let origin)?:
                 drawLine(line, at: CGPoint(x: origin.x, y: entry.y + origin.y))
             case .checkbox(let rect, let checked)?:
-                drawCheckbox(rect.offsetBy(dx: 0, dy: entry.y), checked: checked, in: context, stroke: text)
+                let item = block.containers.lastIndex(of: .listItem) ?? 0
+                let color = style.textColor(inside: block.containers[..<item])?.cgColor(dark: dark, highContrast: highContrast) ?? text
+                drawCheckbox(rect.offsetBy(dx: 0, dy: entry.y), checked: checked, in: context, text: color, dark: dark,
+                             highContrast: highContrast)
             case nil:
                 break
             }
 
-            for index in visible where !lines[index].range.isEmpty {
-                let line = lines[index]
-                var hidden = line.decorations?.hiddenRanges(hiding.playing) ?? []
-                if let from = hiding.fadingFrom, entry.start + line.range.upperBound > from {
-                    hidden.append(max(from - entry.start, line.range.lowerBound)..<line.range.upperBound)
+            inScrolledBox {
+                for index in visible where !lines[index].range.isEmpty {
+                    let line = lines[index]
+                    var hidden = line.decorations?.hiddenRanges(hiding.playing) ?? []
+                    if let from = hiding.fadingFrom, entry.start + line.range.upperBound > from {
+                        hidden.append(max(from - entry.start, line.range.lowerBound)..<line.range.upperBound)
+                    }
+                    // A line much wider than the box draws only the glyphs near it.
+                    let reach = 2 * max(line.frame.height, 8)
+                    let visible = scrolls && line.frame.width > box.width
+                        ? (box.minX + dx - reach)...(box.maxX + dx + reach) : nil
+                    drawLine(line.ctLine, at: CGPoint(x: line.frame.minX, y: entry.y + line.baseline),
+                             hidden: hidden.map { ($0.lowerBound - line.indexBase)..<($0.upperBound - line.indexBase) },
+                             visible: visible)
                 }
-                drawLine(line.ctLine, at: CGPoint(x: line.frame.minX, y: entry.y + line.baseline),
-                         hidden: hidden.map { ($0.lowerBound - line.indexBase)..<($0.upperBound - line.indexBase) })
-            }
 
-            for attachment in layout.attachments {
-                let rect = attachment.rect.offsetBy(dx: 0, dy: entry.y)
-                guard rect.intersects(dirtyRect) else { continue }
-                drawImage(attachment.attachment, in: rect, context: context, text: text, background: codeBackground)
-            }
+                let imageText = layout.attachments.isEmpty ? text : style.textColor(inside: block.containers)?.cgColor(dark: dark, highContrast: highContrast) ?? text
+                for attachment in layout.attachments {
+                    let rect = attachment.rect.offsetBy(dx: 0, dy: entry.y)
+                    guard rect.offsetBy(dx: -dx, dy: 0).intersects(dirtyRect) else { continue }
+                    drawImage(attachment.attachment, in: rect, context: context, text: imageText, background: codeBackground)
+                }
 
-            for index in visible { drawShapes(of: lines[index], in: entry, over: true) }
+                for index in visible { drawShapes(of: lines[index], in: entry, over: true, shift: dx) }
+            }
         }
     }
 
     /// The fill color a run's glyphs are drawn with: the tag's own color, or
     /// the text's. A run with a color attribute (a link) uses that instead.
-    static func setGlyphColor(of attributes: NSDictionary, in context: CGContext, text: CGColor, dark: Bool) {
-        let custom = (attributes[foregroundKey] as? TranscriptColor)?.cgColor(dark: dark)
+    static func setGlyphColor(of attributes: NSDictionary, in context: CGContext, text: CGColor, dark: Bool, highContrast: Bool) {
+        let custom = (attributes[foregroundKey] as? TranscriptColor)?.cgColor(dark: dark, highContrast: highContrast)
         context.setFillColor(custom ?? text)
     }
 
     /// Draws a line's glyphs, and their strikethrough and underline, leaving
     /// out the characters in `hidden` (line string indexes). Images are left
     /// to the caller. The context's text matrix must flip glyphs upright.
-    static func drawGlyphs(of line: CTLine, at origin: CGPoint, hidden: [Range<Int>], in context: CGContext, text: CGColor, dark: Bool) {
+    /// - Parameter visible: if set, only the glyphs that start in this range
+    ///   of x are drawn.
+    static func drawGlyphs(of line: CTLine, at origin: CGPoint, hidden: [Range<Int>], visible: ClosedRange<CGFloat>? = nil,
+                           in context: CGContext, text: CGColor, dark: Bool, highContrast: Bool) {
         for run in CTLineGetGlyphRuns(line) as! [CTRun] {
             let attributes = CTRunGetAttributes(run) as NSDictionary
             if attributes[imageKey] != nil { continue }
-            let ranges = hidden.isEmpty ? [CFRange(location: 0, length: 0)] : glyphRanges(of: run, leavingOut: hidden)
+            var ranges = hidden.isEmpty ? [CFRange(location: 0, length: 0)] : glyphRanges(of: run, leavingOut: hidden)
+            if let visible {
+                guard let shown = glyphRange(of: run, startingIn: (visible.lowerBound - origin.x)...(visible.upperBound - origin.x))
+                else { continue }
+                let count = CTRunGetGlyphCount(run)
+                ranges = ranges.compactMap {
+                    let lower = max($0.location, shown.lowerBound)
+                    let upper = min($0.length == 0 ? count : $0.location + $0.length, shown.upperBound)
+                    return lower < upper ? CFRange(location: lower, length: upper - lower) : nil
+                }
+            }
             guard !ranges.isEmpty else { continue }
-            setGlyphColor(of: attributes, in: context, text: text, dark: dark)
+            setGlyphColor(of: attributes, in: context, text: text, dark: dark, highContrast: highContrast)
             context.textPosition = origin
             for range in ranges { CTRunDraw(run, context, range) }
-            let custom = (attributes[foregroundKey] as? TranscriptColor)?.cgColor(dark: dark)
+            let custom = (attributes[foregroundKey] as? TranscriptColor)?.cgColor(dark: dark, highContrast: highContrast)
             let strike = attributes[strikethroughKey] != nil
             let underline = attributes[underlineKey] != nil
             guard strike || underline, let font = attributes[kCTFontAttributeName].map({ $0 as! CTFont }) else { continue }
@@ -691,6 +847,21 @@ public final class DocumentLayout: @unchecked Sendable {
                 if underline { fill(x: origin.x + position.x, y: origin.y - CTFontGetUnderlinePosition(font), width: width) }
             }
         }
+    }
+
+    /// The glyphs of `run` from the first to the last whose position, in its
+    /// line, is in `range`; nil if none is.
+    static func glyphRange(of run: CTRun, startingIn range: ClosedRange<CGFloat>) -> Range<Int>? {
+        let count = CTRunGetGlyphCount(run)
+        func find(in positions: UnsafeBufferPointer<CGPoint>) -> Range<Int>? {
+            guard let first = positions.firstIndex(where: { range.contains($0.x) }),
+                  let last = positions.lastIndex(where: { range.contains($0.x) }) else { return nil }
+            return first..<(last + 1)
+        }
+        if let pointer = CTRunGetPositionsPtr(run) { return find(in: UnsafeBufferPointer(start: pointer, count: count)) }
+        var positions = [CGPoint](repeating: .zero, count: count)
+        CTRunGetPositions(run, CFRange(location: 0, length: 0), &positions)
+        return positions.withUnsafeBufferPointer(find)
     }
 
     /// The runs of `run`'s glyphs whose characters are not in `hidden`.
@@ -720,6 +891,7 @@ public final class DocumentLayout: @unchecked Sendable {
     private static let underlineKey = TranscriptStyle.underlineKey.rawValue
     private static let foregroundKey = TranscriptStyle.foregroundKey.rawValue
     private static let backgroundKey = TranscriptStyle.backgroundKey.rawValue
+    private static let inlineCodeBackgroundKey = TranscriptStyle.inlineCodeBackgroundKey.rawValue
 
     private func drawGrid(_ table: BlockLayout.Table, top: CGFloat, in context: CGContext, header: CGColor, lines: CGColor) {
         let frame = table.frame.offsetBy(dx: 0, dy: top)
@@ -749,11 +921,11 @@ public final class DocumentLayout: @unchecked Sendable {
         context.restoreGState()
     }
 
-    private func drawCheckbox(_ rect: CGRect, checked: Bool, in context: CGContext, stroke: CGColor) {
+    private func drawCheckbox(_ rect: CGRect, checked: Bool, in context: CGContext, text: CGColor, dark: Bool, highContrast: Bool) {
         context.saveGState()
         let box = CGPath(roundedRect: rect.insetBy(dx: 0.75, dy: 0.75), cornerWidth: 4, cornerHeight: 4, transform: nil)
         if checked {
-            context.setFillColor(CGColor(red: 0, green: 0.478, blue: 1, alpha: 1))
+            context.setFillColor(style.taskCheckedColor?.cgColor(dark: dark, highContrast: highContrast) ?? CGColor(red: 0, green: 0.478, blue: 1, alpha: 1))
             context.addPath(box)
             context.fillPath()
             let check = CGMutablePath()
@@ -761,14 +933,14 @@ public final class DocumentLayout: @unchecked Sendable {
             check.addLine(to: CGPoint(x: rect.minX + rect.width * 0.43, y: rect.minY + rect.height * 0.7))
             check.addLine(to: CGPoint(x: rect.minX + rect.width * 0.76, y: rect.minY + rect.height * 0.32))
             context.addPath(check)
-            context.setStrokeColor(CGColor(red: 1, green: 1, blue: 1, alpha: 1))
+            context.setStrokeColor(style.taskCheckmarkColor?.cgColor(dark: dark, highContrast: highContrast) ?? CGColor(red: 1, green: 1, blue: 1, alpha: 1))
             context.setLineWidth(max(rect.width * 0.12, 1.5))
             context.setLineCap(.round)
             context.setLineJoin(.round)
             context.strokePath()
         } else {
             context.addPath(box)
-            context.setStrokeColor(stroke.copy(alpha: 0.45) ?? stroke)
+            context.setStrokeColor(style.taskUncheckedColor?.cgColor(dark: dark, highContrast: highContrast) ?? text.copy(alpha: 0.45) ?? text)
             context.setLineWidth(1.5)
             context.strokePath()
         }
@@ -793,11 +965,11 @@ public final class DocumentLayout: @unchecked Sendable {
             }
             return
         }
-        // No picture: a chip with the alt text.
+        // No picture: a chip with the alt text, or for a formula being drawn, nothing.
+        guard let label = attachment.label else { return }
         context.setFillColor(background)
         context.addPath(CGPath(roundedRect: rect.insetBy(dx: 0, dy: 1), cornerWidth: 5, cornerHeight: 5, transform: nil))
         context.fillPath()
-        guard let label = attachment.label else { return }
         var ascent: CGFloat = 0
         var descent: CGFloat = 0
         CTLineGetTypographicBounds(label, &ascent, &descent, nil)

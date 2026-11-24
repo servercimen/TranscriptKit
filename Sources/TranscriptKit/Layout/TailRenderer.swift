@@ -36,6 +36,8 @@ final class TailRenderer {
         var accent: CGColor
         /// Whether custom tags' colors take their dark values.
         var dark = false
+        /// Whether custom tags' colors take their Increase Contrast values.
+        var highContrast = false
     }
 
     /// One drawn tail: show `surface` at `top`, `TailRenderer.height` points tall.
@@ -57,6 +59,8 @@ final class TailRenderer {
     private var pixelHeight = 0
     /// Bottom of what the last frame drew, so the next one clears no further.
     private var drawnBottom: CGFloat = 0
+    /// How far blocks were scrolled sideways when the tail was drawn.
+    private var drawnScroll = SideScroll()
 
     private final class Slot {
         let surface: IOSurface
@@ -112,8 +116,11 @@ final class TailRenderer {
     /// - Parameter fadingTop: the top of the text that fades in. A strip that
     ///   moves down starts no lower, while it can hold the text, so the tail
     ///   and not the tiles draws that text when it stops fading.
+    /// - Parameter scroll: how far blocks that scroll sideways are scrolled.
+    ///   The blocks in the tail that it scrolls otherwise than the last frame
+    ///   are drawn again.
     func render(_ layout: DocumentLayout, changedTop: CGFloat?, restyled: [CGRect] = [], hiding: TagHiding = .none,
-                fadingTop: CGFloat? = nil) -> Frame? {
+                fadingTop: CGFloat? = nil, scroll: SideScroll = .none) -> Frame? {
         if layout.width != width || context == nil {
             guard makeContext(width: layout.width) else { return nil }
             top = nil
@@ -128,11 +135,12 @@ final class TailRenderer {
             currentTop = top
             start = changedTop
             for rect in restyled where rect.maxY > top { start = min(start, max(rect.minY, top)) }
+            if !layout.scrollsAlike(scroll, drawnScroll, below: top) { start = top }
         } else {
             var newTop = Self.lastLineTop(of: layout, scale: scale)
             if let fadingTop {
                 let fits = ((layout.height - Self.height + Self.margin) * scale).rounded(.up) / scale
-                newTop = min(newTop, max((max(fadingTop, 0) * scale).rounded(.down) / scale, fits))
+                newTop = min(newTop, max((max(fadingTop, -TranscriptPath.maximumOverhang) * scale).rounded(.down) / scale, fits))
             }
             currentTop = newTop
             start = currentTop
@@ -140,6 +148,7 @@ final class TailRenderer {
             fullCopyFrom = frame + 1
         }
         top = currentTop
+        drawnScroll = scroll
 
         // Clear down to whatever the previous frame drew, in case the text
         // got shorter, and draw down to the text's bottom.
@@ -160,7 +169,7 @@ final class TailRenderer {
             context.clip(to: band)
             context.clear(band)
             layout.draw(in: context, dirtyRect: band, text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent,
-                        dark: colors.dark, hiding: hiding)
+                        dark: colors.dark, highContrast: colors.highContrast, hiding: hiding, scroll: scroll)
             context.restoreGState()
         }
         let firstRow = max(0, min(pixelHeight, Int(((start - currentTop) * scale).rounded(.down))))
@@ -255,7 +264,8 @@ final class TailRenderer {
             // A table grows by its last row, grid and all.
             lineTop = entry.y + table.rowY[table.rowY.count - 2] - BlockLayout.Table.changeMargin
         }
-        return (max(0, lineTop) * scale).rounded(.down) / scale
+        // Shapes may reach above the first line, as far as the first tile does.
+        return (max(-TranscriptPath.maximumOverhang, lineTop) * scale).rounded(.down) / scale
     }
 
     /// The pixels the tail currently holds, for tests.

@@ -18,11 +18,13 @@ text streaming in at hundreds of characters a second doesn't make scrolling stut
 - **Markdown:**
   - headings, paragraphs, emphasis, strikethrough and inline code;
   - nested lists, task lists and quotes;
-  - fenced and indented code blocks, colored by a highlighter your app provides, and tables;
+  - fenced and indented code blocks, colored by a highlighter your app provides, which wrap or scroll sideways, and
+    tables;
   - links, bare URLs and email addresses, and reference links;
   - images, drawn by a loader your app provides;
   - LaTeX math, drawn by a renderer your app provides;
-  - HTML entities and a few HTML tags.
+  - HTML entities and a few HTML tags;
+  - optionally, a single newline as a line break, as models often write it.
 - **Custom tags.** Define tags such as `<mention id="ana">@Ana</mention>` and how they look: font traits, colours, a
   link, padding, and shapes drawn behind or over the text. Pills and underlines (solid, dashed, dotted, wavy,
   marker) are built in, and you can draw shapes of your own, and animate a tag's letters and shapes when it
@@ -35,7 +37,7 @@ text streaming in at hundreds of characters a second doesn't make scrolling stut
 ## Requirements
 
 iOS 17 or later, Swift 6 (Xcode 16 or later). The parser and document model also build on macOS 14, which is where
-the tests run.
+most of the tests run.
 
 ## Installation
 
@@ -92,6 +94,20 @@ let document = MarkdownStreamParser.document(from: markdown)
 TranscriptText(document, style: style)
 ```
 
+### Line breaks
+
+The parser follows CommonMark: a single newline inside a paragraph is a space. Models often use a single newline as
+a line break. To show it as a line break, set `newlinesAsLineBreaks`:
+
+```swift
+let stream = TranscriptStream(newlinesAsLineBreaks: true)
+let document = MarkdownStreamParser.document(from: markdown, newlinesAsLineBreaks: true)
+```
+
+The option applies to paragraphs and headings, also inside lists and quotes. A blank line still starts a new
+paragraph. A line that ends in a backslash, two spaces or `<br>` also gives one line break, not two. A newline in a
+code span is still a space, as in CommonMark. Selected and copied text has a newline at each such line break.
+
 ### Custom tags
 
 ```swift
@@ -113,9 +129,14 @@ let tags = [
 let stream = TranscriptStream(tags: tags)
 ```
 
+A pill that breaks across two lines is open where it breaks. To keep a tag on one line, set `keepsTogether: true`
+in its decoration: a tag that does not fit at the end of a line then goes to the next line as a whole. A tag wider
+than a line, or with a line break in it, still breaks.
+
 A tag can also show a small image before its text, such as an icon in a pill. The image takes room after the tag's
-padding, so the tag's shapes surround it, and it is centred on the text's cap height. A tint fills the shape of a
-template image, such as a symbol:
+padding, so the tag's shapes surround it, and it is centred on the text's cap height. A tag with an animation shows
+its image once the animation has played; with `showsDuringAnimation: true`, the image shows from the start, while
+the tag waits and while it plays. A tint fills the shape of a template image, such as a symbol:
 
 ```swift
 TranscriptTag("chip") { attributes in
@@ -133,9 +154,20 @@ TranscriptTag("chip") { attributes in
 ```
 
 Tags the app doesn't define show as written. For a shape of your own, implement `TranscriptShapeRecipe`. It returns
-paths for each line the tag's text is on and may draw a little outside the text, up to 12 points to the sides,
-past the view's edges. The chat sample has two such shapes, `Zigzag` and `SoftUnderline`, in
+paths for each line the tag's text is on and may draw a little outside the text, up to 12 points to the sides
+and 6 points above and below the line, past the view's edges. The chat sample has two such shapes, `Zigzag` and `SoftUnderline`, in
 [`SampleTags.swift`](Examples/ChatSample/ChatSample/SampleTags.swift).
+
+An app can also build a tagged document without the parser. Make an `InlineSpan.CustomTag` from a tag definition,
+or from a name and a decoration. Then make the span with `InlineSpan(range:tagged:)`, which also gives it the
+decoration's traits and link:
+
+```swift
+let mention = InlineSpan.CustomTag(tags[0], attributes: ["id": "42"])
+let document = TranscriptDocument(blocks: [
+    TranscriptBlock(text: "Ask @ana now.", spans: [InlineSpan(range: 4..<8, tagged: mention)]),
+])
+```
 
 ### Animated tags
 
@@ -164,7 +196,8 @@ TranscriptTag("hop", TranscriptDecoration(animation: .custom(Hop())))
 Until its closing tag arrives, an animated tag shows its text without its shapes. The view then draws the tag's
 glyphs and the animation's paths on Core Animation layers above the text, and draws the tag as usual again when
 the animation ends, so the last frame should match that: glyphs back in place, paths fully shown. Only tags that
-close while text streams in are animated, not earlier messages. Turn animations off with `animatesTags` on the view
+close while text streams in are animated, not earlier messages (see below to animate text that is complete when it
+is shown). Turn animations off with `animatesTags` on the view
 or `.animatesTags(false)` on `TranscriptText`; with Reduce Motion on, nothing is animated. The chat sample's `Boing`
 sweeps a highlighter band in under the text while each letter jumps as the band reaches it.
 
@@ -183,8 +216,41 @@ TranscriptText(stream: stream)
 ```
 
 In UIKit, set `tagAnimationTiming` on `TranscriptTextView` and call `playTagAnimations()`. A tag that is still
-waiting when it can no longer play (Reduce Motion turned on, animations turned off, the view leaving its window, a
-new document) is shown as it ends up.
+waiting when it can no longer play (Reduce Motion turned on, animations turned off, a new document) is shown as it
+ends up. A view that leaves its window does the same, unless the timing has `.whenVisible` or `.whenRequested`: its
+tags then go on waiting until the view is back in a window. With `.whenVisible`, a view that is hidden or has an
+alpha of 0, or is inside such a view, is not visible. The view looks again a short time later, at most one second
+apart, so a tag can start up to one second after its view shows. When the view lays out the same text again, for
+example at a new width or when an image arrives, waiting tags go on waiting and playing tags go on playing. A
+playing tag whose glyphs move plays again from the start.
+
+Text that is complete when it is shown, such as a document set directly or a page of many short texts, can animate
+its tags too. With `animatesTagsInFirstText`, each tag in the first text that the view shows plays its animation
+one time, as if it had just closed. The timing applies, so with `.whenVisible`, each tag plays when it comes on
+screen:
+
+```swift
+TranscriptText(document)
+    .animatesTagsInFirstText()
+    .tagAnimationTiming(.whenVisible)
+```
+
+A view that is made again, as a lazy stack does with a row that scrolls back into view, plays them again.
+
+Tags that wait often start at the same moment, for example when the stream finishes. To stagger them, also
+implement `animation(for:in:)` in the recipe. The group gives the tag's place among the tags that start together,
+in text order, and how many they are:
+
+```swift
+func animation(for fragments: [TranscriptFragment], in group: TranscriptAnimationGroup) -> TranscriptAnimation {
+    var staggered = animation(for: fragments)
+    let delay = Double(group.index) * 0.15
+    for index in staggered.glyphs.indices {
+        staggered.glyphs[index].offsetY = staggered.glyphs[index].offsetY?.delayed(by: delay)
+    }
+    return staggered
+}
+```
 
 ### Fading in text
 
@@ -228,7 +294,26 @@ TranscriptText(stream: stream)
 ```
 
 In UIKit, set `codeHighlighter` on `TranscriptTextView`. Colors are `TranscriptColor`s, so give them a light and a dark
-value when the theme has both.
+value when the theme has both, and Increase Contrast values when it has them.
+
+### Code that does not wrap
+
+By default, a line of code wraps at the width of the text column. Set `codeWraps` to false to keep each line of code
+on one line. A code block with a line that is wider than the column then scrolls sideways in the view:
+
+```swift
+var style = TranscriptStyle()
+style.codeWraps = false
+TranscriptText(stream: stream, style: style)
+```
+
+The block keeps the width of the column, and only its text moves. A sideways drag that starts in the block scrolls
+the block. A drag up or down still scrolls the scroll view around the text. After the drag, the block slows down as a
+scroll view does. A touch on the block stops it, and does not open a link. Selection, links, copy and the selection
+handles follow the scrolled text. With VoiceOver, a three-finger swipe to the left or right scrolls the block. A block
+that grows while it streams keeps its offset. It also keeps its offset when the text after it changes, while the block
+stays a block of the same kind. A new document starts with all blocks at their leading edge. While a block that text
+streams into moves sideways, the new text shows at once, without a fade.
 
 ### Math
 
@@ -240,7 +325,9 @@ A single `$` is text, so prices stay as written. TranscriptKit does not read Mar
 
 Without a renderer, a formula shows its LaTeX in the code font. A renderer gets the formula and the font size of the
 text around it. It returns an image, the image's size in points, and its baseline: the distance from the bottom edge
-up to the baseline. TranscriptKit calls it off the main thread, once for each formula and font size.
+up to the baseline. TranscriptKit calls it off the main thread, once for each formula and font size. If it returns
+nil, the formula shows its LaTeX as written once that LaTeX stays the same for a second. LaTeX that is not complete yet
+can fail while it streams in, and the formula then keeps what it showed.
 
 ```swift
 TranscriptText(stream: stream)
@@ -255,13 +342,57 @@ TranscriptText(stream: stream)
 In UIKit, set `mathRenderer` on `TranscriptTextView`. TranscriptKit uses only the alpha of the image, and draws the
 formula in the text color, so it follows light and dark appearance. A formula that is wider than the text column is
 scaled down to fit. A paragraph that holds only display math is centered. While a formula streams in, it shows
-nothing until it closes, so the text on screen only grows. Copy gives the LaTeX with its delimiters, and VoiceOver
-reads the LaTeX.
+nothing until it closes, so the text on screen only grows. Copy gives the LaTeX with its delimiters.
+
+VoiceOver reads the LaTeX by default. To give VoiceOver other words, for example from a library that turns LaTeX into
+speech, set a label. TranscriptKit calls it on the main thread:
+
+```swift
+TranscriptText(stream: stream)
+    .mathAccessibilityLabel { math in mySpeechText(forLaTeX: math.tex) }
+```
+
+In UIKit, set `mathAccessibilityLabel` on `TranscriptTextView`.
+
+Two style options change display math. `displayMathAlignment` puts the formula at the leading edge, the center (the
+default) or the trailing edge. With `displayMathScrolls`, a display formula that is wider than the column keeps its
+size and scrolls sideways, as code that does not wrap does. When the formula shows its LaTeX, because there is no
+renderer or the renderer returns nil, the LaTeX is then shown whole instead of cut with "…". Inline formulas are always
+scaled down to fit.
+
+```swift
+var style = TranscriptStyle()
+style.displayMathAlignment = .leading
+style.displayMathScrolls = true
+```
+
+Until the renderer draws a formula, the formula is empty space of about its size. The LaTeX of a formula can change
+from one update to the next, for example when your app closes an open formula in each new snapshot of the text. Then
+the formula keeps its last image until the new one is drawn. Each formula has at most one drawing in progress, and
+newer LaTeX replaces the LaTeX that waits for its turn. Images that arrive together cause one layout. A view keeps
+the images of the formulas in the document it shows, also when the cache removes them, so it does not draw them again.
+
+Drawn formulas are kept in a `TranscriptMathCache`. All views share `TranscriptMathCache.shared` by default, so a
+formula that shows in many messages is drawn once. The cache removes the least recently used formulas when they use
+more than its byte limit, 16 MB by default. The cache does not keep a nil result: each view keeps it for the formulas
+it shows. A view shows the formulas that any renderer of its cache drew, so give views whose renderers draw a formula
+differently a cache each:
+
+```swift
+let cache = TranscriptMathCache(byteLimit: 8 * 1024 * 1024)
+
+TranscriptText(stream: stream)
+    .mathRenderer(myRenderer, cache: cache)
+```
+
+In UIKit, set `mathCache` on `TranscriptTextView`. Setting a renderer does not empty the cache. Call `removeAll()` on
+a cache after your renderer changes how it draws: the views that use the cache then draw their formulas again.
 
 ### Selection
 
 The text is selectable by default. Turn selection off for text inside a view that reacts to taps, such as a card or a
-list row. A tap that is not on a link then goes to that view, and links still open:
+list row. A tap that is not on a link then goes to that view, and links still open. A block that scrolls sideways
+still takes the touches in it:
 
 ```swift
 TranscriptText(document)
@@ -276,13 +407,26 @@ them off with `.showsWritingTools(false)`, or with `showsWritingTools` on `Trans
 ### VoiceOver
 
 VoiceOver reads the text block by block. Headings are in the rotor's list of headings, list items start with their
-number or "Checked" or "Unchecked", and each link in a block is an action that opens it. The spoken words "Open %@",
-"Checked", "Unchecked" and "Separator" come from your app's `Localizable.strings`, so you can translate them there.
+number or "Checked" or "Unchecked", and each link in a block is an action that opens it. A list item also tells its
+position in its list and the number of items, such as "Item 2 of 3". A table is a data table with one element for each
+cell, so VoiceOver reads it cell by cell, with the row, the column and the column's header. When a table starts a list
+item, its first cell reads the item's marker and tells its position. While text streams in, each block keeps its
+element, so VoiceOver focus stays on its block. The view tells VoiceOver that the layout changed only when elements
+come or go, or when a new layout moves them or changes their size. Text that streams into the last block does not
+tell it.
+
+Assistive technologies, such as VoiceOver, Speak Screen and Voice Control, can ask for the elements and the text from
+any thread. TranscriptKit then does the work on the main thread and gives the answer to the thread that asked.
+
+The spoken words "Open %@", "Checked", "Unchecked", "Separator" and "Item %1$ld of %2$ld" come from your app's
+`Localizable.strings`, so you can translate them there.
 
 ### Line limit and alignment
 
 For short text in cards and list rows, set a line limit and an alignment. When text is left out, the last line shown
-ends in "…", and selection and copying cover only what is shown. `TranscriptText` also takes SwiftUI's modifiers:
+ends in "…". The selection shows only on the text that is shown. A selection that reaches the end of that text, such as
+Select All, also copies the text that is left out, and VoiceOver reads all of the text. `TranscriptText` also takes
+SwiftUI's modifiers:
 
 ```swift
 TranscriptText(document)
@@ -338,8 +482,19 @@ A line height replaces `lineSpacing` for that kind of text, and a line is never 
 `scalesWithDynamicType`, `TranscriptText` scales every text size and line height as `UIFontMetrics` scales body text.
 With `TranscriptTextView`, set `style.scaled(for: traitCollection.preferredContentSizeCategory)` yourself.
 
-It also sets the colors. Each one is a `TranscriptColor`, with a value for light and one for dark appearance, so the
-text can be drawn off the main thread. A color that is nil uses the system color shown here:
+The text follows the Bold Text setting. With Bold Text on, the view lays out the text again with heavier system fonts:
+regular text becomes semibold, and bold text becomes heavy. The default code font takes its bold face, so bold code
+then looks the same as the code around it. Set a system `codeFont`, such as
+`TranscriptFont(size: 15, monospaced: true)`, to keep bold code heavier. A named font keeps its own weight. To stop the
+view from making the fonts heavier, set `style.followsBoldText = false`. When you lay out a `DocumentLayout` yourself,
+use `style.withBoldText(traitCollection.legibilityWeight == .bold)`, and lay out again when the setting changes. Draw
+it with `highContrast: traitCollection.accessibilityContrast == .high` to use the Increase Contrast colors.
+
+It also sets the colors. Each one is a `TranscriptColor`, with a value for light and one for dark appearance, and one
+for each when Increase Contrast is on, so the text can be drawn off the main thread. `TranscriptColor(UIColor)` keeps
+all four values of a dynamic color, and `TranscriptColor(light:dark:highContrastLight:highContrastDark:)` sets them
+yourself. The view draws the text again when the appearance or the contrast changes. A color that is nil uses the
+system color shown here:
 
 ```swift
 var style = TranscriptStyle()
@@ -348,6 +503,34 @@ style.linkColor = TranscriptColor(UIColor.systemIndigo)              // links an
 style.codeBackgroundColor = TranscriptColor(UIColor.secondarySystemFill)  // code blocks, table headers
 style.accentColor = TranscriptColor(UIColor.tertiaryLabel)           // quote bars, rules, table lines
 ```
+
+To match an existing Markdown look, set how lists, task boxes, quotes, inline code and table headers look. The
+defaults keep the look of today. A color that is nil uses the text color (the quote text color in a block quote), or
+the value in the comment:
+
+```swift
+var style = TranscriptStyle()
+style.listNumberFormat = .period                     // "1." where the Markdown wrote "1)"; .asWritten by default
+style.listNumberWeight = 0.3                         // as TranscriptFont.weight; nil uses the body weight
+style.listNumberColor = TranscriptColor(UIColor.secondaryLabel)
+style.bullets = ["•", "–"]                           // by level; levels past the end use the last one
+style.bulletColors = [TranscriptColor(UIColor.secondaryLabel)]
+style.taskCheckedColor = TranscriptColor(UIColor.systemGreen)       // nil: blue
+style.taskCheckmarkColor = TranscriptColor(UIColor.white)          // nil: white
+style.taskUncheckedColor = TranscriptColor(UIColor.tertiaryLabel)  // nil: the text color at 45% opacity
+style.quoteBarColor = TranscriptColor(UIColor.systemOrange)        // nil: accentColor
+style.quoteBarWidth = 4                              // 3 by default; keep it less than quoteIndent
+style.quoteTextColor = TranscriptColor(UIColor.secondaryLabel)
+style.inlineCodeBackgroundColor = TranscriptColor(UIColor.tertiarySystemFill)  // nil: no fill
+style.inlineCodeCornerRadius = 4
+style.tableHeaderBackgroundColor = TranscriptColor(UIColor.systemGray5)       // nil: codeBackgroundColor
+style.tableHeaderWeight = 0.3                        // nil: the bold body font
+```
+
+A named body font has its own weight, so a weight does not change it. For such a font, a weight of 0.3 or more uses its
+bold face. Inline code in a table header uses its bold face at a header weight of 0.3 or more. Links, code colors and
+custom tags' colors win over the quote text color. A custom tag's highlight wins over the inline code fill. The inline
+code fill does not change where lines break.
 
 ### Reading the selection
 
@@ -368,12 +551,38 @@ selection ends, and its range is nil. The selection stays when the person opens 
 
 In UIKit, use `onSelectionChange`, `selectedRange` and `selectsAllWhenShown` on `TranscriptTextView`.
 
+### Waiting for the final content
+
+The view lays out plain text at once only when it shows no layout yet. A style or a renderer that the app sets before
+the document, on a view that has a width, makes the view lay out the empty text first. The text of the document then
+shows on a later turn of the main run loop, as in the example below. Layouts of later updates, images, formulas and
+code colors also come back on later turns. A snapshot or a test that does not wait for them can show no text, or the
+text without them.
+`contentSettled()` on `TranscriptTextView` returns when the view shows its final content. Then no layout, stream
+parse, image load, formula or code colors are pending, the last layout is on screen, and its tiles are drawn:
+
+```swift
+let view = TranscriptTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 600))
+view.mathRenderer = myMathRenderer
+view.document = document
+await view.contentSettled()
+let image = UIGraphicsImageRenderer(bounds: view.bounds).image { view.layer.render(in: $0.cgContext) }
+```
+
+While a stream that has not finished goes on, `contentSettled()` returns at the first moment when nothing is pending.
+A cancelled task returns at once. An image that comes back as nil counts as done. A formula that comes back as nil
+counts as done when it shows its LaTeX as written, about a second later. A load, a formula or a highlight that never
+ends holds back `contentSettled()`, so use a timeout or cancel the task. Give the view its size
+before the call: a view with no width lays out nothing and settles at once. Fades and tag animations that play are not
+waited for, so turn off `textFadeInDuration` and `animatesTags` to compare pixels.
+
 ## In this repository
 
 | Folder | Contents |
 | --- | --- |
 | `Sources/TranscriptKit` | The library |
 | `Tests/TranscriptKitTests` | Unit, layout and pixel tests: `swift test` |
+| `Tests/TranscriptKitViewTests` | Tests of `TranscriptTextView` and `TranscriptText` on iOS: `xcodebuild test -scheme TranscriptKit -destination 'platform=iOS Simulator,name=<an iPhone>' -only-testing:TranscriptKitViewTests` |
 | [`Examples/ChatSample`](Examples/ChatSample) | A chat app that mixes streamed TranscriptKit text with native SwiftUI views (cards, charts, photos), custom tags and text beside other views |
 | `Demo` | A small app for trying selection and streaming |
 | `Benchmark` | A benchmark app and script that compare TranscriptKit with other renderers on the simulator and on phones, with results and notes |

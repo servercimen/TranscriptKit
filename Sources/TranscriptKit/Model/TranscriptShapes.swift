@@ -166,15 +166,15 @@ public struct TranscriptPath: @unchecked Sendable {
         return stroke == nil ? bounds : bounds.insetBy(dx: -lineWidth / 2, dy: -lineWidth / 2)
     }
 
-    func draw(in context: CGContext, dark: Bool) {
+    func draw(in context: CGContext, dark: Bool, highContrast: Bool) {
         if let fill {
             context.addPath(path)
-            context.setFillColor(fill.cgColor(dark: dark))
+            context.setFillColor(fill.cgColor(dark: dark, highContrast: highContrast))
             context.fillPath()
         }
         if let stroke {
             context.addPath(path)
-            context.setStrokeColor(stroke.cgColor(dark: dark))
+            context.setStrokeColor(stroke.cgColor(dark: dark, highContrast: highContrast))
             context.setLineWidth(lineWidth)
             context.setLineCap(lineCap)
             context.setLineJoin(lineJoin)

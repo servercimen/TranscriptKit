@@ -69,9 +69,12 @@ final class FadeRenderer {
 
     /// - Parameter from: where the text left out of the tail and the tiles
     ///   starts; the oldest fade may start before it.
+    /// - Parameter scroll: how far blocks that scroll sideways are scrolled.
+    ///   Their pieces move with it, cut to the block's box.
     func render(_ layout: DocumentLayout, from: Int, fades: [Fade], colors: TailRenderer.Colors, scale: CGFloat,
-                playing: Set<TagKey>) -> FadeFrame? {
-        if scale != self.scale || self.colors.map({ $0.text != colors.text || $0.dark != colors.dark }) ?? true {
+                playing: Set<TagKey>, scroll: SideScroll = .none) -> FadeFrame? {
+        let colorsChanged = self.colors.map { $0.text != colors.text || $0.dark != colors.dark || $0.highContrast != colors.highContrast }
+        if scale != self.scale || colorsChanged ?? true {
             drawn.removeAll()
             self.colors = colors
             self.scale = scale
@@ -96,9 +99,10 @@ final class FadeRenderer {
                 guard lower < upper else { continue }
                 let range = lower..<upper
                 let margin = Self.margin(of: line)
-                let origin = CGPoint(x: line.frame.minX, y: entry.y + line.baseline)
-                var minX = line.frame.minX
-                var maxX = line.frame.maxX
+                let dx = scroll.offset(of: entry.layout)
+                let origin = CGPoint(x: line.frame.minX - dx, y: entry.y + line.baseline)
+                var minX = origin.x
+                var maxX = origin.x + line.frame.width
                 if !rightToLeft[index] {
                     let carets = [range.lowerBound, range.upperBound].map {
                         origin.x + CTLineGetOffsetForStringIndex(line.ctLine, $0 - entry.start - line.indexBase, nil)
@@ -106,11 +110,19 @@ final class FadeRenderer {
                     minX = carets.min()!
                     maxX = carets.max()!
                 }
-                let frame = CGRect(x: pixel(minX - margin.x, .down), y: pixel(entry.y + line.frame.minY - margin.y, .down),
+                minX -= margin.x
+                maxX += margin.x
+                if entry.layout.maximumScrollOffset > 0 {
+                    let box = entry.layout.scrollBox
+                    minX = max(minX, box.minX)
+                    maxX = min(maxX, box.maxX)
+                    guard minX < maxX else { continue }
+                }
+                let frame = CGRect(x: pixel(minX, .down), y: pixel(entry.y + line.frame.minY - margin.y, .down),
                                    width: 0, height: 0)
                 let placement = Placement(
                     range: range,
-                    frame: CGRect(x: frame.minX, y: frame.minY, width: pixel(maxX + margin.x, .up) - frame.minX,
+                    frame: CGRect(x: frame.minX, y: frame.minY, width: pixel(maxX, .up) - frame.minX,
                                   height: pixel(entry.y + line.frame.maxY + margin.y, .up) - frame.minY),
                     origin: origin,
                     style: Style(spans: entry.layout.block.spans.filter {
@@ -153,7 +165,7 @@ final class FadeRenderer {
         context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
         DocumentLayout.drawGlyphs(of: line.ctLine, at: origin,
                                   hidden: hidden.map { ($0.lowerBound - line.indexBase)..<($0.upperBound - line.indexBase) },
-                                  in: context, text: colors.text, dark: colors.dark)
+                                  in: context, text: colors.text, dark: colors.dark, highContrast: colors.highContrast)
         return context.makeImage()
     }
 }

@@ -105,10 +105,15 @@ public struct TranscriptDecoration: Equatable, Sendable {
     /// A small image before the text, such as an icon in a pill. It sits in
     /// the space where the tag starts, after `padding`, so shapes surround it.
     public var image: TranscriptTagImage?
+    /// Whether the tag's text stays on one line, as a pill should: a tag
+    /// that does not fit at the end of a line goes to the next line as a
+    /// whole. A tag wider than a line, or with a line break in it, still
+    /// breaks. Off by default.
+    public var keepsTogether: Bool
 
     public init(traits: InlineSpan.Traits = [], foreground: TranscriptColor? = nil, background: TranscriptColor? = nil,
                 link: String? = nil, padding: CGFloat = 0, shapes: [Shape] = [], animation: Animation? = nil,
-                image: TranscriptTagImage? = nil) {
+                image: TranscriptTagImage? = nil, keepsTogether: Bool = false) {
         self.traits = traits
         self.foreground = foreground
         self.background = background
@@ -117,15 +122,17 @@ public struct TranscriptDecoration: Equatable, Sendable {
         self.shapes = shapes
         self.animation = animation
         self.image = image
+        self.keepsTogether = keepsTogether
     }
 
     /// Whether layout has to do anything for it beyond styling the text.
-    var shapesText: Bool { padding > 0 || !shapes.isEmpty || animation != nil || image != nil }
+    var shapesText: Bool { padding > 0 || !shapes.isEmpty || animation != nil || image != nil || keepsTogether }
 }
 
 /// A small image before a custom tag's text; see `TranscriptDecoration.image`.
 /// It is centred on the text's cap height. A tag with an animation shows its
-/// image when it shows its shapes: once the animation has played.
+/// image when it shows its shapes, once the animation has played, unless
+/// `showsDuringAnimation` is set.
 public struct TranscriptTagImage: Equatable, @unchecked Sendable {
     public var image: CGImage
     /// How large it is drawn, in points.
@@ -135,12 +142,18 @@ public struct TranscriptTagImage: Equatable, @unchecked Sendable {
     /// A color to fill the image's shape with, for a template image such as
     /// a symbol, or nil to draw the image's own colors.
     public var tint: TranscriptColor?
+    /// For a tag with an animation: whether the image shows from the start,
+    /// while the tag is open, while it waits for its animation and while the
+    /// animation plays. The animation does not move it. Off by default: the
+    /// image shows with the tag's shapes.
+    public var showsDuringAnimation: Bool
 
-    public init(_ image: CGImage, size: CGSize, gap: CGFloat = 4, tint: TranscriptColor? = nil) {
+    public init(_ image: CGImage, size: CGSize, gap: CGFloat = 4, tint: TranscriptColor? = nil, showsDuringAnimation: Bool = false) {
         self.image = image
         self.size = size
         self.gap = max(gap, 0)
         self.tint = tint
+        self.showsDuringAnimation = showsDuringAnimation
     }
 
     /// The space the image takes before the text.
@@ -148,12 +161,14 @@ public struct TranscriptTagImage: Equatable, @unchecked Sendable {
 
     public static func == (a: TranscriptTagImage, b: TranscriptTagImage) -> Bool {
         a.image === b.image && a.size == b.size && a.gap == b.gap && a.tint == b.tint
+            && a.showsDuringAnimation == b.showsDuringAnimation
     }
 }
 
 /// A color for decorations, with a value for light and one for dark
-/// appearance. Text is drawn off the main thread too, where dynamic UIKit
-/// colors can't be resolved, so both values are kept.
+/// appearance, and one for each when Increase Contrast is on. Text is drawn
+/// off the main thread too, where dynamic UIKit colors can't be resolved, so
+/// all four values are kept.
 public struct TranscriptColor: Hashable, Sendable {
     struct Components: Hashable, Sendable {
         var red: CGFloat
@@ -164,41 +179,58 @@ public struct TranscriptColor: Hashable, Sendable {
 
     var light: Components
     var dark: Components
+    var highContrastLight: Components
+    var highContrastDark: Components
 
-    /// Extended sRGB components, the same in light and dark appearance.
+    /// Extended sRGB components, the same in every appearance.
     public init(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat = 1) {
-        light = Components(red: red, green: green, blue: blue, alpha: alpha)
-        dark = light
+        self.init(all: Components(red: red, green: green, blue: blue, alpha: alpha))
     }
 
-    public init(light: TranscriptColor, dark: TranscriptColor) {
+    /// The light value of `light` and the dark value of `dark`. With
+    /// Increase Contrast on, the light value of `highContrastLight` and the
+    /// dark value of `highContrastDark`; nil keeps the high-contrast values
+    /// of `light` and `dark`.
+    public init(light: TranscriptColor, dark: TranscriptColor,
+                highContrastLight: TranscriptColor? = nil, highContrastDark: TranscriptColor? = nil) {
         self.light = light.light
         self.dark = dark.dark
+        self.highContrastLight = highContrastLight?.light ?? light.highContrastLight
+        self.highContrastDark = highContrastDark?.dark ?? dark.highContrastDark
     }
 
-    /// The same color in light and dark appearance. Nil if it can't be
-    /// converted to sRGB (a pattern, say).
+    /// The same color in every appearance. Nil if it can't be converted to
+    /// sRGB (a pattern, say).
     public init?(_ color: CGColor) {
         guard let components = Self.components(of: color) else { return nil }
+        self.init(all: components)
+    }
+
+    private init(all components: Components) {
         light = components
         dark = components
+        highContrastLight = components
+        highContrastDark = components
     }
 
     #if canImport(UIKit) && !os(watchOS)
-    /// A UIKit color, resolved for light and for dark appearance: dynamic
-    /// colors such as `.systemBlue` keep both of their values.
+    /// A UIKit color, resolved for light and for dark appearance, with
+    /// Increase Contrast off and on: dynamic colors such as `.systemBlue`
+    /// keep all four of their values.
     public init(_ color: UIColor) {
-        func resolved(_ style: UIUserInterfaceStyle) -> Components {
-            let cgColor = color.resolvedColor(with: UITraitCollection(userInterfaceStyle: style)).cgColor
-            return Self.components(of: cgColor) ?? Components(red: 0, green: 0, blue: 0, alpha: 1)
+        func resolved(_ style: UIUserInterfaceStyle, _ contrast: UIAccessibilityContrast) -> Components {
+            let traits = UITraitCollection(userInterfaceStyle: style).replacing(UITraitAccessibilityContrast.self, value: contrast)
+            return Self.components(of: color.resolvedColor(with: traits).cgColor) ?? Components(red: 0, green: 0, blue: 0, alpha: 1)
         }
-        light = resolved(.light)
-        dark = resolved(.dark)
+        light = resolved(.light, .normal)
+        dark = resolved(.dark, .normal)
+        highContrastLight = resolved(.light, .high)
+        highContrastDark = resolved(.dark, .high)
     }
     #endif
 
-    func cgColor(dark isDark: Bool) -> CGColor {
-        let value = isDark ? dark : light
+    func cgColor(dark isDark: Bool, highContrast: Bool) -> CGColor {
+        let value = highContrast ? (isDark ? highContrastDark : highContrastLight) : (isDark ? dark : light)
         return CGColor(colorSpace: Self.space, components: [value.red, value.green, value.blue, value.alpha])
             ?? CGColor(red: value.red, green: value.green, blue: value.blue, alpha: value.alpha)
     }
@@ -230,7 +262,22 @@ extension InlineSpan {
         let shapesText: Bool
         let isAnimated: Bool
 
-        init(name: String, attributes: [String: String], decoration: TranscriptDecoration, isOpen: Bool = false) {
+        /// A tag for a span that the app makes itself, for example in a
+        /// document built with `TranscriptDocument(blocks:)`. Make the span
+        /// with `InlineSpan(range:tagged:)`, so that it also gets the
+        /// decoration's traits and link.
+        ///
+        /// - Parameter name: lowercased, as the parser does.
+        public convenience init(name: String, attributes: [String: String] = [:], decoration: TranscriptDecoration) {
+            self.init(name: name.lowercased(), attributes: attributes, decoration: decoration, isOpen: false)
+        }
+
+        /// The tag `tag` defines, with the decoration it gives `attributes`.
+        public convenience init(_ tag: TranscriptTag, attributes: [String: String] = [:]) {
+            self.init(name: tag.name, attributes: attributes, decoration: tag.decoration(for: attributes), isOpen: false)
+        }
+
+        init(name: String, attributes: [String: String], decoration: TranscriptDecoration, isOpen: Bool) {
             self.name = name
             self.attributes = attributes
             self.decoration = decoration

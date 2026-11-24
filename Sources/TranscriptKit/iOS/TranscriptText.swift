@@ -21,9 +21,12 @@ public struct TranscriptText: UIViewRepresentable {
     private var loader: (@Sendable (TranscriptImage) async -> CGImage?)?
     private var highlighter: TranscriptCodeHighlighter?
     private var mathRenderer: TranscriptMathRenderer?
+    private var mathCache: TranscriptMathCache = .shared
+    private var mathAccessibilityLabel: ((TranscriptMath) -> String)?
     private var animatesTags = true
     private var textFadeInDuration: TimeInterval?
     private var animationTiming: TranscriptAnimationTiming = .immediately
+    private var animatesFirstText = false
     private var isSelectable = true
     private var playTrigger: AnyHashable?
     private var selectionChange: ((Range<Int>?) -> Void)?
@@ -78,11 +81,24 @@ public struct TranscriptText: UIViewRepresentable {
         return copy
     }
 
-    /// Draws LaTeX formulas; see `TranscriptTextView.mathRenderer`. Read once,
+    /// Draws LaTeX formulas; see `TranscriptTextView.mathRenderer`. The
+    /// drawn formulas are kept in `cache`, which is `TranscriptMathCache.shared`
+    /// by default: views that share a cache show the formulas that any of
+    /// their renderers drew. See `TranscriptTextView.mathCache`. Read once,
     /// when the view is created.
-    public func mathRenderer(_ renderer: @escaping TranscriptMathRenderer) -> TranscriptText {
+    public func mathRenderer(_ renderer: @escaping TranscriptMathRenderer, cache: TranscriptMathCache = .shared) -> TranscriptText {
         var copy = self
         copy.mathRenderer = renderer
+        copy.mathCache = cache
+        return copy
+    }
+
+    /// The words that VoiceOver says for a formula; see
+    /// `TranscriptTextView.mathAccessibilityLabel`. Read once, when the view
+    /// is created.
+    public func mathAccessibilityLabel(_ label: @escaping (TranscriptMath) -> String) -> TranscriptText {
+        var copy = self
+        copy.mathAccessibilityLabel = label
         return copy
     }
 
@@ -98,6 +114,15 @@ public struct TranscriptText: UIViewRepresentable {
     public func animatesTags(_ animates: Bool) -> TranscriptText {
         var copy = self
         copy.animatesTags = animates
+        return copy
+    }
+
+    /// Whether the tags with an animation that the first text already holds
+    /// play it, each one time; see `TranscriptTextView.animatesTagsInFirstText`.
+    /// Off by default.
+    public func animatesTagsInFirstText(_ animates: Bool = true) -> TranscriptText {
+        var copy = self
+        copy.animatesFirstText = animates
         return copy
     }
 
@@ -165,7 +190,11 @@ public struct TranscriptText: UIViewRepresentable {
         view.setContentHuggingPriority(.required, for: .vertical)
         if let loader { view.imageLoader = loader }
         if let highlighter { view.codeHighlighter = highlighter }
-        if let mathRenderer { view.mathRenderer = mathRenderer }
+        if let mathRenderer {
+            view.mathCache = mathCache
+            view.mathRenderer = mathRenderer
+        }
+        if let mathAccessibilityLabel { view.mathAccessibilityLabel = mathAccessibilityLabel }
         return view
     }
 
@@ -182,6 +211,7 @@ public struct TranscriptText: UIViewRepresentable {
         }
         view.style = style
         view.animatesTags = animatesTags
+        view.animatesTagsInFirstText = animatesFirstText
         view.textFadeInDuration = textFadeInDuration
         view.tagAnimationTiming = animationTiming
         view.isSelectable = isSelectable

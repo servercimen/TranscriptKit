@@ -773,7 +773,7 @@ enum InlineParser {
                 state.position = end
             case .customTag(let definition, let attributes, let end):
                 let decoration = definition.decoration(for: attributes)
-                let custom = InlineSpan.CustomTag(name: definition.name, attributes: attributes, decoration: decoration)
+                let custom = InlineSpan.CustomTag(name: definition.name, attributes: attributes, decoration: decoration, isOpen: false)
                 let piece = state.appendSealedPiece(EmptyCollection<UInt16>())
                 state.tags.append(Tag(name: definition.name, traits: decoration.traits, piece: piece, custom: custom))
                 state.position = end

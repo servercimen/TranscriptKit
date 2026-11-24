@@ -230,7 +230,21 @@ extension InlineSpan {
         let shapesText: Bool
         let isAnimated: Bool
 
-        init(name: String, attributes: [String: String], decoration: TranscriptDecoration, isOpen: Bool = false) {
+        /// A tag for a span that the app makes itself, for example in a
+        /// document built with `TranscriptDocument(blocks:)`. The span gets
+        /// the decoration's traits and link (see `InlineSpan.init`).
+        ///
+        /// - Parameter name: lowercased, as the parser does.
+        public convenience init(name: String, attributes: [String: String] = [:], decoration: TranscriptDecoration) {
+            self.init(name: name.lowercased(), attributes: attributes, decoration: decoration, isOpen: false)
+        }
+
+        /// The tag `tag` defines, with the decoration it gives `attributes`.
+        public convenience init(_ tag: TranscriptTag, attributes: [String: String] = [:]) {
+            self.init(name: tag.name, attributes: attributes, decoration: tag.decoration(for: attributes), isOpen: false)
+        }
+
+        init(name: String, attributes: [String: String], decoration: TranscriptDecoration, isOpen: Bool) {
             self.name = name
             self.attributes = attributes
             self.decoration = decoration

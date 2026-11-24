@@ -50,11 +50,13 @@ public struct InlineSpan: Equatable, Sendable {
         set { extras = Extras.make(image: image, reference: reference, customTag: newValue, math: math) }
     }
 
+    /// - Parameter customTag: its decoration's traits are added to
+    ///   `traits`, and its link is used when `link` is nil, as for a parsed tag.
     public init(range: Range<Int>, traits: Traits = [], link: String? = nil, image: TranscriptImage? = nil,
                 reference: String? = nil, customTag: CustomTag? = nil, math: TranscriptMath? = nil) {
         self.range = range
-        self.traits = traits
-        self.link = link
+        self.traits = traits.union(customTag?.decoration.traits ?? [])
+        self.link = link ?? customTag?.decoration.link
         self.extras = Extras.make(image: image, reference: reference, customTag: customTag, math: math)
     }
 

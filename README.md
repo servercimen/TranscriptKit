@@ -135,6 +135,16 @@ paths for each line the tag's text is on and may draw a little outside the text,
 past the view's edges. The chat sample has two such shapes, `Zigzag` and `SoftUnderline`, in
 [`SampleTags.swift`](Examples/ChatSample/ChatSample/SampleTags.swift).
 
+An app can also build a tagged document without the parser. Give the span an `InlineSpan.CustomTag`, made from a
+tag definition or from a name and a decoration. The span gets the decoration's traits and link:
+
+```swift
+let mention = InlineSpan.CustomTag(tags[0], attributes: ["id": "42"])
+let document = TranscriptDocument(blocks: [
+    TranscriptBlock(text: "Ask @ana now.", spans: [InlineSpan(range: 4..<8, customTag: mention)]),
+])
+```
+
 ### Animated tags
 
 A tag can also play an animation when its closing tag arrives in streamed text. Implement

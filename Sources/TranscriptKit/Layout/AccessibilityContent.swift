@@ -16,6 +16,9 @@ struct AccessibilityItem: Equatable {
             let column: Int
             let frame: CGRect
             let label: String
+            /// For the first cell of a table that starts a list item: the
+            /// item's position, as for a block.
+            let value: String?
             let links: [Link]
         }
 
@@ -25,12 +28,18 @@ struct AccessibilityItem: Equatable {
         let cells: [Cell]
     }
 
-    /// The block's id, made unique in the document: an element keeps it
-    /// from one layout to the next, so VoiceOver focus stays on the block
-    /// while text streams in.
-    let key: String
+    /// A block's id, and how many blocks before it have the same id.
+    struct Key: Hashable {
+        let id: String
+        let occurrence: Int
+    }
+
+    /// Unique in the document: an element keeps it from one layout to the
+    /// next, so VoiceOver focus stays on the block while text streams in.
+    let key: Key
     let frame: CGRect
-    /// What VoiceOver says: the list marker, then the text. Empty for a table.
+    /// What VoiceOver says: the list marker, then the text. Empty for a
+    /// table: its first cell has the list marker and the position.
     let label: String
     /// For the first block of a list item: its position in its list and the
     /// number of items in the list, such as "Item 2 of 3".
@@ -55,16 +64,18 @@ extension DocumentLayout {
         let definitions = document.linkDefinitions
         let positions = AccessibilityText.listPositions(in: document, upTo: entryCount)
         var uses: [String: Int] = [:]
-        func key(for block: TranscriptBlock) -> String {
+        func key(for block: TranscriptBlock) -> AccessibilityItem.Key {
             let use = uses[block.id, default: 0]
             uses[block.id] = use + 1
-            return use == 0 ? block.id : "\(block.id)#\(use)"
+            return AccessibilityItem.Key(id: block.id, occurrence: use)
         }
         for index in 0..<entryCount {
             let entry = entry(at: index)
             let block = entry.layout.block
             if let model = block.kind.table, let grid = entry.layout.table {
-                let table = Self.accessibilityTable(model, grid: grid, of: block, at: entry.y, math: math, definitions: definitions)
+                let table = Self.accessibilityTable(model, grid: grid, of: block, at: entry.y,
+                                                    position: positions[index].map(AccessibilityText.position), math: math,
+                                                    definitions: definitions)
                 guard !table.cells.isEmpty else { continue }
                 items.append(AccessibilityItem(key: key(for: block), frame: entry.frame, label: "", value: nil, isHeading: false,
                                                links: [], table: table))
@@ -106,7 +117,7 @@ extension DocumentLayout {
     }
 
     private static func accessibilityTable(_ model: TranscriptTable, grid: BlockLayout.Table, of block: TranscriptBlock, at y: CGFloat,
-                                           math: (TranscriptMath) -> String,
+                                           position: String?, math: (TranscriptMath) -> String,
                                            definitions: [String: String]) -> AccessibilityItem.Table {
         var cells: [AccessibilityItem.Table.Cell] = []
         let (rowCount, columnCount) = accessibilityGridSize(model, grid: grid)
@@ -114,8 +125,11 @@ extension DocumentLayout {
             for (column, range) in model.rows[row].prefix(columnCount).enumerated() {
                 let frame = CGRect(x: grid.columnX[column], y: y + grid.rowY[row], width: grid.columnX[column + 1] - grid.columnX[column],
                                    height: grid.rowY[row + 1] - grid.rowY[row])
+                let text = AccessibilityText.readable(block, in: range, math: math)
+                let isFirst = cells.isEmpty
                 cells.append(.init(row: row, column: column, frame: frame,
-                                   label: AccessibilityText.readable(block, in: range, math: math),
+                                   label: isFirst ? AccessibilityText.spoken(text, of: block) : text,
+                                   value: isFirst ? position : nil,
                                    links: AccessibilityText.links(of: block, in: range, math: math, definitions: definitions)))
             }
         }

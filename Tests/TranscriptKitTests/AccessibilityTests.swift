@@ -82,10 +82,11 @@ private func limited(_ limit: Int?) -> TranscriptStyle {
 }
 
 @Test func blocksWithTheSameIdGetDifferentKeys() {
-    let document = TranscriptDocument(blocks: [TranscriptBlock(id: "same", text: "One"), TranscriptBlock(id: "same", text: "Two")])
+    let document = TranscriptDocument(blocks: [TranscriptBlock(id: "same", text: "One"), TranscriptBlock(id: "same", text: "Two"),
+                                               TranscriptBlock(id: "same#1", text: "Three")])
     let keys = DocumentLayout(document: document, width: 300).accessibilityItems().map(\.key)
-    #expect(keys.count == 2)
-    #expect(Set(keys).count == 2)
+    #expect(keys.count == 3)
+    #expect(Set(keys).count == 3)
 }
 
 @Test func aBlockWithoutTextYetChangesTheShapeWhenItGetsSome() {
@@ -206,4 +207,12 @@ private func isNeeded(from old: DocumentLayout, to new: DocumentLayout, isAppend
     #expect(before.accessibilityItems().count == 1)
     #expect(after.accessibilityItems().count == 2)
     #expect(isNeeded(from: before, to: after, isAppend: true))
+}
+
+@Test func aTableThatStartsAListItemTellsTheMarkerAndThePosition() throws {
+    let list = items("1. First\n2. | A | B |\n   | - | - |\n   | 1 | 2 |\n3. Third")
+    #expect(list.count == 3)
+    let table = try #require(list[1].table)
+    #expect(table.cells.map(\.label) == ["2. A", "B", "1", "2"])
+    #expect(table.cells.map(\.value) == ["Item 2 of 3", nil, nil, nil])
 }

@@ -13,7 +13,7 @@ extension TranscriptTextView {
         let cache = accessibilityCache ?? AccessibilityCache()
         accessibilityCache = cache
         if cache.layout === layout { return cache.elements }
-        var byKey: [String: UIAccessibilityElement] = [:]
+        var byKey: [AccessibilityItem.Key: UIAccessibilityElement] = [:]
         var elements: [UIAccessibilityElement] = []
         let items = layout.accessibilityItems(math: mathAccessibilityLabel ?? \.tex)
         for item in items {
@@ -132,7 +132,7 @@ class TextAccessibilityElement: UIAccessibilityElement {
     }
 
     /// This element, once the elements are up to date.
-    private var current: TextAccessibilityElement {
+    fileprivate var current: TextAccessibilityElement {
         view?.updateAccessibilityElements()
         return self
     }
@@ -226,13 +226,19 @@ final class CellAccessibilityElement: TextAccessibilityElement, UIAccessibilityC
     func update(with cell: AccessibilityItem.Table.Cell, inTableAt origin: CGPoint, in view: TranscriptTextView) {
         row = cell.row
         column = cell.column
-        update(label: cell.label, value: nil, isHeading: false, frame: cell.frame,
+        update(label: cell.label, value: cell.value, isHeading: false, frame: cell.frame,
                frameInContainer: cell.frame.offsetBy(dx: -origin.x, dy: -origin.y), links: cell.links, in: view)
     }
 
-    nonisolated func accessibilityRowRange() -> NSRange { onMainThread { NSRange(location: row, length: 1) } }
+    nonisolated func accessibilityRowRange() -> NSRange { onMainThread { NSRange(location: cell.row, length: 1) } }
 
-    nonisolated func accessibilityColumnRange() -> NSRange { onMainThread { NSRange(location: column, length: 1) } }
+    nonisolated func accessibilityColumnRange() -> NSRange { onMainThread { NSRange(location: cell.column, length: 1) } }
+
+    /// This cell, once the elements are up to date.
+    private var cell: CellAccessibilityElement {
+        _ = current
+        return self
+    }
 }
 
 final class AccessibilityCache {
@@ -242,7 +248,7 @@ final class AccessibilityCache {
     var shape: AccessibilityShape?
     /// The items that the elements were last brought up to date with.
     var items: [AccessibilityItem] = []
-    var byKey: [String: UIAccessibilityElement] = [:]
+    var byKey: [AccessibilityItem.Key: UIAccessibilityElement] = [:]
     var elements: [UIAccessibilityElement] = []
 }
 #endif

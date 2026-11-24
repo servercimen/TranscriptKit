@@ -179,3 +179,23 @@ private func offset(of string: String, in text: NSAttributedString) -> Int {
     let rtf = String(decoding: try #require(item[UTType.rtf.identifier] as? Data), as: UTF8.self)
     #expect(!rtf.contains("fcharset0 ."))
 }
+
+@Test func richCopyKeepsBoldAndItalicCodeInTheMonospacedSystemFont() throws {
+    var style = TranscriptStyle()
+    style.codeFont = TranscriptFont(size: 15, monospaced: true)
+    let document = MarkdownStreamParser.document(from: "Body **`bold code`** *`italic code`* `plain code`")
+    let text = TranscriptDocument.withPublicFonts(document.copiedText(in: 0..<document.utf16Count, style: style))
+    let bold = traits(text, at: offset(of: "bold code", in: text))
+    let italic = traits(text, at: offset(of: "italic code", in: text))
+    let plain = traits(text, at: offset(of: "plain code", in: text))
+    #expect(bold.isSuperset(of: [.traitMonoSpace, .traitBold]))
+    #expect(!bold.contains(.traitItalic))
+    #expect(italic.isSuperset(of: [.traitMonoSpace, .traitItalic]))
+    #expect(!italic.contains(.traitBold))
+    #expect(plain.contains(.traitMonoSpace))
+    #expect(plain.isDisjoint(with: [.traitBold, .traitItalic]))
+    for at in ["bold code", "italic code", "plain code"] {
+        let font = try #require(font(text, at: offset(of: at, in: text)))
+        #expect(!(CTFontCopyPostScriptName(font) as String).hasPrefix("."))
+    }
+}

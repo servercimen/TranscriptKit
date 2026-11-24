@@ -43,8 +43,8 @@ extension TranscriptDocument {
     private static func publicFont(like font: CTFont) -> CTFont {
         let traits = CTFontGetSymbolicTraits(font)
         let size = CTFontGetSize(font)
-        if traits.contains(.traitMonoSpace) { return CTFontCreateWithName("Menlo-Regular" as CFString, size, nil) }
-        let base = CTFontCreateWithName("HelveticaNeue" as CFString, size, nil)
+        let name = traits.contains(.traitMonoSpace) ? "Menlo-Regular" : "HelveticaNeue"
+        let base = CTFontCreateWithName(name as CFString, size, nil)
         let wanted = traits.intersection([.traitBold, .traitItalic])
         guard !wanted.isEmpty else { return base }
         return CTFontCreateCopyWithSymbolicTraits(base, 0, nil, wanted, wanted) ?? base

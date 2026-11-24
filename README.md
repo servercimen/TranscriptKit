@@ -102,8 +102,8 @@ let document = MarkdownStreamParser.document(from: markdown, newlinesAsLineBreak
 ```
 
 The option applies to paragraphs and headings, also inside lists and quotes. A blank line still starts a new
-paragraph. A line that ends in a backslash or two spaces also gives one line break, not two. Selected and copied
-text has a newline at each such line break.
+paragraph. A line that ends in a backslash, two spaces or `<br>` also gives one line break, not two. A newline in a
+code span is still a space, as in CommonMark. Selected and copied text has a newline at each such line break.
 
 ### Custom tags
 

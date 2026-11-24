@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreText
 import Foundation
 import Testing
 @testable import TranscriptKit
@@ -370,4 +371,140 @@ private func drawn(_ layout: DocumentLayout, scroll: SideScroll, scale: CGFloat 
     // It stops after about 500 points: the speed divided by the rate's logarithm.
     #expect(abs(SideScroll.decelerate(velocity: 1000, for: 10).distance - 1000 / (-1000 * log(0.998))) < 1)
     #expect(SideScroll.decelerate(velocity: -1000, for: 0.1).distance < 0)
+}
+
+// MARK: Long lines
+
+@Test func aVeryLongLineOfCodeStaysOneLine() {
+    let line = String(repeating: "{\"key\": [1, 2, 3]}, ", count: 1_500)
+    #expect(line.utf16.count == 30_000)
+    let document = TranscriptDocument(blocks: [TranscriptBlock(id: "c", kind: .code(), text: line + "\nend")])
+    let block = DocumentLayout(document: document, width: 300, style: noWrap()).entry(at: 0).layout
+    #expect(block.lines.map(\.range) == [0..<30_001, 30_001..<30_004])
+    #expect(block.maximumScrollOffset > 100_000)
+}
+
+@Test func aLineEndsAfterItsLineBreak() {
+    let text = "ab\ncd\r\nef\u{2028}g" as NSString
+    #expect(BlockLayout.lengthToLineBreak(in: text, from: 0) == 3)
+    #expect(BlockLayout.lengthToLineBreak(in: text, from: 3) == 4)
+    #expect(BlockLayout.lengthToLineBreak(in: text, from: 7) == 3)
+    #expect(BlockLayout.lengthToLineBreak(in: text, from: 10) == 1)
+}
+
+@Test func onlyTheGlyphsNearTheBoxAreDrawnAndTheyLookTheSame() {
+    let line = String(repeating: "abcdefghij ", count: 400)
+    let document = TranscriptDocument(blocks: [TranscriptBlock(id: "c", kind: .code(), text: line)])
+    let layout = DocumentLayout(document: document, width: 300, style: noWrap())
+    let entry = layout.entry(at: 0)
+    let ctLine = entry.layout.lines[0].ctLine
+    let origin = CGPoint(x: entry.layout.lines[0].frame.minX - 1_000, y: entry.y + entry.layout.lines[0].baseline)
+    func pixels(visible: ClosedRange<CGFloat>?) -> [UInt8] {
+        let context = CGContext(data: nil, width: 600, height: Int(layout.height * 2), bitsPerComponent: 8, bytesPerRow: 2_400,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.translateBy(x: 0, y: layout.height * 2)
+        context.scaleBy(x: 2, y: -2)
+        context.textMatrix = CGAffineTransform(scaleX: 1, y: -1)
+        context.clip(to: CGRect(x: 0, y: 0, width: 300, height: layout.height))
+        DocumentLayout.drawGlyphs(of: ctLine, at: origin, hidden: [], visible: visible, in: context,
+                                  text: CGColor(gray: 0, alpha: 1), dark: false)
+        return Array(UnsafeRawBufferPointer(start: context.data!, count: 600 * Int(layout.height * 2) * 4))
+    }
+    let all = pixels(visible: nil)
+    #expect(all.contains { $0 != 0 })
+    #expect(pixels(visible: -40...340) == all)
+    let run = (CTLineGetGlyphRuns(ctLine) as! [CTRun])[0]
+    let shown = DocumentLayout.glyphRange(of: run, startingIn: (1_000 - 40)...(1_000 + 340))
+    #expect(shown.map { $0.count < 100 } == true)
+    #expect(DocumentLayout.glyphRange(of: run, startingIn: -500 ... -100) == nil)
+}
+
+@Test func aTagShapeInABlockThatScrollsIsDrawnAtItsScrolledPlace() throws {
+    let red = TranscriptColor(red: 1, green: 0, blue: 0)
+    let tag = InlineSpan.CustomTag(name: "pill", attributes: [:], decoration: TranscriptDecoration(padding: 6, shapes: [.pill(fill: red)]))
+    let text = String(repeating: "x", count: 60) + " key"
+    let block = TranscriptBlock(id: "c", kind: .code(), text: text, spans: [InlineSpan(range: 61..<64, customTag: tag)])
+    let layout = DocumentLayout(document: TranscriptDocument(blocks: [block]), width: 300, style: noWrap())
+    let entry = layout.entry(at: 0)
+    let line = entry.layout.lines[0]
+    let pill = try #require(line.decorations?.behind.first).path.boundingBoxOfPath
+    var scroll = SideScroll()
+    scroll["c"] = entry.layout.maximumScrollOffset
+    let x = line.frame.minX + pill.minX + 2 - entry.layout.maximumScrollOffset
+    #expect(x > 150 && x < 300)
+    let (bytes, width) = drawn(layout, scroll: scroll)
+    let pixel = (Int((entry.y + line.baseline + pill.midY) * 2) * width + Int(x * 2)) * 4
+    #expect(bytes[pixel] > 200 && bytes[pixel + 1] < 60 && bytes[pixel + 2] < 60)
+}
+
+// MARK: What a change keeps
+
+@Test func blocksKeepTheirOffsetsWhileTheyStayOfTheSameKind() {
+    let old = DocumentLayout(document: codeDocument(), width: 300, style: noWrap())
+    var scroll = SideScroll()
+    scroll["c"] = 30
+    scroll["q"] = 10
+    // The paragraph after the code becomes a heading: only it loses its offset.
+    var blocks = old.document.blocks
+    blocks[2] = TranscriptBlock(id: "q", kind: .heading(level: 1), text: "Some text after the code.")
+    let changed = DocumentLayout(document: TranscriptDocument(blocks: blocks), width: 300, style: noWrap())
+    let kept = scroll.kept(from: old, in: changed)
+    #expect(kept["c"] == 30)
+    #expect(kept["q"] == 0)
+    // A block that is gone loses its offset.
+    let shorter = DocumentLayout(document: TranscriptDocument(blocks: Array(blocks.prefix(1))), width: 300, style: noWrap())
+    #expect(scroll.kept(from: old, in: shorter).isEmpty)
+    // Another document keeps none, even with a block of the same id.
+    var other = old.document.blocks
+    other[0] = TranscriptBlock(id: "p2", text: "Another text.")
+    let replaced = DocumentLayout(document: TranscriptDocument(blocks: other), width: 300, style: noWrap())
+    #expect(scroll.kept(from: old, in: replaced).isEmpty)
+    #expect(SideScroll.keeps("c", from: old, in: changed))
+    #expect(!SideScroll.keeps("q", from: old, in: changed))
+}
+
+@Test func aCodeBlockKeepsItsOffsetWhenTheTextAfterItBecomesAHeading() {
+    var parser = MarkdownStreamParser(idPrefix: "s")
+    let style = noWrap()
+    parser.append("Intro\n\n```\n" + longLine + "\n```\n\nx\n")
+    let old = DocumentLayout(document: parser.document, width: 300, style: style)
+    let code = (0..<old.entryCount).first { old.entry(at: $0).layout.block.kind.isCode }!
+    let id = old.entry(at: code).layout.block.id
+    var scroll = SideScroll()
+    scroll[id] = 25
+    parser.append("===\n")
+    let new = DocumentLayout(document: parser.document, width: 300, style: style)
+    #expect(!new.document.extends(old.document))
+    #expect(scroll.kept(from: old, in: new)[id] == 25)
+}
+
+@Test func onlyTheBlocksBelowAPointCountWhenTwoScrollsAreCompared() {
+    let (layout, _, _) = scrolledCode()
+    let code = layout.entry(at: 1)
+    var scroll = SideScroll()
+    scroll["c"] = 30
+    #expect(layout.scrollsAlike(scroll, .none, below: code.frame.maxY + 40))
+    #expect(!layout.scrollsAlike(scroll, .none, below: code.frame.midY))
+    #expect(!layout.scrollsAlike(scroll, .none, below: 0))
+    #expect(layout.scrollsAlike(scroll, scroll, below: 0))
+    #expect(layout.scrollsAlike(scroll, .none, fromOffset: layout.entry(at: 2).start))
+    #expect(!layout.scrollsAlike(scroll, .none, fromOffset: code.start + 3))
+}
+
+@Test func aTailDrawnAgainAfterTheBlockScrolledMatchesAFreshOne() {
+    let document = TranscriptDocument(blocks: [TranscriptBlock(id: "c", kind: .code(), text: "let a = 1\n" + longLine)])
+    let layout = DocumentLayout(document: document, width: 300, style: noWrap())
+    let colors = TailRenderer.Colors(text: CGColor(gray: 0, alpha: 1), codeBackground: CGColor(gray: 0.9, alpha: 1),
+                                     accent: CGColor(gray: 0.6, alpha: 1))
+    var scroll = SideScroll()
+    scroll["c"] = 40
+    let renderer = TailRenderer(colors: colors, scale: 2)
+    _ = renderer.render(layout, changedTop: nil)
+    let top = renderer.top
+    // Nothing changed but the offset: the strip stays, and the block is drawn again.
+    _ = renderer.render(layout, changedTop: layout.height, scroll: scroll)
+    #expect(renderer.top == top)
+    let fresh = TailRenderer(colors: colors, scale: 2)
+    _ = fresh.render(layout, changedTop: nil, scroll: scroll)
+    #expect(renderer.currentPixels() == fresh.currentPixels())
 }

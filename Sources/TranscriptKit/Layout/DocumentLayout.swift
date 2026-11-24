@@ -201,6 +201,26 @@ public final class DocumentLayout: @unchecked Sendable {
         return point.x >= box.minX && point.x < box.maxX ? index : nil
     }
 
+    /// Whether `a` and `b` scroll alike every block that reaches below `y`,
+    /// shapes' overhang included: drawn with either, that part looks the same.
+    func scrollsAlike(_ a: SideScroll, _ b: SideScroll, below y: CGFloat) -> Bool {
+        guard a != b else { return true }
+        return scrollsAlike(a, b, from: lastEntryIndex(where: { $0.y }, isAtMost: y - TranscriptPath.maximumOverhang) ?? 0)
+    }
+
+    /// Whether `a` and `b` scroll alike every block with text at or after `offset`.
+    func scrollsAlike(_ a: SideScroll, _ b: SideScroll, fromOffset offset: Int) -> Bool {
+        guard a != b else { return true }
+        return scrollsAlike(a, b, from: entryIndex(forOffset: offset) ?? 0)
+    }
+
+    private func scrollsAlike(_ a: SideScroll, _ b: SideScroll, from first: Int) -> Bool {
+        (first..<entryCount).allSatisfy {
+            let layout = entry(at: $0).layout
+            return a.offset(of: layout) == b.offset(of: layout)
+        }
+    }
+
     /// The lines with text at or after `offset`, in order, with their blocks.
     func lines(from offset: Int) -> [(entry: Entry, line: BlockLayout.Line)] {
         guard let first = entryIndex(forOffset: offset) else { return [] }
@@ -454,9 +474,9 @@ public final class DocumentLayout: @unchecked Sendable {
         // Strikethrough and underline are drawn here too; images separately.
         // The glyphs for the characters in `hidden` (the line's string
         // indexes) are left out.
-        func drawLine(_ line: CTLine, at origin: CGPoint, hidden: [Range<Int>] = []) {
+        func drawLine(_ line: CTLine, at origin: CGPoint, hidden: [Range<Int>] = [], visible: ClosedRange<CGFloat>? = nil) {
             drawHighlights(CTLineGetGlyphRuns(line) as! [CTRun], at: origin)
-            Self.drawGlyphs(of: line, at: origin, hidden: hidden, in: context, text: text, dark: dark)
+            Self.drawGlyphs(of: line, at: origin, hidden: hidden, visible: visible, in: context, text: text, dark: dark)
         }
 
         func fill(_ rect: CGRect, radius: CGFloat, color: CGColor) {
@@ -468,11 +488,11 @@ public final class DocumentLayout: @unchecked Sendable {
         }
 
         /// A line's tag images, clipped like its shapes.
-        func drawTagImages(of line: BlockLayout.Line, in entry: Entry) {
+        func drawTagImages(of line: BlockLayout.Line, in entry: Entry, shift: CGFloat) {
             guard let decorations = line.decorations, !decorations.images.isEmpty else { return }
             context.saveGState()
             let side = TranscriptPath.maximumSideOverhang
-            context.clip(to: CGRect(x: -side, y: entry.y + line.frame.minY - decorations.inkAbove, width: entry.layout.width + 2 * side,
+            context.clip(to: CGRect(x: shift - side, y: entry.y + line.frame.minY - decorations.inkAbove, width: entry.layout.width + 2 * side,
                                     height: line.frame.height + decorations.inkAbove + decorations.inkBelow))
             context.translateBy(x: line.frame.minX, y: entry.y + line.baseline)
             for item in decorations.images {
@@ -496,15 +516,16 @@ public final class DocumentLayout: @unchecked Sendable {
         }
 
         /// A line's tag shapes on one layer, clipped to what the line may
-        /// draw, as invalidation knows it.
-        func drawShapes(of line: BlockLayout.Line, in entry: Entry, over: Bool) {
+        /// draw, as invalidation knows it. `shift` is how far the context
+        /// was moved left for a block that scrolls sideways.
+        func drawShapes(of line: BlockLayout.Line, in entry: Entry, over: Bool, shift: CGFloat) {
             guard let decorations = line.decorations else { return }
             let paths = over ? decorations.over : decorations.behind
             guard !paths.isEmpty else { return }
             let owners = over ? decorations.overTags : decorations.behindTags
             context.saveGState()
             let side = TranscriptPath.maximumSideOverhang
-            context.clip(to: CGRect(x: -side, y: entry.y + line.frame.minY - decorations.inkAbove, width: entry.layout.width + 2 * side,
+            context.clip(to: CGRect(x: shift - side, y: entry.y + line.frame.minY - decorations.inkAbove, width: entry.layout.width + 2 * side,
                                     height: line.frame.height + decorations.inkAbove + decorations.inkBelow))
             context.translateBy(x: line.frame.minX, y: entry.y + line.baseline)
             for (index, path) in paths.enumerated() {
@@ -602,8 +623,8 @@ public final class DocumentLayout: @unchecked Sendable {
             // the line above; then the text; then shapes over it.
             inScrolledBox {
                 for index in visible {
-                    drawShapes(of: lines[index], in: entry, over: false)
-                    drawTagImages(of: lines[index], in: entry)
+                    drawShapes(of: lines[index], in: entry, over: false, shift: dx)
+                    drawTagImages(of: lines[index], in: entry, shift: dx)
                 }
             }
 
@@ -623,8 +644,13 @@ public final class DocumentLayout: @unchecked Sendable {
                     if let from = hiding.fadingFrom, entry.start + line.range.upperBound > from {
                         hidden.append(max(from - entry.start, line.range.lowerBound)..<line.range.upperBound)
                     }
+                    // A line much wider than the box draws only the glyphs near it.
+                    let reach = 2 * max(line.frame.height, 8)
+                    let visible = scrolls && line.frame.width > box.width
+                        ? (box.minX + dx - reach)...(box.maxX + dx + reach) : nil
                     drawLine(line.ctLine, at: CGPoint(x: line.frame.minX, y: entry.y + line.baseline),
-                             hidden: hidden.map { ($0.lowerBound - line.indexBase)..<($0.upperBound - line.indexBase) })
+                             hidden: hidden.map { ($0.lowerBound - line.indexBase)..<($0.upperBound - line.indexBase) },
+                             visible: visible)
                 }
 
                 for attachment in layout.attachments {
@@ -633,7 +659,7 @@ public final class DocumentLayout: @unchecked Sendable {
                     drawImage(attachment.attachment, in: rect, context: context, text: text, background: codeBackground)
                 }
 
-                for index in visible { drawShapes(of: lines[index], in: entry, over: true) }
+                for index in visible { drawShapes(of: lines[index], in: entry, over: true, shift: dx) }
             }
         }
     }
@@ -648,11 +674,24 @@ public final class DocumentLayout: @unchecked Sendable {
     /// Draws a line's glyphs, and their strikethrough and underline, leaving
     /// out the characters in `hidden` (line string indexes). Images are left
     /// to the caller. The context's text matrix must flip glyphs upright.
-    static func drawGlyphs(of line: CTLine, at origin: CGPoint, hidden: [Range<Int>], in context: CGContext, text: CGColor, dark: Bool) {
+    /// - Parameter visible: if set, only the glyphs that start in this range
+    ///   of x are drawn.
+    static func drawGlyphs(of line: CTLine, at origin: CGPoint, hidden: [Range<Int>], visible: ClosedRange<CGFloat>? = nil,
+                           in context: CGContext, text: CGColor, dark: Bool) {
         for run in CTLineGetGlyphRuns(line) as! [CTRun] {
             let attributes = CTRunGetAttributes(run) as NSDictionary
             if attributes[imageKey] != nil { continue }
-            let ranges = hidden.isEmpty ? [CFRange(location: 0, length: 0)] : glyphRanges(of: run, leavingOut: hidden)
+            var ranges = hidden.isEmpty ? [CFRange(location: 0, length: 0)] : glyphRanges(of: run, leavingOut: hidden)
+            if let visible {
+                guard let shown = glyphRange(of: run, startingIn: (visible.lowerBound - origin.x)...(visible.upperBound - origin.x))
+                else { continue }
+                let count = CTRunGetGlyphCount(run)
+                ranges = ranges.compactMap {
+                    let lower = max($0.location, shown.lowerBound)
+                    let upper = min($0.length == 0 ? count : $0.location + $0.length, shown.upperBound)
+                    return lower < upper ? CFRange(location: lower, length: upper - lower) : nil
+                }
+            }
             guard !ranges.isEmpty else { continue }
             setGlyphColor(of: attributes, in: context, text: text, dark: dark)
             context.textPosition = origin
@@ -682,6 +721,21 @@ public final class DocumentLayout: @unchecked Sendable {
                 if underline { fill(x: origin.x + position.x, y: origin.y - CTFontGetUnderlinePosition(font), width: width) }
             }
         }
+    }
+
+    /// The glyphs of `run` from the first to the last whose position, in its
+    /// line, is in `range`; nil if none is.
+    static func glyphRange(of run: CTRun, startingIn range: ClosedRange<CGFloat>) -> Range<Int>? {
+        let count = CTRunGetGlyphCount(run)
+        func find(in positions: UnsafeBufferPointer<CGPoint>) -> Range<Int>? {
+            guard let first = positions.firstIndex(where: { range.contains($0.x) }),
+                  let last = positions.lastIndex(where: { range.contains($0.x) }) else { return nil }
+            return first..<(last + 1)
+        }
+        if let pointer = CTRunGetPositionsPtr(run) { return find(in: UnsafeBufferPointer(start: pointer, count: count)) }
+        var positions = [CGPoint](repeating: .zero, count: count)
+        CTRunGetPositions(run, CFRange(location: 0, length: 0), &positions)
+        return positions.withUnsafeBufferPointer(find)
     }
 
     /// The runs of `run`'s glyphs whose characters are not in `hidden`.

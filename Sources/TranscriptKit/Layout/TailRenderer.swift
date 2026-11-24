@@ -57,6 +57,8 @@ final class TailRenderer {
     private var pixelHeight = 0
     /// Bottom of what the last frame drew, so the next one clears no further.
     private var drawnBottom: CGFloat = 0
+    /// How far blocks were scrolled sideways when the tail was drawn.
+    private var drawnScroll = SideScroll()
 
     private final class Slot {
         let surface: IOSurface
@@ -113,8 +115,8 @@ final class TailRenderer {
     ///   moves down starts no lower, while it can hold the text, so the tail
     ///   and not the tiles draws that text when it stops fading.
     /// - Parameter scroll: how far blocks that scroll sideways are scrolled.
-    ///   A change of it is not drawn by itself: the view then draws the tail
-    ///   in its tiles until the next one starts.
+    ///   The blocks in the tail that it scrolls otherwise than the last frame
+    ///   are drawn again.
     func render(_ layout: DocumentLayout, changedTop: CGFloat?, restyled: [CGRect] = [], hiding: TagHiding = .none,
                 fadingTop: CGFloat? = nil, scroll: SideScroll = .none) -> Frame? {
         if layout.width != width || context == nil {
@@ -131,6 +133,7 @@ final class TailRenderer {
             currentTop = top
             start = changedTop
             for rect in restyled where rect.maxY > top { start = min(start, max(rect.minY, top)) }
+            if !layout.scrollsAlike(scroll, drawnScroll, below: top) { start = top }
         } else {
             var newTop = Self.lastLineTop(of: layout, scale: scale)
             if let fadingTop {
@@ -143,6 +146,7 @@ final class TailRenderer {
             fullCopyFrom = frame + 1
         }
         top = currentTop
+        drawnScroll = scroll
 
         // Clear down to whatever the previous frame drew, in case the text
         // got shorter, and draw down to the text's bottom.

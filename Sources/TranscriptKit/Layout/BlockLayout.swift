@@ -89,7 +89,7 @@ final class BlockLayout: @unchecked Sendable {
     /// The box that the lines of a block that scrolls sideways show in.
     var scrollBox: CGRect { CGRect(x: contentLeading, y: 0, width: max(width - contentLeading, 0), height: height) }
 
-    /// Lines are not broken at a width: wide enough for any line of text.
+    /// The widest an image or a formula grows in a block that scrolls sideways.
     static let unlimitedWidth: CGFloat = 100_000
 
     /// Whether `block` is a paragraph that holds only display math.
@@ -249,13 +249,16 @@ final class BlockLayout: @unchecked Sendable {
             let attributed = style.attributedString(for: block, from: restart, images: sizing, definitions: definitions,
                                                     kerns: decorated?.kerns ?? [:])
             let typesetter = CTTypesetterCreateWithAttributedString(attributed)
+            let string = attributed.string as NSString
             var start = restart
             while start < length {
                 let local = start - restart
                 // A padded tag that starts the line has no character before it
                 // on the line to carry its padding, so the line moves over.
                 let leading = min(decorated?.startPadding[start] ?? 0, available / 2)
-                let count = max(CTTypesetterSuggestLineBreak(typesetter, local, Double(wraps ? available - leading : unlimitedWidth)), 1)
+                let count = wraps
+                    ? max(CTTypesetterSuggestLineBreak(typesetter, local, Double(available - leading)), 1)
+                    : Self.lengthToLineBreak(in: string, from: local)
                 let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: local, length: count))
                 add(ctLine, range: start..<(start + count), indexBase: restart, leading: leading, text: attributed)
                 start += count
@@ -267,6 +270,17 @@ final class BlockLayout: @unchecked Sendable {
             add(empty, range: length..<length, indexBase: length)
         }
         return (lines, y - gap + insets.vertical, right)
+    }
+
+    /// The length of the line of `string` that starts at `start`: up to and
+    /// including its line break, or to the end.
+    static func lengthToLineBreak(in string: NSString, from start: Int) -> Int {
+        let rest = NSRange(location: start, length: string.length - start)
+        let found = string.rangeOfCharacter(from: .newlines, options: [], range: rest)
+        guard found.location != NSNotFound else { return max(rest.length, 1) }
+        var end = found.location + found.length
+        if string.character(at: found.location) == 0x0D, end < string.length, string.character(at: end) == 0x0A { end += 1 }
+        return end - start
     }
 
     /// Line metrics made `height` tall, with the text centred, when the app

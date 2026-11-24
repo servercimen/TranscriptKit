@@ -242,8 +242,11 @@ TranscriptText(stream: stream, style: style)
 
 The block keeps the width of the column, and only its text moves. A sideways drag that starts in the block scrolls
 the block. A drag up or down still scrolls the scroll view around the text. After the drag, the block slows down as a
-scroll view does. Selection, links, copy and the selection handles follow the scrolled text. A block that grows while
-it streams keeps its offset. A new document starts with all blocks at their leading edge.
+scroll view does. A touch on the block stops it, and does not open a link. Selection, links, copy and the selection
+handles follow the scrolled text. With VoiceOver, a three-finger swipe to the left or right scrolls the block. A block
+that grows while it streams keeps its offset. It also keeps its offset when the text after it changes, while the block
+stays a block of the same kind. A new document starts with all blocks at their leading edge. While a block that text
+streams into moves sideways, the new text shows at once, without a fade.
 
 ### Math
 

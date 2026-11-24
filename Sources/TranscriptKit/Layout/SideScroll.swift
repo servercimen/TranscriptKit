@@ -23,6 +23,24 @@ struct SideScroll: Equatable, Sendable {
         guard !offsets.isEmpty, layout.maximumScrollOffset > 0, let offset = offsets[layout.block.id] else { return 0 }
         return min(max(offset, 0), layout.maximumScrollOffset)
     }
+
+    /// The offsets to keep when `new` replaces `old` on screen: those of the
+    /// blocks that `new` keeps (see `keeps(_:from:in:)`).
+    func kept(from old: DocumentLayout, in new: DocumentLayout) -> SideScroll {
+        guard !offsets.isEmpty else { return self }
+        var kept = SideScroll()
+        for (id, offset) in offsets where Self.keeps(id, from: old, in: new) { kept.offsets[id] = offset }
+        return kept
+    }
+
+    /// Whether the block with `id` keeps its offset when `new` replaces
+    /// `old`: `new` still has it, of the same kind. A new document, whose
+    /// first block is another one, keeps none.
+    static func keeps(_ id: String, from old: DocumentLayout, in new: DocumentLayout) -> Bool {
+        guard old.entryCount > 0, new.entryCount > 0, old.entry(at: 0).layout.block.id == new.entry(at: 0).layout.block.id,
+              let before = old.entryIndex(ofBlock: id), let after = new.entryIndex(ofBlock: id) else { return false }
+        return old.entry(at: before).layout.block.kind == new.entry(at: after).layout.block.kind
+    }
 }
 
 extension SideScroll {

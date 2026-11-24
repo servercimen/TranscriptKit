@@ -165,6 +165,18 @@ public final class DocumentLayout: @unchecked Sendable {
         a.containers.count > index && b.containers.count > index && a.containers[...index] == b.containers[...index]
     }
 
+    /// Whether a line limit left some of the document's text out.
+    var leavesTextOut: Bool { length < document.utf16Count }
+
+    /// The part of the document that a selection of this layout stands for.
+    /// Under a line limit, a selection that reaches the end of the text
+    /// shown also covers the text that the limit leaves out, so Select All
+    /// followed by Copy copies all of the text.
+    func documentRange(forSelection range: Range<Int>) -> Range<Int> {
+        guard !range.isEmpty, range.upperBound >= length, leavesTextOut else { return range }
+        return range.lowerBound..<document.utf16Count
+    }
+
     // MARK: Offsets and geometry
 
     /// The last entry whose `key` is at most `value`, by binary search;

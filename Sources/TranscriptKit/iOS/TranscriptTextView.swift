@@ -233,10 +233,12 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     private var reportedSelection: Range<Int>?
 
     /// The selected range of the document's flat UTF-16 offset space, or nil
-    /// when nothing is selected. `document.text(in:)` gives its text.
+    /// when nothing is selected. `document.text(in:)` gives its text. Under
+    /// a line limit, a selection that reaches the end of the text shown
+    /// also covers the text that the limit leaves out.
     public var selectedRange: Range<Int>? {
         guard let selection, !selection.isEmpty else { return nil }
-        return selection
+        return currentLayout.documentRange(forSelection: selection)
     }
 
     /// Called on the main thread after the selection changes, with the new
@@ -1292,8 +1294,8 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     }
 
     public override func copy(_ sender: Any?) {
-        guard let selection, !selection.isEmpty else { return }
-        UIPasteboard.general.string = shownDocument.copyText(in: selection)
+        guard let range = selectedRange else { return }
+        UIPasteboard.general.string = shownDocument.copyText(in: range)
     }
 
     public override func selectAll(_ sender: Any?) {
@@ -1310,10 +1312,9 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         refreshSelectionDisplay()
     }
 
-    /// The currently selected text, if any.
+    /// The currently selected text, if any: the text of `selectedRange`.
     public var selectedText: String? {
-        guard let selection, !selection.isEmpty else { return nil }
-        return shownDocument.text(in: selection)
+        selectedRange.map { shownDocument.text(in: $0) }
     }
 
     // MARK: UITextInput — positions and ranges

@@ -280,7 +280,9 @@ number or "Checked" or "Unchecked", and each link in a block is an action that o
 ### Line limit and alignment
 
 For short text in cards and list rows, set a line limit and an alignment. When text is left out, the last line shown
-ends in "…", and selection and copying cover only what is shown. `TranscriptText` also takes SwiftUI's modifiers:
+ends in "…". The selection shows only on the text that is shown. A selection that reaches the end of that text, such as
+Select All, also copies the text that is left out, and VoiceOver reads all of the text. `TranscriptText` also takes
+SwiftUI's modifiers:
 
 ```swift
 TranscriptText(document)

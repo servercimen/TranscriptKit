@@ -44,7 +44,9 @@ public struct InlineSpan: Equatable, Sendable {
     }
 
     /// For text inside a custom tag (see `TranscriptTag`): the tag and its
-    /// decoration. Its traits and link are also in `traits` and `link`.
+    /// decoration. In a parsed span, and in one made with
+    /// `InlineSpan(range:tagged:)`, its traits and link are also in `traits`
+    /// and `link`. Setting it does not change them.
     public var customTag: CustomTag? {
         get { extras?.customTag }
         set { extras = Extras.make(image: image, reference: reference, customTag: newValue, math: math) }

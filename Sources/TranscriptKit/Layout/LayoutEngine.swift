@@ -507,8 +507,9 @@ final class LayoutEngine: @unchecked Sendable {
             base = layout
             measured = nil
             // The view draws everything itself after this; the tail starts
-            // again with the next append. Animations stop: the view shows
-            // every tag at rest after a relayout.
+            // again with the next append. The view tells the engine again
+            // which tags still wait or play (`holdAnimations`,
+            // `playAnimations`).
             tailActive = false
             tailRenderer?.reset()
             var kept: Int?

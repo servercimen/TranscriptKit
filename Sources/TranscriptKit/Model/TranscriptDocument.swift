@@ -427,7 +427,7 @@ public struct TranscriptDocument: Equatable, Sendable {
             let upper = min(range.upperBound, start + length)
             let includesStart = range.lowerBound <= start && range.upperBound > start
             let attributes = style.map { [TranscriptStyle.fontKey: $0.font(for: block.kind)] } ?? [:]
-            let piece: NSMutableAttributedString
+            var piece: NSMutableAttributedString
             switch block.kind {
             case .rule:
                 guard includesStart else { continue }
@@ -477,13 +477,17 @@ public struct TranscriptDocument: Equatable, Sendable {
             // A selection that starts inside the block starts mid-line.
             if !includesStart { firstPrefix = "" }
             if !firstPrefix.isEmpty || !restPrefix.isEmpty {
-                var lineStarts = [0]
-                for (offset, unit) in piece.string.utf16.enumerated() where unit == 0x0A { lineStarts.append(offset + 1) }
-                for (index, lineStart) in lineStarts.enumerated().reversed() {
-                    let prefix = index == 0 ? firstPrefix : restPrefix
-                    guard !prefix.isEmpty else { continue }
-                    piece.insert(NSAttributedString(string: prefix, attributes: attributes), at: lineStart)
+                let prefixed = NSMutableAttributedString()
+                var lineStart = 0
+                func appendLine(upTo end: Int) {
+                    let prefix = lineStart == 0 ? firstPrefix : restPrefix
+                    if !prefix.isEmpty { prefixed.append(NSAttributedString(string: prefix, attributes: attributes)) }
+                    prefixed.append(piece.attributedSubstring(from: NSRange(location: lineStart, length: end - lineStart)))
+                    lineStart = end
                 }
+                for (offset, unit) in piece.string.utf16.enumerated() where unit == 0x0A { appendLine(upTo: offset + 1) }
+                appendLine(upTo: piece.length)
+                piece = prefixed
             }
 
             let isInList = block.listLevel > 0

@@ -245,8 +245,9 @@ extension InlineSpan {
         let isAnimated: Bool
 
         /// A tag for a span that the app makes itself, for example in a
-        /// document built with `TranscriptDocument(blocks:)`. The span gets
-        /// the decoration's traits and link (see `InlineSpan.init`).
+        /// document built with `TranscriptDocument(blocks:)`. Make the span
+        /// with `InlineSpan(range:tagged:)`, so that it also gets the
+        /// decoration's traits and link.
         ///
         /// - Parameter name: lowercased, as the parser does.
         public convenience init(name: String, attributes: [String: String] = [:], decoration: TranscriptDecoration) {

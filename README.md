@@ -140,13 +140,14 @@ paths for each line the tag's text is on and may draw a little outside the text,
 and 6 points above and below the line, past the view's edges. The chat sample has two such shapes, `Zigzag` and `SoftUnderline`, in
 [`SampleTags.swift`](Examples/ChatSample/ChatSample/SampleTags.swift).
 
-An app can also build a tagged document without the parser. Give the span an `InlineSpan.CustomTag`, made from a
-tag definition or from a name and a decoration. The span gets the decoration's traits and link:
+An app can also build a tagged document without the parser. Make an `InlineSpan.CustomTag` from a tag definition,
+or from a name and a decoration. Then make the span with `InlineSpan(range:tagged:)`, which also gives it the
+decoration's traits and link:
 
 ```swift
 let mention = InlineSpan.CustomTag(tags[0], attributes: ["id": "42"])
 let document = TranscriptDocument(blocks: [
-    TranscriptBlock(text: "Ask @ana now.", spans: [InlineSpan(range: 4..<8, customTag: mention)]),
+    TranscriptBlock(text: "Ask @ana now.", spans: [InlineSpan(range: 4..<8, tagged: mention)]),
 ])
 ```
 

@@ -634,8 +634,8 @@ private let second = TagKey(block: "w-1", start: 4, name: "hop")
     let text = "Done: login timeouts. Next: billing."
     let blocks = [
         TranscriptBlock(id: "d-0", text: text, spans: [
-            InlineSpan(range: 6..<20, customTag: InlineSpan.CustomTag(hop)),
-            InlineSpan(range: 28..<35, customTag: InlineSpan.CustomTag(hop)),
+            InlineSpan(range: 6..<20, tagged: InlineSpan.CustomTag(hop)),
+            InlineSpan(range: 28..<35, tagged: InlineSpan.CustomTag(hop)),
         ]),
     ]
     let document = TranscriptDocument(blocks: blocks)

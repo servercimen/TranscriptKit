@@ -50,14 +50,19 @@ public struct InlineSpan: Equatable, Sendable {
         set { extras = Extras.make(image: image, reference: reference, customTag: newValue, math: math) }
     }
 
-    /// - Parameter customTag: its decoration's traits are added to
-    ///   `traits`, and its link is used when `link` is nil, as for a parsed tag.
     public init(range: Range<Int>, traits: Traits = [], link: String? = nil, image: TranscriptImage? = nil,
                 reference: String? = nil, customTag: CustomTag? = nil, math: TranscriptMath? = nil) {
         self.range = range
-        self.traits = traits.union(customTag?.decoration.traits ?? [])
-        self.link = link ?? customTag?.decoration.link
+        self.traits = traits
+        self.link = link
         self.extras = Extras.make(image: image, reference: reference, customTag: customTag, math: math)
+    }
+
+    /// A span for text inside a custom tag, as the parser makes it: with
+    /// the tag's decoration, its traits, and its link. For a document that
+    /// the app builds without the parser.
+    public init(range: Range<Int>, tagged tag: CustomTag) {
+        self.init(range: range, traits: tag.decoration.traits, link: tag.decoration.link, customTag: tag)
     }
 
     init(range: Range<Int>, traits: Traits, link: String?, extras: Extras?) {

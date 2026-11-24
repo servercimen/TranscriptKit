@@ -201,7 +201,10 @@ In UIKit, set `tagAnimationTiming` on `TranscriptTextView` and call `playTagAnim
 waiting when it can no longer play (Reduce Motion turned on, animations turned off, a new document) is shown as it
 ends up. A view that leaves its window does the same, unless the timing has `.whenVisible` or `.whenRequested`: its
 tags then go on waiting until the view is back in a window. With `.whenVisible`, a view that is hidden or has an
-alpha of 0, or is inside such a view, is not visible.
+alpha of 0, or is inside such a view, is not visible. The view looks again a short time later, at most one second
+apart, so a tag can start up to one second after its view shows. When the view lays out the same text again, for
+example at a new width or when an image arrives, waiting tags go on waiting and playing tags go on playing. A
+playing tag whose glyphs move plays again from the start.
 
 Text that is complete when it is shown, such as a document set directly or a page of many short texts, can animate
 its tags too. With `animatesTagsInFirstText`, each tag in the first text that the view shows plays its animation

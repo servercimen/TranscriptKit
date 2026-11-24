@@ -314,6 +314,11 @@ public struct TranscriptCurve: Sendable, Equatable {
 /// same, unless the timing has `.whenVisible` or `.whenRequested`: its tags
 /// then go on waiting, and tags that close meanwhile wait too. A view out of
 /// its window plays no animation.
+///
+/// When the view lays out the same text again (a new width or style, or an
+/// image, code colors or a formula that arrived), waiting tags go on
+/// waiting and playing tags go on playing. A playing tag whose glyphs move
+/// plays again from the start.
 public struct TranscriptAnimationTiming: OptionSet, Hashable, Sendable {
     public let rawValue: Int
     public init(rawValue: Int) { self.rawValue = rawValue }
@@ -323,7 +328,9 @@ public struct TranscriptAnimationTiming: OptionSet, Hashable, Sendable {
     /// Not before the tag's text is on screen: a tag that closes while it is
     /// scrolled out of view plays when it is scrolled into view. A view that
     /// is hidden, or has an alpha of 0, is not on screen, nor is one inside
-    /// such a view.
+    /// such a view. No call tells the view when an ancestor shows again, so
+    /// the view looks again after 0.25 s, then less often, up to one second
+    /// apart, until it shows.
     public static let whenVisible = TranscriptAnimationTiming(rawValue: 1 << 0)
     /// Not before the stream has finished (`TranscriptStream.finish()`), or
     /// the view shows a document that was set directly rather than streamed.

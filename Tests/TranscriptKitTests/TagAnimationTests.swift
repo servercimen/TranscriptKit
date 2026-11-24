@@ -664,3 +664,69 @@ private let second = TagKey(block: "w-1", start: 4, name: "hop")
     engine.drainNow()
     #expect(try #require(engine.takeOutput()).hidden == TagHiding(playing: keys))
 }
+
+/// A view asks where each waiting tag is only once for each layout: a
+/// scroll looks at every waiting tag.
+@Test func waitingTagsRememberWhereTheyAre() {
+    var asked: [TagKey] = []
+    var list = waitingList([first, second])
+    let offScreen = WaitingTags.Viewer(isInWindow: true, isHidden: false, visibleRect: CGRect(x: 0, y: 1000, width: 300, height: 400),
+                                       isFinished: true)
+    for _ in 0..<3 {
+        #expect(list.takeReady(timing: .whenVisible, viewer: offScreen) { asked.append($0); return 10...30 }.isEmpty)
+    }
+    #expect(asked.count == 2)
+    list.forgetBands()
+    _ = list.takeReady(timing: .whenVisible, viewer: offScreen) { asked.append($0); return 10...30 }
+    #expect(asked.count == 4)
+    #expect(Set(list.takeReady(timing: .whenVisible, viewer: shown) { asked.append($0); return 10...30 }) == [first, second])
+    #expect(asked.count == 4)
+}
+
+@Test func someWaitingTagsCanBeRequested() {
+    var list = waitingList([first])
+    list.request([first, second])
+    #expect(list.requested == [first])
+}
+
+// MARK: What goes on when a view shows a new layout
+
+private let third = TagKey(block: "w-2", start: 0, name: "hop")
+
+@Test func aRelayoutOfTheSameTextKeepsTagsThatWaitOrPlay() {
+    let closed: Set<TagKey> = [first, second, third]
+    let carried = WaitingTags.carried(isAppend: false, keepsText: true, firstText: false, closed: closed,
+                                      waiting: [first], started: [], playing: [second, third]) { $0 == second }
+    // The second still plays where it was; the third moved, so it plays again.
+    #expect(carried == WaitingTags.Carried(playing: [second], waiting: [first, third], replayed: [third]))
+
+    // Tags the layout no longer holds go.
+    let fewer = WaitingTags.carried(isAppend: false, keepsText: true, firstText: false, closed: [second],
+                                    waiting: [first], started: [], playing: [second, third]) { _ in true }
+    #expect(fewer == WaitingTags.Carried(playing: [second]))
+}
+
+@Test func aNewDocumentShowsEveryTagAtRest() {
+    let carried = WaitingTags.carried(isAppend: false, keepsText: false, firstText: false, closed: [first, second],
+                                      waiting: [first], started: [], playing: [second]) { _ in true }
+    #expect(carried == WaitingTags.Carried())
+}
+
+@Test func theFirstTextHoldsItsClosedTagsBack() {
+    // Laid out directly, every closed tag waits to play.
+    let direct = WaitingTags.carried(isAppend: false, keepsText: false, firstText: true, closed: [first, second],
+                                     waiting: [], started: [], playing: []) { _ in true }
+    #expect(direct == WaitingTags.Carried(waiting: [first, second]))
+    // Appended to an empty layout: the tags that the engine did not start or hold.
+    let appended = WaitingTags.carried(isAppend: true, keepsText: false, firstText: true, closed: [first, second, third],
+                                       waiting: [], started: [first], playing: [first]) { _ in true }
+    #expect(appended == WaitingTags.Carried(waiting: [second, third]))
+    // With animations off in the engine, as out of a window, it started none.
+    let unstarted = WaitingTags.carried(isAppend: true, keepsText: false, firstText: true, closed: [first, second],
+                                        waiting: [], started: [], playing: []) { _ in true }
+    #expect(unstarted == WaitingTags.Carried(waiting: [first, second]))
+    // Later appends hold nothing back.
+    let later = WaitingTags.carried(isAppend: true, keepsText: false, firstText: false, closed: [first, second],
+                                    waiting: [], started: [], playing: []) { _ in true }
+    #expect(later == WaitingTags.Carried())
+}

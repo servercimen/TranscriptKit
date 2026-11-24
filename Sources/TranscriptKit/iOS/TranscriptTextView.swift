@@ -299,6 +299,9 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     private var isFinished = false
     private var waitingCheckScheduled = false
     private var visibilityCheckScheduled = false
+    private var visibilityCheckDelay = TranscriptTextView.firstVisibilityCheck
+    private static let firstVisibilityCheck: TimeInterval = 0.25
+    private static let lastVisibilityCheck: TimeInterval = 1
     /// A layout with text has been on screen.
     private var hasShownText = false
     /// The last layout passed over for coming from a replaced source.
@@ -557,7 +560,10 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     private func updateCanvas(forceRedraw: Bool = false, changed: ClosedRange<CGFloat>? = nil) {
         // Tags waiting to be on screen may be now.
-        if !waiting.isEmpty, tagAnimationTiming.contains(.whenVisible) { startWaitingTagsSoon() }
+        if !waiting.isEmpty, tagAnimationTiming.contains(.whenVisible) {
+            visibilityCheckDelay = Self.firstVisibilityCheck
+            startWaitingTagsSoon()
+        }
         let visible = visibleRect
         guard !visible.isNull, visible.height > 0, bounds.width > 0 else {
             if !isNearVisibleArea {
@@ -772,7 +778,8 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
               let result = engine.relayout(width: bounds.width, style: style, keepingFades: keepingFades) else { return }
         skippedOutput = nil
         guard result.source == source else { return }
-        install(result.layout, changedTop: nil, tail: nil, keptFadingFrom: result.fadingFrom, isFinished: result.isFinished)
+        install(result.layout, changedTop: nil, tail: nil, keptFadingFrom: result.fadingFrom, isFinished: result.isFinished,
+                keepsAnimations: true)
     }
 
     private func layOutNowIfNothingIsShown() {
@@ -800,9 +807,12 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// - Parameter isFinished: no more text is coming.
     /// - Parameter fade: with `changedTop`, the text fading in, from
     ///   `fadingFrom` on, which the tail and the tiles leave out.
+    /// - Parameter keepsAnimations: the view laid out its text again (a new
+    ///   width or style, an image or code colors that arrived). Tags that
+    ///   wait or play go on if the text is the one they are in.
     private func install(_ layout: DocumentLayout, changedTop: CGFloat?, tail: TailRenderer.Frame?, restyled: [CGRect] = [],
                          started: [TagKey] = [], waiting newlyWaiting: [TagKey] = [], fade: FadeFrame? = nil, fadingFrom: Int? = nil,
-                         keptFadingFrom: Int? = nil, isFinished: Bool = false) {
+                         keptFadingFrom: Int? = nil, isFinished: Bool = false, keepsAnimations: Bool = false) {
         self.isFinished = isFinished
         TranscriptDiagnostics.count(\.installs)
         let old = installed
@@ -860,6 +870,10 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             removeFades()
         }
 
+        waiting.forgetBands()
+        let firstText = animatesFirstText && layout.length > 0
+        let keepsText = keepsAnimations && !isAppend && old.map { layout.document.extends($0.document) } == true
+        let closed = firstText || (keepsText && !(waiting.isEmpty && playing.isEmpty)) ? layout.closedAnimatedTags() : []
         if isAppend {
             // A playing tag whose glyphs moved (its line wrapped otherwise)
             // ends where it is.
@@ -868,20 +882,29 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             }
             startAnimations(started, in: layout)
             waiting.add(newlyWaiting)
+            let held = WaitingTags.carried(isAppend: true, keepsText: false, firstText: firstText, closed: closed,
+                                           waiting: waiting.keys, started: Set(started + newlyWaiting), playing: playingKeys) { _ in true }
+            if !held.waiting.isEmpty {
+                engine.holdAnimations(held.waiting)
+                waiting.add(held.waiting)
+            }
             startWaitingTagsSoon()
         } else {
-            // Everything was drawn again, at rest. Tags that wait go on
-            // waiting while the text is the one they closed in, as when an
-            // image arrives or the width changes.
-            let closed = waiting.isEmpty && !animatesFirstText ? [] : layout.closedAnimatedTags()
-            let kept = old.map { layout.document.extends($0.document) } == true ? waiting.keys.intersection(closed) : []
-            removeAllAnimations(keepingWaiting: kept)
+            // Everything was drawn again, at rest, apart from the tags that
+            // go on (see `WaitingTags.carried`).
+            let carried = WaitingTags.carried(isAppend: false, keepsText: keepsText, firstText: firstText, closed: closed,
+                                              waiting: waiting.keys, started: [], playing: playingKeys) { key in
+                guard let play = playing[key], let tag = layout.animatedTag(key) else { return false }
+                return tag.isPlaced(like: play.tag)
+            }
+            removeAllAnimations(keepingWaiting: carried.waiting, keepingPlaying: carried.playing, in: layout)
             engine.settleAnimations(started + newlyWaiting)
-            var held = kept
-            if animatesFirstText, !hasShownText, layout.length > 0 { held.formUnion(closed) }
-            if !held.isEmpty {
-                engine.holdAnimations(held)
-                waiting.add(held)
+            if !carried.waiting.isEmpty || !carried.playing.isEmpty {
+                // A relayout starts the engine's list again.
+                engine.holdAnimations(carried.waiting.union(carried.playing))
+                engine.playAnimations(carried.playing)
+                waiting.add(carried.waiting)
+                waiting.request(carried.replayed)
                 startWaitingTagsSoon()
             }
         }
@@ -1059,7 +1082,11 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         let viewer = WaitingTags.Viewer(isInWindow: window != nil, isHidden: looks && isHiddenInWindow,
                                         visibleRect: looks ? visibleRect : .null, isFinished: isFinished)
         let ready = waiting.takeReady(timing: timing, viewer: viewer) { layout.animatedTag($0)?.band }
-        if waiting.waitForHiddenView(timing: timing, viewer: viewer) { checkVisibilityLater() }
+        if waiting.waitForHiddenView(timing: timing, viewer: viewer) {
+            checkVisibilityLater()
+        } else {
+            visibilityCheckDelay = Self.firstVisibilityCheck
+        }
         guard !ready.isEmpty else { return }
         engine.playAnimations(ready)
         startAnimations(ready, in: layout, wereWaiting: true)
@@ -1073,11 +1100,15 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     }
 
     /// Looks again in a moment whether tags that wait for a hidden view can
-    /// play: no call tells the view when an ancestor shows again.
+    /// play: no call tells the view when an ancestor shows again. Each look
+    /// while the view stays hidden comes later than the one before, up to
+    /// one second apart.
     private func checkVisibilityLater() {
         guard !visibilityCheckScheduled else { return }
         visibilityCheckScheduled = true
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+        let delay = visibilityCheckDelay
+        visibilityCheckDelay = min(delay * 2, Self.lastVisibilityCheck)
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }
                 self.visibilityCheckScheduled = false
@@ -1171,18 +1202,25 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     }
 
     /// Drops every animation without redrawing, for when everything is
-    /// being drawn again anyway, apart from the waiting tags in `kept`.
-    private func removeAllAnimations(keepingWaiting kept: Set<TagKey> = []) {
-        engine.settleAnimations(waiting.keys.subtracting(kept))
-        waiting.keep(kept)
+    /// being drawn again anyway, apart from the waiting tags in `keptWaiting`
+    /// and the playing tags in `keptPlaying`, which `layout` places where
+    /// they were.
+    private func removeAllAnimations(keepingWaiting keptWaiting: Set<TagKey>, keepingPlaying keptPlaying: Set<TagKey>,
+                                     in layout: DocumentLayout) {
+        engine.settleAnimations(waiting.keys.subtracting(keptWaiting))
+        waiting.keep(keptWaiting)
         guard !playing.isEmpty else { return }
         engine.settleAnimations(playingKeys)
-        for play in playing.values {
+        for (key, play) in playing {
+            if keptPlaying.contains(key), let tag = layout.animatedTag(key) {
+                playing[key] = PlayingTag(tag: tag, layer: play.layer, start: play.start, signpost: play.signpost)
+                continue
+            }
             play.layer.removeFromSuperlayer()
             animationSignposter.endInterval("Tag animation", play.signpost)
+            playing[key] = nil
+            playingKeys.remove(key)
         }
-        playing.removeAll()
-        playingKeys.removeAll()
     }
 
     /// The rows a tag's drawing can change, its shapes' reach included.

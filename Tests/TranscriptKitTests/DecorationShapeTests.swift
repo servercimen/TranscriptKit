@@ -413,12 +413,17 @@ private func linesHolding(_ layout: DocumentLayout, tagAt offset: Int) -> [Range
 }
 
 @Test func aTagThatKeepsTogetherStaysWholeInATableCell() throws {
-    let markdown = "| A | B |\n| --- | --- |\n| x | some text then <whole>a kept pill</whole> in a narrow cell |\n"
-    for width: CGFloat in [160, 200, 240] {
-        let laidOut = layout(markdown, width: width)
-        let block = laidOut.entry(at: 0).layout
-        let span = try #require(block.block.spans.first { $0.customTag?.name == "whole" })
-        let holding = block.lines.filter { $0.range.overlaps(span.range) }
-        #expect(holding.count == 1, "\(width): \(holding.map(\.range))")
+    let markdown = "| A | B |\n| --- | --- |\n| x | some text then <TAG>a kept pill</TAG> in a narrow cell |\n"
+    func lineCount(_ name: String, width: CGFloat) throws -> Int {
+        let block = layout(markdown.replacingOccurrences(of: "TAG", with: name), width: width).entry(at: 0).layout
+        let span = try #require(block.block.spans.first { $0.customTag?.name == name })
+        return block.lines.filter { $0.range.overlaps(span.range) }.count
     }
+    var split = 0
+    for width: CGFloat in [160, 200, 240] {
+        #expect(try lineCount("whole", width: width) == 1, "\(width)")
+        if try lineCount("pill", width: width) > 1 { split += 1 }
+    }
+    // Without the option, the pill breaks at one of these widths at least.
+    #expect(split > 0)
 }

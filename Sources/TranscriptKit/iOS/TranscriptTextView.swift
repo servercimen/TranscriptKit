@@ -1294,9 +1294,12 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         }
     }
 
+    /// Puts the selected text on the pasteboard as plain text, readable as
+    /// Markdown (see `TranscriptDocument.copyText(in:)`), and as rich text
+    /// with the fonts, links, strikethrough and underline of the text.
     public override func copy(_ sender: Any?) {
         guard let selection, !selection.isEmpty else { return }
-        UIPasteboard.general.string = shownDocument.copyText(in: selection)
+        UIPasteboard.general.setItems([shownDocument.pasteboardItem(in: selection, style: currentLayout.style)])
     }
 
     public override func selectAll(_ sender: Any?) {

@@ -407,7 +407,15 @@ public struct TranscriptDocument: Equatable, Sendable {
     /// Markdown tables and images as their alt text, with a blank line
     /// between blocks that are not neighbouring list content.
     public func copyText(in range: Range<Int>) -> String {
-        var result = ""
+        copiedText(in: range, style: nil).string
+    }
+
+    /// The text of `copyText(in:)`, with the fonts of `style`, links,
+    /// strikethrough and underline when `style` is set, and no attributes
+    /// otherwise.
+    func copiedText(in range: Range<Int>, style: TranscriptStyle?) -> NSAttributedString {
+        let result = NSMutableAttributedString()
+        let separatorAttributes = style.map { [TranscriptStyle.fontKey: $0.font(for: .paragraph)] } ?? [:]
         var previousWasInList = false
         var start = 0
         for block in blocks {
@@ -418,25 +426,27 @@ public struct TranscriptDocument: Equatable, Sendable {
             let lower = max(range.lowerBound, start)
             let upper = min(range.upperBound, start + length)
             let includesStart = range.lowerBound <= start && range.upperBound > start
-            var piece: String
+            let attributes = style.map { [TranscriptStyle.fontKey: $0.font(for: block.kind)] } ?? [:]
+            let piece: NSMutableAttributedString
             switch block.kind {
             case .rule:
                 guard includesStart else { continue }
-                piece = "---"
+                piece = NSMutableAttributedString(string: "---", attributes: attributes)
             case .table(let table):
                 guard lower < upper || includesStart else { continue }
-                piece = Self.markdownTable(table, text: block.text, local: (lower - start)..<(upper - start))
+                piece = NSMutableAttributedString(string: Self.markdownTable(table, text: block.text, local: (lower - start)..<(upper - start)),
+                                                  attributes: attributes)
             case .paragraph, .heading, .code:
                 guard lower < upper else { continue }
                 let local = NSRange(location: lower - start, length: upper - lower)
-                let text = NSMutableString(string: (block.text as NSString).substring(with: local))
+                piece = NSMutableAttributedString(string: (block.text as NSString).substring(with: local), attributes: attributes)
+                if let style { styleSpans(of: block, from: local.location, in: piece, style: style) }
                 // Images by their alt text and formulas by their LaTeX, last
                 // first so offsets stay valid.
                 for span in block.spans.reversed() where local.contains(span.range.lowerBound) {
                     guard let replacement = span.image?.alt ?? span.math?.source else { continue }
-                    text.replaceCharacters(in: NSRange(location: span.range.lowerBound - local.location, length: 1), with: replacement)
+                    piece.replaceCharacters(in: NSRange(location: span.range.lowerBound - local.location, length: 1), with: replacement)
                 }
-                piece = text as String
             }
 
             // Container prefixes: the first line gets the list marker, later
@@ -468,13 +478,20 @@ public struct TranscriptDocument: Equatable, Sendable {
             // A selection that starts inside the block starts mid-line.
             if !includesStart { firstPrefix = "" }
             if !firstPrefix.isEmpty || !restPrefix.isEmpty {
-                let lines = piece.components(separatedBy: "\n")
-                piece = lines.enumerated().map { ($0.offset == 0 ? firstPrefix : restPrefix) + $0.element }.joined(separator: "\n")
+                var lineStarts = [0]
+                for (offset, unit) in piece.string.utf16.enumerated() where unit == 0x0A { lineStarts.append(offset + 1) }
+                for (index, lineStart) in lineStarts.enumerated().reversed() {
+                    let prefix = index == 0 ? firstPrefix : restPrefix
+                    guard !prefix.isEmpty else { continue }
+                    piece.insert(NSAttributedString(string: prefix, attributes: attributes), at: lineStart)
+                }
             }
 
             let isInList = block.listLevel > 0
-            if !result.isEmpty { result += previousWasInList && isInList ? "\n" : "\n\n" }
-            result += piece
+            if result.length > 0 {
+                result.append(NSAttributedString(string: previousWasInList && isInList ? "\n" : "\n\n", attributes: separatorAttributes))
+            }
+            result.append(piece)
             previousWasInList = isInList
         }
         return result

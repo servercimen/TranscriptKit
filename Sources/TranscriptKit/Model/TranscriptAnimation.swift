@@ -320,7 +320,9 @@ public struct TranscriptAnimationTiming: OptionSet, Hashable, Sendable {
     /// As soon as the tag's closing tag arrives.
     public static let immediately: TranscriptAnimationTiming = []
     /// Not before the tag's text is on screen: a tag that closes while it is
-    /// scrolled out of view plays when it is scrolled into view.
+    /// scrolled out of view plays when it is scrolled into view. A view that
+    /// is hidden, or has an alpha of 0, is not on screen, nor is one inside
+    /// such a view.
     public static let whenVisible = TranscriptAnimationTiming(rawValue: 1 << 0)
     /// Not before the stream has finished (`TranscriptStream.finish()`), or
     /// the view shows a document that was set directly rather than streamed.

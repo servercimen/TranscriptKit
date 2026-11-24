@@ -115,6 +115,8 @@ struct WaitingTags: Sendable {
     /// Where the view is and what it shows, for `takeReady`.
     struct Viewer {
         var isInWindow: Bool
+        /// The view or one of its ancestors is hidden or fully transparent.
+        var isHidden: Bool
         /// The part of the view on screen, in its coordinates.
         var visibleRect: CGRect
         /// No more text is coming.
@@ -150,6 +152,7 @@ struct WaitingTags: Sendable {
                             band: (TagKey) -> ClosedRange<CGFloat>?) -> [TagKey] {
         guard !keys.isEmpty, viewer.isInWindow else { return [] }
         if timing.contains(.afterStreamFinishes), !viewer.isFinished { return [] }
+        if timing.contains(.whenVisible), viewer.isHidden { return [] }
         var ready: [TagKey] = []
         for key in keys {
             if timing.contains(.whenRequested), !requested.contains(key) { continue }
@@ -163,6 +166,12 @@ struct WaitingTags: Sendable {
             requested.remove(key)
         }
         return ready
+    }
+
+    /// Whether the tags wait only for a hidden view to show: nothing tells
+    /// the view when an ancestor shows again, so it looks again later.
+    func waitForHiddenView(timing: TranscriptAnimationTiming, viewer: Viewer) -> Bool {
+        !keys.isEmpty && timing.contains(.whenVisible) && viewer.isInWindow && viewer.isHidden
     }
 
     /// Whether waiting tags keep waiting while the view is out of its
@@ -180,5 +189,11 @@ struct WaitingTags: Sendable {
             return band.upperBound > visible.minY && band.lowerBound < visible.maxY
         }
         return band.lowerBound >= visible.minY && band.upperBound <= visible.maxY
+    }
+
+    /// Whether a view is hidden: it or one of its ancestors, from the view
+    /// up, is hidden or has an alpha of 0 (below 0.01, as hit testing has it).
+    static func isHidden(_ chain: some Sequence<(isHidden: Bool, alpha: CGFloat)>) -> Bool {
+        chain.contains { $0.isHidden || $0.alpha < 0.01 }
     }
 }

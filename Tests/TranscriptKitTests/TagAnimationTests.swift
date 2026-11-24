@@ -541,7 +541,8 @@ private enum TailRendererProbe {
 
 // MARK: Which waiting tags play
 
-private let shown = WaitingTags.Viewer(isInWindow: true, visibleRect: CGRect(x: 0, y: 0, width: 300, height: 400), isFinished: true)
+private let shown = WaitingTags.Viewer(isInWindow: true, isHidden: false, visibleRect: CGRect(x: 0, y: 0, width: 300, height: 400),
+                                       isFinished: true)
 
 private func waitingList(_ keys: [TagKey]) -> WaitingTags {
     var list = WaitingTags()
@@ -594,4 +595,22 @@ private let second = TagKey(block: "w-1", start: 4, name: "hop")
     #expect(WaitingTags.keepWaitingOutsideWindow([.whenVisible, .afterStreamFinishes]))
     #expect(!WaitingTags.keepWaitingOutsideWindow(.immediately))
     #expect(!WaitingTags.keepWaitingOutsideWindow(.afterStreamFinishes))
+}
+
+@Test func aHiddenViewIsNotVisible() {
+    var hidden = shown
+    hidden.isHidden = true
+    let band: (TagKey) -> ClosedRange<CGFloat>? = { _ in 10...30 }
+    var list = waitingList([first])
+    #expect(list.takeReady(timing: .whenVisible, viewer: hidden, band: band).isEmpty)
+    #expect(list.waitForHiddenView(timing: .whenVisible, viewer: hidden))
+    #expect(!list.waitForHiddenView(timing: .whenVisible, viewer: shown))
+    #expect(!list.waitForHiddenView(timing: .whenRequested, viewer: hidden))
+    // Other timings do not look.
+    #expect(list.takeReady(timing: .afterStreamFinishes, viewer: hidden, band: band) == [first])
+
+    #expect(!WaitingTags.isHidden([(isHidden: false, alpha: 1), (isHidden: false, alpha: 0.5)]))
+    #expect(WaitingTags.isHidden([(isHidden: false, alpha: 1), (isHidden: true, alpha: 1)]))
+    #expect(WaitingTags.isHidden([(isHidden: false, alpha: 1), (isHidden: false, alpha: 0)]))
+    #expect(WaitingTags.isHidden([(isHidden: false, alpha: 0.001)]))
 }

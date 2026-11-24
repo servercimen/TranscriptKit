@@ -286,6 +286,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// No more text is coming to the document on screen.
     private var isFinished = false
     private var waitingCheckScheduled = false
+    private var visibilityCheckScheduled = false
     /// The last layout passed over for coming from a replaced source.
     private var skippedOutput: LayoutEngine.Output?
     private var hiding: TagHiding { TagHiding(playing: playingKeys, waiting: waiting.keys, fadingFrom: fadingFrom) }
@@ -1025,13 +1026,35 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     private func startWaitingTags() {
         guard !waiting.isEmpty, let layout = installed else { return }
         let timing = tagAnimationTiming
-        let viewer = WaitingTags.Viewer(isInWindow: window != nil,
-                                        visibleRect: timing.contains(.whenVisible) && window != nil ? visibleRect : .null,
-                                        isFinished: isFinished)
+        let looks = timing.contains(.whenVisible) && window != nil
+        let viewer = WaitingTags.Viewer(isInWindow: window != nil, isHidden: looks && isHiddenInWindow,
+                                        visibleRect: looks ? visibleRect : .null, isFinished: isFinished)
         let ready = waiting.takeReady(timing: timing, viewer: viewer) { layout.animatedTag($0)?.band }
+        if waiting.waitForHiddenView(timing: timing, viewer: viewer) { checkVisibilityLater() }
         guard !ready.isEmpty else { return }
         engine.playAnimations(ready)
         startAnimations(ready, in: layout, wereWaiting: true)
+    }
+
+    /// Whether this view or an ancestor is hidden or has an alpha of 0. The
+    /// layers are read, so that a layer above the view that no view owns
+    /// counts too.
+    private var isHiddenInWindow: Bool {
+        WaitingTags.isHidden(sequence(first: layer, next: \.superlayer).lazy.map { ($0.isHidden, CGFloat($0.opacity)) })
+    }
+
+    /// Looks again in a moment whether tags that wait for a hidden view can
+    /// play: no call tells the view when an ancestor shows again.
+    private func checkVisibilityLater() {
+        guard !visibilityCheckScheduled else { return }
+        visibilityCheckScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.visibilityCheckScheduled = false
+                self.startWaitingTags()
+            }
+        }
     }
 
     /// Draws every waiting tag as it ends up, shapes and all, for when it

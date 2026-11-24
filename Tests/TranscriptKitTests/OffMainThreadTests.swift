@@ -148,8 +148,11 @@ private func viewWithText() -> TranscriptTextView {
     _ = await object(view, "setSelectedTextRange:", all)
     #expect(view.selectedRange == (all as? TranscriptTextRange)?.range)
     let tokenizer = try #require(await object(view, "tokenizer") as? UITextInputTokenizer)
-    let word = await offMain { [tokenizer = Unchecked(value: tokenizer), start = Unchecked(value: start)] in
-        tokenizer.value.rangeEnclosingPosition(start.value, with: .word, inDirection: .storage(.forward))
+    let word = await offMain { [tokenizer = Unchecked(value: tokenizer as! NSObject), start = Unchecked(value: start)] in
+        typealias Enclose = @convention(c) (NSObject, Selector, UITextPosition, Int, Int) -> UITextRange?
+        let selector = NSSelectorFromString("rangeEnclosingPosition:withGranularity:inDirection:")
+        return unsafeBitCast(tokenizer.value.method(for: selector), to: Enclose.self)(
+            tokenizer.value, selector, start.value, UITextGranularity.word.rawValue, UITextStorageDirection.forward.rawValue)
     }
     #expect((word as? TranscriptTextRange)?.range == 0..<5)
 }
@@ -160,7 +163,10 @@ private func viewWithText() -> TranscriptTextView {
     view.openLink = { opened.append($0) }
     let elements = try #require(await object(view, "accessibilityElements") as? [NSObject])
     let action = try #require((await object(elements[1], "accessibilityCustomActions") as? [UIAccessibilityCustomAction])?.first)
-    let handled = await offMain { [action = Unchecked(value: action)] in action.value.actionHandler?(action.value) ?? false }
+    let handler = try #require(action.actionHandler)
+    let handled = await offMain { [handler = Unchecked(value: handler), action = Unchecked(value: action)] in
+        handler.value(action.value)
+    }
     #expect(handled)
     #expect(opened.map(\.absoluteString) == ["https://example.com"])
 
@@ -192,5 +198,9 @@ private final class Delegate: NSObject, UITextInputDelegate {
     func selectionDidChange(_ textInput: (any UITextInput)?) {}
     func textWillChange(_ textInput: (any UITextInput)?) {}
     func textDidChange(_ textInput: (any UITextInput)?) {}
+    #if !targetEnvironment(macCatalyst)
+    @available(iOS 18.4, *)
+    func conversationContext(_ context: UIConversationContext?, didChange textInput: (any UITextInput)?) {}
+    #endif
 }
 #endif

@@ -122,3 +122,15 @@ private func parse(_ markdown: String, newlines: Bool = true) -> [TranscriptBloc
     #expect(parse("[a](\nhttps://x.y)", newlines: false)[0].spans.first?.link == "https://x.y")
     #expect(parse("[a](\\\nhttps://x.y)", newlines: false)[0].spans.first?.link == "https://x.y")
 }
+
+/// Each line break starts a new laid-out line, and the paragraph grows
+/// by one line per break.
+@Test func lineBreaksLayOutAsLines() {
+    let markdown = "one\ntwo\nthree"
+    let spaces = DocumentLayout(document: MarkdownStreamParser.document(from: markdown), width: 300)
+    let breaks = DocumentLayout(document: MarkdownStreamParser.document(from: markdown, newlinesAsLineBreaks: true),
+                                width: 300)
+    #expect(spaces.entry(at: 0).layout.lines.count == 1)
+    #expect(breaks.entry(at: 0).layout.lines.count == 3)
+    #expect(breaks.height > spaces.height)
+}

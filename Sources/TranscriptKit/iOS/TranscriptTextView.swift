@@ -89,7 +89,13 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// `intrinsicContentSize` then give the new height in the same update.
     /// The old drawing crossfades to the new one, as
     /// `UIView.transition(with:duration:options:animations:)` does with
-    /// `.transitionCrossDissolve`. Zero shows the new text at once.
+    /// `.transitionCrossDissolve`. Zero shows the new text at once. While
+    /// the crossfade plays, the drawing is clipped to the view's bounds and
+    /// the space that tags' shapes may draw in (see
+    /// `TranscriptPath.maximumOverhang`), so the old text does not show
+    /// below a view that got shorter. A new replacement, a replacement with
+    /// zero, and a new document from the background that does not add to
+    /// the text stop a crossfade that plays.
     ///
     /// Text that only grows, and the updates of a `stream`, keep the
     /// background path. A new document that starts with the blocks of the
@@ -239,6 +245,14 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// Holds the tiles, and the tail layer above them, below the system's
     /// selection views.
     private let canvas = UIView()
+    /// Holds the canvas, in the coordinates of this view. While a replaced
+    /// document crossfades, it clips the canvas to the bounds and the space
+    /// that tags' shapes may draw in, so that the old drawing does not show
+    /// outside the view's new height.
+    private let canvasClip = UIView()
+    /// Counts the crossfades, so that the end of an old one does not stop
+    /// the clip of a newer one.
+    private var crossfadeCount = 0
     /// Shows the end of the document while text is being appended: a
     /// surface the layout queue drew (see `TailRenderer`). The tiles draw
     /// only above its top.
@@ -369,7 +383,10 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         isOpaque = false
         canvas.isUserInteractionEnabled = false
         canvas.backgroundColor = .clear
-        addSubview(canvas)
+        canvasClip.isUserInteractionEnabled = false
+        canvasClip.backgroundColor = .clear
+        canvasClip.addSubview(canvas)
+        addSubview(canvasClip)
         tailLayer.isHidden = true
         tailLayer.zPosition = 1
         tailLayer.actions = ["contents": NSNull(), "position": NSNull(), "bounds": NSNull(), "hidden": NSNull()]
@@ -460,6 +477,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         updateAnimationsEnabled()
         updateFadeDuration()
         guard window != nil else {
+            stopCrossfade()
             handTailToTiles()
             releaseTiles()
             return
@@ -777,7 +795,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             return
         }
         let isAppend = output.isAppend && output.base != nil && output.base === installed
-        if !isAppend { canvas.layer.removeAnimation(forKey: Self.crossfadeKey) }
+        if !isAppend { stopCrossfade() }
         install(output.layout, changedTop: isAppend ? output.changedTop : nil, tail: output.tail,
                 restyled: isAppend ? output.restyled : [], started: output.started, waiting: output.waiting,
                 fade: isAppend ? output.fade : nil, fadingFrom: output.hidden.fadingFrom, isFinished: output.isFinished)
@@ -813,7 +831,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         let signpost = replacementSignposter.beginInterval("Replace document")
         relayoutNow()
         replacementSignposter.endInterval("Replace document", signpost)
-        canvas.layer.removeAnimation(forKey: Self.crossfadeKey)
+        stopCrossfade()
         guard installed !== shown, duration > 0, window != nil else { return }
         // The render server fades from the canvas as the last commit showed
         // it to the canvas as this commit shows it, with the tiles that the
@@ -823,7 +841,19 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         transition.type = .fade
         transition.duration = duration
         transition.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        let count = crossfadeCount
+        transition.delegate = CrossfadeEnd { [weak self] in
+            guard let self, self.crossfadeCount == count else { return }
+            self.canvasClip.clipsToBounds = false
+        }
+        canvasClip.clipsToBounds = true
         canvas.layer.add(transition, forKey: Self.crossfadeKey)
+    }
+
+    private func stopCrossfade() {
+        canvas.layer.removeAnimation(forKey: Self.crossfadeKey)
+        crossfadeCount += 1
+        canvasClip.clipsToBounds = false
     }
 
     /// Core Animation keeps a `CATransition` under this key, whatever key
@@ -1235,6 +1265,9 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     public override func layoutSubviews() {
         super.layoutSubviews()
+        let clip = bounds.insetBy(dx: -TranscriptPath.maximumSideOverhang, dy: -TranscriptPath.maximumOverhang)
+        canvasClip.frame = clip
+        canvasClip.bounds = clip
         canvas.frame = bounds
         animationLayer.frame = canvas.bounds
         fadeLayer.frame = canvas.bounds
@@ -1546,6 +1579,20 @@ private final class CanvasView: UIView {
         // Shift into the owner's coordinate space, where the layout lives.
         context.translateBy(x: -frame.minX, y: -frame.minY)
         owner.drawContent(in: context, rect: rect.offsetBy(dx: frame.minX, dy: frame.minY))
+    }
+}
+
+/// Runs an action when a crossfade ends or is removed.
+@MainActor
+private final class CrossfadeEnd: NSObject, CAAnimationDelegate {
+    private let action: @MainActor () -> Void
+
+    init(_ action: @escaping @MainActor () -> Void) {
+        self.action = action
+    }
+
+    nonisolated func animationDidStop(_ anim: CAAnimation, finished flag: Bool) {
+        MainActor.assumeIsolated { action() }
     }
 }
 

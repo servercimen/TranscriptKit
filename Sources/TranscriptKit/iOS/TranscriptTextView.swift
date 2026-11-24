@@ -92,10 +92,20 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     public var style = TranscriptStyle() {
         didSet {
             guard style != oldValue else { return }
-            relayoutNow()
-            updateTailStyle()
-            updateFadeDuration()
+            styleChanged()
         }
+    }
+
+    /// `style` as layout uses it, with the Bold Text setting of the trait
+    /// collection.
+    private var layoutStyle: TranscriptStyle {
+        style.withBoldText(traitCollection.legibilityWeight == .bold)
+    }
+
+    private func styleChanged() {
+        relayoutNow()
+        updateTailStyle()
+        updateFadeDuration()
     }
 
     /// How long text takes to fade in as it streams in, or nil to show it at
@@ -217,7 +227,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// What is on screen. Drawing, hit testing and every `UITextInput`
     /// answer come from this layout and its document.
     private var installed: DocumentLayout?
-    private lazy var emptyLayout = DocumentLayout(document: TranscriptDocument(), width: 1, style: style)
+    private lazy var emptyLayout = DocumentLayout(document: TranscriptDocument(), width: 1, style: layoutStyle)
     private var currentLayout: DocumentLayout { installed ?? emptyLayout }
     /// The document on screen, which can be a little behind `document`.
     private var shownDocument: TranscriptDocument { currentLayout.document }
@@ -361,6 +371,10 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             view.updateTailStyle()
             view.handTailToTiles()
             view.tiles.values.forEach { $0.setNeedsDisplay() }
+        }
+        registerForTraitChanges([UITraitLegibilityWeight.self]) { (view: TranscriptTextView, previous: UITraitCollection) in
+            guard view.style.withBoldText(previous.legibilityWeight == .bold) != view.layoutStyle else { return }
+            view.styleChanged()
         }
     }
 
@@ -717,14 +731,14 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             }
         }
         if bounds.width == 0, unsizedWidth > 0, output.source == source, output.layout.width == unsizedWidth,
-           output.layout.style == style {
+           output.layout.style == layoutStyle {
             // Not placed yet: nothing to show, but SwiftUI must hear that the height changed.
             engine.settleAnimations(output.started + output.waiting)
             if ceil(output.layout.height) != unsizedHeight { onHeightChangeWhileUnsized?() }
             return
         }
-        guard output.source == source, output.layout.width == bounds.width, output.layout.style == style else {
-            if output.source < source, output.layout.width == bounds.width, output.layout.style == style {
+        guard output.source == source, output.layout.width == bounds.width, output.layout.style == layoutStyle else {
+            if output.source < source, output.layout.width == bounds.width, output.layout.style == layoutStyle {
                 // From the source just replaced: kept in case the next
                 // layout, from the new one, builds on it.
                 skippedOutput = output
@@ -754,7 +768,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     ///   block's colors.
     private func relayoutNow(keepingFades: Bool = false) {
         guard bounds.width > 0,
-              let result = engine.relayout(width: bounds.width, style: style, keepingFades: keepingFades) else { return }
+              let result = engine.relayout(width: bounds.width, style: layoutStyle, keepingFades: keepingFades) else { return }
         skippedOutput = nil
         guard result.source == source else { return }
         install(result.layout, changedTop: nil, tail: nil, keptFadingFrom: result.fadingFrom, isFinished: result.isFinished)
@@ -1196,11 +1210,11 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             return CGSize(width: width, height: ceil(installed.height))
         }
         // Kept by the engine, so the relayout when the view takes this width is free.
-        let height = ceil(engine.measure(width: width, style: style))
+        let height = ceil(engine.measure(width: width, style: layoutStyle))
         if bounds.width == 0, onHeightChangeWhileUnsized != nil, size.width.isFinite, size.width > 0 {
             unsizedWidth = width
             unsizedHeight = height
-            engine.layOutUntilPlaced(width: width, style: style)
+            engine.layOutUntilPlaced(width: width, style: layoutStyle)
         }
         return CGSize(width: width, height: height)
     }

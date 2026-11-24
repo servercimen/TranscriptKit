@@ -15,7 +15,7 @@ extension TranscriptTextView {
         if cache.layout === layout { return cache.elements }
         var byKey: [AccessibilityItem.Key: UIAccessibilityElement] = [:]
         var elements: [UIAccessibilityElement] = []
-        let items = layout.accessibilityItems(math: mathAccessibilityLabel ?? \.tex)
+        let items = layout.accessibilityItems(math: mathAccessibilityLabel ?? \.tex, words: cache.words)
         for item in items {
             let element: UIAccessibilityElement
             if let table = item.table {
@@ -45,6 +45,7 @@ extension TranscriptTextView {
     func invalidateAccessibilityElements() {
         guard let cache = accessibilityCache, cache.layout != nil else { return }
         cache.layout = nil
+        cache.words = AccessibilityWords()
         UIAccessibility.post(notification: .layoutChanged, argument: nil)
     }
 
@@ -248,6 +249,8 @@ final class AccessibilityCache {
     var shape: AccessibilityShape?
     /// The items that the elements were last brought up to date with.
     var items: [AccessibilityItem] = []
+    /// The words of those items, for the current `mathAccessibilityLabel`.
+    var words = AccessibilityWords()
     var byKey: [AccessibilityItem.Key: UIAccessibilityElement] = [:]
     var elements: [UIAccessibilityElement] = []
 }

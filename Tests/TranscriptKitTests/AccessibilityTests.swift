@@ -216,3 +216,37 @@ private func isNeeded(from old: DocumentLayout, to new: DocumentLayout, isAppend
     #expect(table.cells.map(\.label) == ["2. A", "B", "1", "2"])
     #expect(table.cells.map(\.value) == ["Item 2 of 3", nil, nil, nil])
 }
+
+@Test func blocksWhoseLayoutDidNotChangeKeepTheirWords() {
+    var parser = MarkdownStreamParser()
+    parser.append("Area: \\(\\pi r^2\\).\n\n| A | B |\n| - | - |\n| \\(x\\) | [y](https://example.com) |\n\nFirst words")
+    let before = DocumentLayout(document: parser.document, width: 300)
+    parser.append(" and more")
+    let longer = DocumentLayout(document: parser.document, width: 300, reusing: before)
+    var calls = 0
+    let words = AccessibilityWords()
+    let math = { (formula: TranscriptMath) -> String in
+        calls += 1
+        return formula.tex
+    }
+    let first = before.accessibilityItems(math: math, words: words)
+    let callsBefore = calls
+    #expect(callsBefore >= 2)
+    let second = longer.accessibilityItems(math: math, words: words)
+    #expect(calls == callsBefore)
+    #expect(second.map(\.label) == ["Area: \\pi r^2.", "", "First words and more"])
+    #expect(second[1] == first[1])
+    #expect(second[1].table?.cells.map(\.label) == ["A", "B", "x", "y"])
+    #expect(second[1].table?.cells[3].links.map(\.url.absoluteString) == ["https://example.com"])
+}
+
+@Test func newLinkDefinitionsMakeTheWordsAgain() {
+    let words = AccessibilityWords()
+    var parser = MarkdownStreamParser()
+    parser.append("See [docs][d].\n\nMore")
+    let before = DocumentLayout(document: parser.document, width: 300)
+    #expect(before.accessibilityItems(words: words)[0].links.isEmpty)
+    parser.append(" text\n\n[d]: https://example.com/docs\n")
+    let after = DocumentLayout(document: parser.document, width: 300, reusing: before)
+    #expect(after.accessibilityItems(words: words)[0].links.map(\.url.absoluteString) == ["https://example.com/docs"])
+}

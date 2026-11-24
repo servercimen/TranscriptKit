@@ -59,9 +59,13 @@ extension DocumentLayout {
     /// a table, the text left out gets an item of its own after it.
     ///
     /// - Parameter math: the words for a formula.
-    func accessibilityItems(math: (TranscriptMath) -> String = \.tex) -> [AccessibilityItem] {
+    /// - Parameter words: the words of the items made before with the same
+    ///   `math`, which blocks whose layout did not change use again.
+    func accessibilityItems(math: (TranscriptMath) -> String = \.tex, words: AccessibilityWords? = nil) -> [AccessibilityItem] {
         var items: [AccessibilityItem] = []
         let definitions = document.linkDefinitions
+        words?.begin(definitions: definitions)
+        defer { words?.end() }
         let positions = AccessibilityText.listPositions(in: document, upTo: entryCount)
         var uses: [String: Int] = [:]
         func key(for block: TranscriptBlock) -> AccessibilityItem.Key {
@@ -72,23 +76,22 @@ extension DocumentLayout {
         for index in 0..<entryCount {
             let entry = entry(at: index)
             let block = entry.layout.block
+            let key = key(for: block)
+            let made = words?.words(for: key, layout: entry.layout) ?? Self.accessibilityWords(of: entry.layout, math: math,
+                                                                                               definitions: definitions)
+            words?.keep(made, for: key, layout: entry.layout)
             if let model = block.kind.table, let grid = entry.layout.table {
-                let table = Self.accessibilityTable(model, grid: grid, of: block, at: entry.y,
-                                                    position: positions[index].map(AccessibilityText.position), math: math,
-                                                    definitions: definitions)
+                let table = Self.accessibilityTable(model, grid: grid, of: block, at: entry.y, words: made.cells,
+                                                    position: positions[index].map(AccessibilityText.position))
                 guard !table.cells.isEmpty else { continue }
-                items.append(AccessibilityItem(key: key(for: block), frame: entry.frame, label: "", value: nil, isHeading: false,
+                items.append(AccessibilityItem(key: key, frame: entry.frame, label: "", value: nil, isHeading: false,
                                                links: [], table: table))
                 continue
             }
-            let all = 0..<block.utf16Count
-            let text = AccessibilityText.readable(block, in: all, math: math)
-            if text.isEmpty, block.kind != .rule { continue }
-            items.append(AccessibilityItem(key: key(for: block), frame: entry.frame, label: AccessibilityText.spoken(text, of: block),
+            if made.text.isEmpty, block.kind != .rule { continue }
+            items.append(AccessibilityItem(key: key, frame: entry.frame, label: AccessibilityText.spoken(made.text, of: block),
                                            value: positions[index].map(AccessibilityText.position),
-                                           isHeading: block.kind.isHeading,
-                                           links: AccessibilityText.links(of: block, in: all, math: math, definitions: definitions),
-                                           table: nil))
+                                           isHeading: block.kind.isHeading, links: made.links, table: nil))
         }
         guard leavesTextOut, entryCount < document.count else { return items }
         var rest: [String] = []
@@ -116,21 +119,41 @@ extension DocumentLayout {
         return items
     }
 
+    /// The words of a block: its text and links, or for a table the text
+    /// and links of each cell that `accessibilityTable` makes, in its order.
+    private static func accessibilityWords(of layout: BlockLayout, math: (TranscriptMath) -> String,
+                                           definitions: [String: String]) -> AccessibilityWords.Words {
+        let block = layout.block
+        guard let model = block.kind.table, let grid = layout.table else {
+            let all = 0..<block.utf16Count
+            return .init(text: AccessibilityText.readable(block, in: all, math: math),
+                         links: AccessibilityText.links(of: block, in: all, math: math, definitions: definitions), cells: [])
+        }
+        let (rowCount, columnCount) = accessibilityGridSize(model, grid: grid)
+        let ranges = model.rows.prefix(rowCount).flatMap { $0.prefix(columnCount) }
+        let spans = AccessibilityText.spans(of: block, startingIn: ranges)
+        let cells = zip(ranges, spans).map { range, spans in
+            AccessibilityWords.Words(text: AccessibilityText.readable(block, in: range, spans: spans, math: math),
+                                     links: AccessibilityText.links(of: block, in: range, spans: spans, math: math,
+                                                                    definitions: definitions),
+                                     cells: [])
+        }
+        return .init(text: "", links: [], cells: cells)
+    }
+
     private static func accessibilityTable(_ model: TranscriptTable, grid: BlockLayout.Table, of block: TranscriptBlock, at y: CGFloat,
-                                           position: String?, math: (TranscriptMath) -> String,
-                                           definitions: [String: String]) -> AccessibilityItem.Table {
+                                           words: [AccessibilityWords.Words], position: String?) -> AccessibilityItem.Table {
         var cells: [AccessibilityItem.Table.Cell] = []
         let (rowCount, columnCount) = accessibilityGridSize(model, grid: grid)
         for row in 0..<rowCount {
-            for (column, range) in model.rows[row].prefix(columnCount).enumerated() {
+            for column in 0..<min(model.rows[row].count, columnCount) where cells.count < words.count {
                 let frame = CGRect(x: grid.columnX[column], y: y + grid.rowY[row], width: grid.columnX[column + 1] - grid.columnX[column],
                                    height: grid.rowY[row + 1] - grid.rowY[row])
-                let text = AccessibilityText.readable(block, in: range, math: math)
+                let cell = words[cells.count]
                 let isFirst = cells.isEmpty
                 cells.append(.init(row: row, column: column, frame: frame,
-                                   label: isFirst ? AccessibilityText.spoken(text, of: block) : text,
-                                   value: isFirst ? position : nil,
-                                   links: AccessibilityText.links(of: block, in: range, math: math, definitions: definitions)))
+                                   label: isFirst ? AccessibilityText.spoken(cell.text, of: block) : cell.text,
+                                   value: isFirst ? position : nil, links: cell.links))
             }
         }
         return AccessibilityItem.Table(rowCount: rowCount, columnCount: columnCount, cells: cells)
@@ -210,15 +233,68 @@ enum AccessibilityLayoutChange {
     }
 }
 
+/// The words of the blocks that items were last made for. A block whose
+/// layout is the same object as before keeps its words, so a long
+/// transcript is not read again for each layout while text streams in. Use
+/// one instance with one `math` only, on one thread at a time.
+final class AccessibilityWords {
+    struct Words {
+        let text: String
+        let links: [AccessibilityItem.Link]
+        /// For a table: each cell's words.
+        let cells: [Words]
+    }
+
+    private struct Kept {
+        let layout: BlockLayout
+        let words: Words
+    }
+
+    private var kept: [AccessibilityItem.Key: Kept] = [:]
+    private var next: [AccessibilityItem.Key: Kept] = [:]
+    private var definitions: [String: String] = [:]
+
+    /// Starts a new set of items. Other link definitions can change the
+    /// links of any block, so then no words are used again.
+    func begin(definitions: [String: String]) {
+        if definitions != self.definitions {
+            kept = [:]
+            self.definitions = definitions
+        }
+        next = [:]
+    }
+
+    func words(for key: AccessibilityItem.Key, layout: BlockLayout) -> Words? {
+        kept[key].flatMap { $0.layout === layout ? $0.words : nil }
+    }
+
+    func keep(_ words: Words, for key: AccessibilityItem.Key, layout: BlockLayout) {
+        next[key] = Kept(layout: layout, words: words)
+    }
+
+    /// Keeps only the words of the blocks in the last set of items.
+    func end() {
+        kept = next
+        next = [:]
+    }
+}
+
 /// The words that assistive technologies get for a block.
 enum AccessibilityText {
     /// The block's text in `range`, with images as their alt text and
     /// formulas as `math` gives them, in place of the U+FFFC character each
     /// stands for.
     static func readable(_ block: TranscriptBlock, in range: Range<Int>, math: (TranscriptMath) -> String = \.tex) -> String {
+        readable(block, in: range, spans: block.spans, math: math)
+    }
+
+    /// - Parameter spans: the spans of the block that can start in
+    ///   `range`, in the block's order.
+    static func readable(_ block: TranscriptBlock, in range: Range<Int>, spans: some BidirectionalCollection<InlineSpan>,
+                         math: (TranscriptMath) -> String) -> String {
         let text = NSMutableString(string: (block.text as NSString).substring(with: NSRange(location: range.lowerBound,
                                                                                           length: range.count)))
-        for span in block.spans.reversed() where range.contains(span.range.lowerBound) && span.range.count == 1 {
+        for span in spans.reversed() where range.contains(span.range.lowerBound) && span.range.count == 1 {
             guard let replacement = span.image?.alt ?? span.math.map(math) else { continue }
             text.replaceCharacters(in: NSRange(location: span.range.lowerBound - range.lowerBound, length: 1), with: replacement)
         }
@@ -259,15 +335,44 @@ enum AccessibilityText {
     /// The links that start in `range` of the block's text.
     static func links(of block: TranscriptBlock, in range: Range<Int>, math: (TranscriptMath) -> String = \.tex,
                       definitions: [String: String]) -> [AccessibilityItem.Link] {
+        links(of: block, in: range, spans: block.spans, math: math, definitions: definitions)
+    }
+
+    /// - Parameter spans: the spans of the block that can start in
+    ///   `range`, in the block's order.
+    static func links(of block: TranscriptBlock, in range: Range<Int>, spans: some BidirectionalCollection<InlineSpan>,
+                      math: (TranscriptMath) -> String, definitions: [String: String]) -> [AccessibilityItem.Link] {
         var links: [AccessibilityItem.Link] = []
-        for span in block.spans where range.contains(span.range.lowerBound) {
+        for span in spans where range.contains(span.range.lowerBound) {
             guard let target = span.link ?? span.reference.flatMap({ definitions[$0] }), let url = URL(string: target) else {
                 continue
             }
             let end = min(span.range.upperBound, block.utf16Count)
-            links.append(.init(title: readable(block, in: span.range.lowerBound..<end, math: math), url: url))
+            links.append(.init(title: readable(block, in: span.range.lowerBound..<end, spans: spans, math: math), url: url))
         }
         return links
+    }
+
+    /// The spans of `block` that start in each of `ranges`, in the block's
+    /// order. Each span goes to the range that holds its start, found by
+    /// binary search, so a table costs its spans, not its spans times its
+    /// cells.
+    static func spans(of block: TranscriptBlock, startingIn ranges: [Range<Int>]) -> [[InlineSpan]] {
+        var result = Array(repeating: [InlineSpan](), count: ranges.count)
+        // An empty range before a range with the same start: the range with text comes last.
+        let order = ranges.indices.sorted { (ranges[$0].lowerBound, ranges[$0].upperBound) < (ranges[$1].lowerBound, ranges[$1].upperBound) }
+        for span in block.spans {
+            let start = span.range.lowerBound
+            var low = 0
+            var high = order.count
+            while low < high {
+                let middle = (low + high) / 2
+                if ranges[order[middle]].lowerBound <= start { low = middle + 1 } else { high = middle }
+            }
+            guard low > 0, ranges[order[low - 1]].contains(start) else { continue }
+            result[order[low - 1]].append(span)
+        }
+        return result
     }
 
     struct ListPosition: Equatable {

@@ -349,3 +349,34 @@ private func attachment(in layout: DocumentLayout) -> ImageAttachment? {
                                              font: font, maximumWidth: 300)
     #expect(wide.size.width == 300)
 }
+
+@Test func formulasOnScreenAreNotDrawnAgainWhenTheCacheRemovesThem() async {
+    // Room for 3 of the 5 formulas, which are 4 by 4 pixels: 16 bytes as a mask, which costs 256.
+    let cache = TranscriptMathCache(byteLimit: 256 * 3)
+    let store = TranscriptImageStore(mathCache: cache)
+    let calls = RenderCount()
+    store.setMathRenderer { _, _ in
+        calls.add()
+        return boxFormula(width: 2, height: 2, baseline: 0)
+    }
+    let document = MarkdownStreamParser.document(from: "\\(a\\) \\(b\\) \\(c\\) \\(d\\) \\(e\\)")
+    var layout = DocumentLayout(document: document, width: 300, style: TranscriptStyle(), reusing: nil, images: store)
+    for _ in 0..<20 {
+        let revision = store.revision
+        await waitUntil { store.revision > revision }
+        if store.revision == revision { break }
+        layout = DocumentLayout(document: document, width: 300, style: TranscriptStyle(), reusing: layout, images: store)
+    }
+    let attachments = layout.entry(at: 0).layout.attachments
+    #expect(attachments.count == 5)
+    #expect(attachments.allSatisfy { $0.attachment.picture != nil })
+    #expect(calls.value == 5)
+    #expect(cache.usage.count == 3)
+}
+
+private final class RenderCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func add() { lock.withLock { count += 1 } }
+    var value: Int { lock.withLock { count } }
+}

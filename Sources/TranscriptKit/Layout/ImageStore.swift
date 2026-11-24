@@ -154,7 +154,11 @@ final class TranscriptImageStore: @unchecked Sendable {
     private var mathGeneration = 0
     /// For each slot, as for code blocks: the formula it last showed drawn,
     /// the one being drawn, and the newest one waiting for its turn.
-    private var shownFormulas: [MathSlot: TranscriptMathCache.Key] = [:]
+    /// The last images are kept here too: a formula on screen that the cache
+    /// removed is then not drawn again, which would remove another one. Only
+    /// the slots used last are kept, so that a view that shows one document
+    /// after another does not keep all their formulas.
+    private var shownFormulas = LeastRecentlyUsed<MathSlot, (key: TranscriptMathCache.Key, image: TranscriptMathImage)>(costLimit: 1024)
     private var drawingFormulas: [MathSlot: TranscriptMathCache.Key] = [:]
     private var waitingFormulas: [MathSlot: TranscriptMathCache.Key] = [:]
 
@@ -182,7 +186,7 @@ final class TranscriptImageStore: @unchecked Sendable {
     private func resetFormulas() {
         mathGeneration += 1
         _revision += 1
-        shownFormulas = [:]
+        shownFormulas.removeAll()
         drawingFormulas = [:]
         waitingFormulas = [:]
     }
@@ -197,18 +201,17 @@ final class TranscriptImageStore: @unchecked Sendable {
             guard let mathRenderer else { return (.asWritten, nil) }
             switch mathCache.result(for: key) {
             case .drawn(let image)?:
-                shownFormulas[slot] = key
+                shownFormulas.set((key, image), for: slot, cost: 1)
                 return (.drawn(image), nil)
             case .failed?:
                 return (.asWritten, nil)
             case nil:
                 break
             }
+            let shown = shownFormulas.value(for: slot)
+            if let shown, shown.key == key { return (.drawn(shown.image), nil) }
             var meanwhile = Formula.pending
-            if let shown = shownFormulas[slot], Self.mayBeEarlierVersion(shown.math, of: math),
-               case .drawn(let image)? = mathCache.result(for: shown) {
-                meanwhile = .drawn(image)
-            }
+            if let shown, Self.mayBeEarlierVersion(shown.key.math, of: math) { meanwhile = .drawn(shown.image) }
             if let drawing = drawingFormulas[slot] {
                 waitingFormulas[slot] = drawing == key ? nil : key
                 return (meanwhile, nil)
@@ -242,7 +245,7 @@ final class TranscriptImageStore: @unchecked Sendable {
                                generation: Int) {
         let (changed, next): (Bool, (TranscriptMathCache.Key, TranscriptMathRenderer, TranscriptMathCache)?) = lock.withLock {
             guard generation == mathGeneration else { return (false, nil) }
-            if case .drawn = result { shownFormulas[slot] = key }
+            if case .drawn(let image) = result { shownFormulas.set((key, image), for: slot, cost: 1) }
             _revision += 1
             if let waiting = waitingFormulas.removeValue(forKey: slot), waiting != key, let mathRenderer {
                 drawingFormulas[slot] = waiting

@@ -141,6 +141,20 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// Where the lines of paragraphs and headings sit in their column. Lists,
     /// quotes, code and tables stay at the leading edge.
     public var textAlignment: TranscriptTextAlignment = .leading
+    /// Whether the lines of code blocks wrap at the width of the text column.
+    /// On by default. Off, a line of code breaks only where its text has a
+    /// line break, and a code block with a line that is wider than the column
+    /// scrolls sideways in `TranscriptTextView`. The block keeps the width of
+    /// the column.
+    public var codeWraps = true
+    /// Where a paragraph that holds only display math puts its formula in the
+    /// column. Centered by default. A formula that is wider than the column
+    /// starts at the leading edge.
+    public var displayMathAlignment: TranscriptTextAlignment = .center
+    /// Whether a display formula that is wider than the text column scrolls
+    /// sideways in `TranscriptTextView`. Off by default: the formula is then
+    /// scaled down to fit. Inline formulas are always scaled down.
+    public var displayMathScrolls = false
 
     struct Insets {
         var leading: CGFloat = 0

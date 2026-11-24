@@ -14,7 +14,15 @@ extension TranscriptTextView {
             let block = entry.layout.block
             let text = Self.readableText(of: block, upTo: min(entry.layout.length, block.utf16Count))
             if text.isEmpty, block.kind != .rule { continue }
-            let element = UIAccessibilityElement(accessibilityContainer: self)
+            let element: UIAccessibilityElement
+            if entry.layout.maximumScrollOffset > 0 {
+                let scrolling = SideScrollingElement(accessibilityContainer: self)
+                let id = block.id
+                scrolling.onScroll = { [weak self] direction in self?.accessibilityScrollBlock(id, direction) ?? false }
+                element = scrolling
+            } else {
+                element = UIAccessibilityElement(accessibilityContainer: self)
+            }
             element.accessibilityLabel = Self.spokenText(text, of: block)
             element.accessibilityFrameInContainerSpace = entry.frame
             var traits: UIAccessibilityTraits = .staticText
@@ -69,6 +77,16 @@ extension TranscriptTextView {
             }
             return text
         }
+    }
+}
+
+/// The element of a block that scrolls sideways: a three-finger swipe
+/// moves the block.
+final class SideScrollingElement: UIAccessibilityElement {
+    var onScroll: ((UIAccessibilityScrollDirection) -> Bool)?
+
+    override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+        onScroll?(direction) ?? false
     }
 }
 

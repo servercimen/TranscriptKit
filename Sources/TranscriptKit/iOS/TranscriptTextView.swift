@@ -7,6 +7,8 @@ import UIKit
 private let animationLog = Logger(subsystem: "TranscriptKit", category: "TagAnimations")
 /// Each tag animation as an interval in Instruments' Points of Interest.
 private let animationSignposter = OSSignposter(subsystem: "TranscriptKit", category: .pointsOfInterest)
+/// Where a block that scrolls sideways stops, at the debug level, like `animationLog`.
+private let sideScrollLog = Logger(subsystem: "TranscriptKit", category: "SideScroll")
 
 /// A read-only text view that draws a whole transcript with Core Text and
 /// exposes it to the system as one selectable document.
@@ -93,6 +95,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         didSet {
             guard style != oldValue else { return }
             styleChanged()
+            updateSidePan()
         }
     }
 
@@ -372,6 +375,22 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     private var scrollObservation: NSKeyValueObservation?
     private var canvasCheckScheduled = false
 
+    /// How far the blocks that scroll sideways are scrolled (see
+    /// `TranscriptStyle.codeWraps` and `displayMathScrolls`).
+    private var sideScroll = SideScroll()
+    /// Scrolls a block sideways. It exists while the style lets blocks scroll.
+    private var sidePan: UIPanGestureRecognizer?
+    /// The block that the pan moves: its id, its entry's index, and its offset when the pan began.
+    private var sidePanTarget: (id: String, index: Int, start: CGFloat)?
+    /// A block that goes on moving after a pan, slowing down as in a scroll view.
+    private var sideDeceleration: (id: String, index: Int, velocity: CGFloat, time: CFTimeInterval, link: CADisplayLink)?
+    /// The touch that stopped a moving block: it opens no link.
+    private weak var stoppingTouch: UITouch?
+    /// No text fades in while a block that text streams into moves sideways.
+    private var fadesHeld = false
+    /// The tail is hidden, but the engine still draws one (see `hideTail()`).
+    private var tailNeedsSettling = false
+
     public override init(frame: CGRect) {
         super.init(frame: frame)
         setUp()
@@ -444,7 +463,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     private var linkTap: UITapGestureRecognizer?
 
     private func linkURL(at point: CGPoint) -> URL? {
-        currentLayout.link(at: point).flatMap { URL(string: $0) }
+        currentLayout.link(at: point, scroll: sideScroll).flatMap { URL(string: $0) }
     }
 
     @objc private func handleLinkTap(_ recognizer: UITapGestureRecognizer) {
@@ -459,12 +478,220 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         if gestureRecognizer === linkTap {
             return linkURL(at: gestureRecognizer.location(in: self)) != nil
         }
+        if gestureRecognizer === sidePan { return sidePanShouldBegin() }
         return super.gestureRecognizerShouldBegin(gestureRecognizer)
     }
 
     public func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
                                   shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
         gestureRecognizer === linkTap
+    }
+
+    /// The scroll views around the view wait for a sideways pan to fail, so
+    /// that a sideways drag in a block that scrolls moves the block. The pan
+    /// fails as soon as the drag goes up or down, or starts outside such a block.
+    public func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer,
+                                  shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+        guard gestureRecognizer === sidePan, let scrollView = other.view as? UIScrollView,
+              other === scrollView.panGestureRecognizer else { return false }
+        return isDescendant(of: scrollView)
+    }
+
+    /// The sideways pan takes only touches in blocks that scroll, so that it
+    /// fails at once elsewhere and the scroll views around do not wait for it.
+    public func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+        let point = touch.location(in: self)
+        // A touch on a block that still moves after a pan stops it, and opens
+        // no link, as in a scroll view.
+        if let moving = sideDeceleration, let index = currentLayout.sideScrollingEntryIndex(at: point),
+           currentLayout.entry(at: index).layout.block.id == moving.id {
+            stopSideDeceleration()
+            stoppingTouch = touch
+        } else if stoppingTouch !== touch {
+            stoppingTouch = nil
+        }
+        if gestureRecognizer === linkTap { return touch !== stoppingTouch }
+        if gestureRecognizer === sidePan { return currentLayout.sideScrollingEntryIndex(at: point) != nil }
+        return true
+    }
+
+    // MARK: Sideways scrolling
+
+    /// Adds the sideways pan when the style lets blocks scroll, and removes it when not.
+    private func updateSidePan() {
+        let needed = !style.codeWraps || style.displayMathScrolls
+        if needed, sidePan == nil {
+            let pan = UIPanGestureRecognizer(target: self, action: #selector(handleSidePan(_:)))
+            pan.maximumNumberOfTouches = 1
+            pan.delegate = self
+            addGestureRecognizer(pan)
+            sidePan = pan
+        } else if !needed, let pan = sidePan {
+            removeGestureRecognizer(pan)
+            sidePan = nil
+            sidePanTarget = nil
+            stopSideDeceleration()
+            releaseFades()
+        }
+    }
+
+    /// Where the pan's touch went down: the pan begins only after the touch
+    /// has moved some way.
+    private func startPoint(of pan: UIPanGestureRecognizer) -> CGPoint {
+        let location = pan.location(in: self)
+        let translation = pan.translation(in: self)
+        return CGPoint(x: location.x - translation.x, y: location.y - translation.y)
+    }
+
+    /// See `DocumentLayout.sidePanEntryIndex(at:velocity:scroll:handles:)`.
+    private func sidePanShouldBegin() -> Bool {
+        guard let pan = sidePan else { return false }
+        let handles = selectedRange.map { [$0.lowerBound, $0.upperBound] } ?? []
+        return currentLayout.sidePanEntryIndex(at: startPoint(of: pan), velocity: pan.velocity(in: self), scroll: sideScroll,
+                                               handles: handles) != nil
+    }
+
+    @objc private func handleSidePan(_ pan: UIPanGestureRecognizer) {
+        switch pan.state {
+        case .began:
+            stopSideDeceleration()
+            guard let index = currentLayout.sideScrollingEntryIndex(at: startPoint(of: pan)) else { return }
+            let entry = currentLayout.entry(at: index)
+            sidePanTarget = (entry.layout.block.id, index, sideScroll.offset(of: entry.layout))
+            // The block moves from here on, without a jump for the distance the pan took to begin.
+            pan.setTranslation(.zero, in: self)
+            holdFades(whileMoving: index)
+        case .changed:
+            guard let target = sidePanTarget else { return }
+            scrollBlock(target.id, to: target.start - pan.translation(in: self).x, hint: target.index)
+        case .ended:
+            guard let target = sidePanTarget else {
+                releaseFades()
+                return
+            }
+            sidePanTarget = nil
+            logSideScroll(of: target.id, "Pan ended")
+            startSideDeceleration(of: target.id, index: target.index, velocity: -pan.velocity(in: self).x)
+        default:
+            if sidePanTarget != nil, sideDeceleration == nil { releaseFades() }
+            sidePanTarget = nil
+        }
+    }
+
+    /// Fading text is drawn where its block was when the fade began. While
+    /// the block at `index` moves sideways, text that streams into it shows
+    /// at once, without a fade, until `releaseFades()`.
+    private func holdFades(whileMoving index: Int) {
+        let layout = currentLayout
+        if index == layout.entryCount - 1, !isFinished, !fadesHeld {
+            fadesHeld = true
+            updateFadeDuration()
+        }
+        settleFades(reaching: layout.entry(at: index))
+    }
+
+    private func releaseFades() {
+        guard fadesHeld else { return }
+        fadesHeld = false
+        updateFadeDuration()
+    }
+
+    /// Ends the fades if their text reaches into `entry`'s block.
+    private func settleFades(reaching entry: DocumentLayout.Entry) {
+        let from = fadingFrom ?? (fadeLayers.isEmpty ? nil : 0)
+        if let from, from <= entry.start + entry.layout.length { settleFades() }
+    }
+
+    /// Scrolls the block with `id` sideways to `offset`, cut to what it can
+    /// scroll, and draws it again. Returns the offset it got, or nil if the
+    /// block is not on screen.
+    @discardableResult
+    private func scrollBlock(_ id: String, to offset: CGFloat, hint: Int? = nil) -> CGFloat? {
+        let layout = currentLayout
+        guard let index = layout.entryIndex(ofBlock: id, hint: hint) else { return nil }
+        let entry = layout.entry(at: index)
+        let clamped = min(max(offset, 0), entry.layout.maximumScrollOffset)
+        guard clamped != sideScroll.offset(of: entry.layout) else { return clamped }
+        sideScroll[id] = clamped
+        engine.setSideScroll(sideScroll)
+        let overhang = TranscriptPath.maximumOverhang
+        let band = (entry.y - overhang)...(entry.frame.maxY + overhang)
+        settleFades(reaching: entry)
+        for key in playingKeys where key.block == id { finishAnimation(key) }
+        // The tail shows the block at its old offset: the tiles draw it until the next tail.
+        if tailTop < band.upperBound { hideTail() }
+        redrawTiles(in: band)
+        refreshSelectionDisplay()
+        return clamped
+    }
+
+    /// Scrolls the block with `id` by most of its box, for a VoiceOver
+    /// three-finger swipe in `direction`. Returns false if it cannot move that way.
+    func accessibilityScrollBlock(_ id: String, _ direction: UIAccessibilityScrollDirection) -> Bool {
+        guard let index = currentLayout.entryIndex(ofBlock: id) else { return false }
+        let block = currentLayout.entry(at: index).layout
+        let page = (block.scrollBox.width * 0.8).rounded()
+        let start = sideScroll.offset(of: block)
+        let target: CGFloat
+        switch direction {
+        case .left: target = start + page
+        case .right: target = start - page
+        default: return false
+        }
+        stopSideDeceleration()
+        guard let reached = scrollBlock(id, to: target, hint: index), reached != start else { return false }
+        let percent = Int((reached / block.maximumScrollOffset * 100).rounded())
+        let format = NSLocalizedString("Scrolled sideways, %d percent",
+                                       comment: "VoiceOver: how far a code block or formula is scrolled sideways")
+        UIAccessibility.post(notification: .pageScrolled, argument: String(format: format, percent))
+        return true
+    }
+
+    private func startSideDeceleration(of id: String, index: Int, velocity: CGFloat) {
+        stopSideDeceleration()
+        guard abs(velocity) > 20 else {
+            logSideScroll(of: id, "Stopped")
+            releaseFades()
+            return
+        }
+        let link = CADisplayLink(target: SideScrollFrameTarget(view: self), selector: #selector(SideScrollFrameTarget.frame(_:)))
+        link.add(to: .main, forMode: .common)
+        sideDeceleration = (id, index, velocity, CACurrentMediaTime(), link)
+    }
+
+    private func stopSideDeceleration() {
+        guard let moving = sideDeceleration else { return }
+        moving.link.invalidate()
+        sideDeceleration = nil
+        logSideScroll(of: moving.id, "Stopped")
+        releaseFades()
+    }
+
+    private func logSideScroll(of id: String, _ event: String) {
+        guard let index = currentLayout.entryIndex(ofBlock: id) else { return }
+        let block = currentLayout.entry(at: index).layout
+        let offset = sideScroll.offset(of: block)
+        let maximum = block.maximumScrollOffset
+        sideScrollLog.debug(
+            "\(event, privacy: .public): block \(id, privacy: .public) at \(offset, format: .fixed(precision: 1)) of \(maximum, format: .fixed(precision: 1)) points")
+    }
+
+    fileprivate func stepSideDeceleration(_ link: CADisplayLink) {
+        guard var moving = sideDeceleration, moving.link === link else {
+            link.invalidate()
+            return
+        }
+        let now = CACurrentMediaTime()
+        let step = SideScroll.decelerate(velocity: moving.velocity, for: now - moving.time)
+        moving.velocity = step.velocity
+        moving.time = now
+        sideDeceleration = moving
+        let target = sideScroll[moving.id] + step.distance
+        guard let reached = scrollBlock(moving.id, to: target, hint: moving.index), reached == target,
+              abs(moving.velocity) > 10 else {
+            stopSideDeceleration()
+            return
+        }
     }
 
     // MARK: Viewport drawing
@@ -494,6 +721,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         updateAnimationsEnabled()
         updateFadeDuration()
         guard window != nil else {
+            stopSideDeceleration()
             handTailToTiles()
             releaseTiles()
             return
@@ -694,7 +922,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         }
         let colors = resolvedColors()
         currentLayout.draw(in: context, dirtyRect: rect, text: colors.text, codeBackground: colors.codeBackground, accent: colors.accent,
-                           dark: colors.dark, highContrast: colors.highContrast, hiding: hiding)
+                           dark: colors.dark, highContrast: colors.highContrast, hiding: hiding, scroll: sideScroll)
     }
 
     private func resolvedColors() -> TailRenderer.Colors {
@@ -759,8 +987,20 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// Hands everything back to the tiles and frees the tail's surfaces, once
     /// updates have stopped for a moment (or the tail cannot be used).
     private func handTailToTiles() {
-        guard tailTop != .greatestFiniteMagnitude else { return }
+        guard tailTop != .greatestFiniteMagnitude || tailNeedsSettling else { return }
+        tailNeedsSettling = false
         engine.settleTail()
+        if let band = showTail(nil) {
+            updateCanvas(forceRedraw: true, changed: band)
+        }
+    }
+
+    /// Hides the tail and lets the tiles draw its part, without waiting for
+    /// the layout queue: the engine goes on drawing tails, and the next
+    /// output shows one again.
+    private func hideTail() {
+        guard tailTop != .greatestFiniteMagnitude else { return }
+        tailNeedsSettling = true
         if let band = showTail(nil) {
             updateCanvas(forceRedraw: true, changed: band)
         }
@@ -780,7 +1020,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
                 let quiet = CACurrentMediaTime() - self.lastTailShown
                 if quiet >= Self.settleDelay {
                     self.handTailToTiles()
-                } else if self.tailTop != .greatestFiniteMagnitude {
+                } else if self.tailTop != .greatestFiniteMagnitude || self.tailNeedsSettling {
                     self.scheduleTailSettling(after: Self.settleDelay - quiet)
                 }
             }
@@ -828,8 +1068,18 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
                 fade: isAppend ? output.fade : nil, fadingFrom: output.hidden.fadingFrom, isFinished: output.isFinished)
         // A tail drawn while a tag was in another state than it is now (its
         // animation has started or ended since): the tiles draw that part.
-        if output.tail != nil, output.hidden != hiding {
-            handTailToTiles()
+        // One drawn before a block in it was last scrolled sideways: the
+        // tiles draw that part until the next tail.
+        if let tail = output.tail {
+            if output.hidden != hiding {
+                handTailToTiles()
+            } else if !output.layout.scrollsAlike(output.scroll, sideScroll, below: tail.top) {
+                hideTail()
+            }
+        }
+        // Fading text drawn before its block was last scrolled sideways shows at rest.
+        if output.fade != nil, !output.layout.scrollsAlike(output.scroll, sideScroll, fromOffset: output.hidden.fadingFrom ?? 0) {
+            settleFades()
         }
     }
 
@@ -888,6 +1138,19 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         } else {
             if self.fadingFrom != nil || !fadeLayers.isEmpty { _ = engine.endFades() }
             self.fadingFrom = nil
+        }
+        // Blocks keep their offsets while they stay, of the same kind.
+        if !isAppend, !sideScroll.isEmpty, let old {
+            let kept = sideScroll.kept(from: old, in: layout)
+            if kept != sideScroll {
+                sideScroll = kept
+                engine.setSideScroll(kept)
+                if let target = sidePanTarget, !SideScroll.keeps(target.id, from: old, in: layout) {
+                    sidePanTarget = nil
+                    releaseFades()
+                }
+                if let moving = sideDeceleration, !SideScroll.keeps(moving.id, from: old, in: layout) { stopSideDeceleration() }
+            }
         }
         installed = layout
         if let current = selection {
@@ -956,7 +1219,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     // MARK: Fades
 
     private func updateFadeDuration() {
-        let enabled = window != nil && !UIAccessibility.isReduceMotionEnabled && style.lineLimit == nil
+        let enabled = window != nil && !UIAccessibility.isReduceMotionEnabled && style.lineLimit == nil && !fadesHeld
         engine.setFadeDuration(enabled ? textFadeInDuration : nil)
         if !enabled { settleFades() }
     }
@@ -1161,6 +1424,13 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             engine.settleAnimations([key])
             return
         }
+        // Its layers could not follow the block's offset: the tag shows at rest.
+        if sidePan != nil, let index = layout.entryIndex(ofBlock: key.block), layout.entry(at: index).layout.maximumScrollOffset > 0 {
+            engine.settleAnimations([key])
+            if tailTop < band(of: tag).upperBound { handTailToTiles() }
+            redrawTiles(in: band(of: tag))
+            return
+        }
         if wasWaiting, tailTop < band(of: tag).upperBound { handTailToTiles() }
         let animation = tag.animation.animation(for: tag.fragments)
         let colors = resolvedColors()
@@ -1342,7 +1612,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         // Hit testing comes before the touch begins, and the touch's gesture
         // recognizers are gathered after it, so ones added now see it.
         if isSelectable { addTextInteractionIfNeeded() }
-        return isSelectable || linkURL(at: point) != nil
+        return isSelectable || linkURL(at: point) != nil || (sidePan != nil && currentLayout.sideScrollingEntryIndex(at: point) != nil)
     }
 
     private func addTextInteractionIfNeeded() {
@@ -1439,9 +1709,9 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         case .left: return TranscriptTextPosition(offset: clamp(start - offset))
         case .right: return TranscriptTextPosition(offset: clamp(start + offset))
         case .up, .down:
-            let caret = currentLayout.caretRect(at: start)
+            let caret = currentLayout.caretRect(at: start, scroll: sideScroll)
             let step = caret.height * CGFloat(offset) * (direction == .up ? -1 : 1)
-            let target = currentLayout.closestOffset(to: CGPoint(x: caret.midX, y: caret.midY + step))
+            let target = currentLayout.closestOffset(to: CGPoint(x: caret.midX, y: caret.midY + step), scroll: sideScroll)
             return TranscriptTextPosition(offset: target)
         @unknown default: return nil
         }
@@ -1492,33 +1762,34 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     // MARK: UITextInput — geometry
 
     public func caretRect(for position: UITextPosition) -> CGRect {
-        currentLayout.caretRect(at: clamp(offset(of: position)))
+        currentLayout.caretRect(at: clamp(offset(of: position)), scroll: sideScroll)
     }
 
     public func firstRect(for range: UITextRange) -> CGRect {
         let range = self.range(of: range)
-        return currentLayout.selectionRects(for: range).first ?? currentLayout.caretRect(at: range.lowerBound)
+        return currentLayout.selectionRects(for: range, scroll: sideScroll).first
+            ?? currentLayout.caretRect(at: range.lowerBound, scroll: sideScroll)
     }
 
     public func selectionRects(for range: UITextRange) -> [UITextSelectionRect] {
-        let rects = currentLayout.selectionRects(for: self.range(of: range))
+        let rects = currentLayout.selectionRects(for: self.range(of: range), scroll: sideScroll)
         return rects.enumerated().map { index, rect in
             TranscriptSelectionRect(rect: rect, containsStart: index == 0, containsEnd: index == rects.count - 1)
         }
     }
 
     public func closestPosition(to point: CGPoint) -> UITextPosition? {
-        TranscriptTextPosition(offset: currentLayout.closestOffset(to: point))
+        TranscriptTextPosition(offset: currentLayout.closestOffset(to: point, scroll: sideScroll))
     }
 
     public func closestPosition(to point: CGPoint, within range: UITextRange) -> UITextPosition? {
         let range = self.range(of: range)
-        let offset = currentLayout.closestOffset(to: point)
+        let offset = currentLayout.closestOffset(to: point, scroll: sideScroll)
         return TranscriptTextPosition(offset: min(max(offset, range.lowerBound), range.upperBound))
     }
 
     public func characterRange(at point: CGPoint) -> UITextRange? {
-        let offset = currentLayout.closestOffset(to: point)
+        let offset = currentLayout.closestOffset(to: point, scroll: sideScroll)
         guard offset < currentLayout.length else { return nil }
         return TranscriptTextRange(range: offset..<(offset + 1))
     }
@@ -1568,6 +1839,25 @@ private final class CanvasView: UIView {
         // Shift into the owner's coordinate space, where the layout lives.
         context.translateBy(x: -frame.minX, y: -frame.minY)
         owner.drawContent(in: context, rect: rect.offsetBy(dx: frame.minX, dy: frame.minY))
+    }
+}
+
+/// Calls the view on each display frame while a block moves on after a
+/// pan. The display link keeps its target, so this keeps the view weakly.
+@MainActor
+private final class SideScrollFrameTarget: NSObject {
+    weak var view: TranscriptTextView?
+
+    init(view: TranscriptTextView) {
+        self.view = view
+    }
+
+    @objc func frame(_ link: CADisplayLink) {
+        guard let view else {
+            link.invalidate()
+            return
+        }
+        view.stepSideDeceleration(link)
     }
 }
 

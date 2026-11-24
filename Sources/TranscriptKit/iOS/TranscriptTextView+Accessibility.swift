@@ -73,11 +73,14 @@ class TextAccessibilityElement: UIAccessibilityElement {
     private var links: [AccessibilityItem.Link]?
     private var actions: [UIAccessibilityCustomAction]?
 
-    func update(label: String, value: String?, isHeading: Bool, frame: CGRect, links: [AccessibilityItem.Link],
-                in view: TranscriptTextView) {
+    /// - Parameter frameInContainer: the frame in the container's
+    ///   coordinates, which UIKit can use to scroll the element into view.
+    func update(label: String, value: String?, isHeading: Bool, frame: CGRect, frameInContainer: CGRect,
+                links: [AccessibilityItem.Link], in view: TranscriptTextView) {
         self.label = label
         self.value = value
         frameInView = frame
+        if accessibilityFrameInContainerSpace != frameInContainer { accessibilityFrameInContainerSpace = frameInContainer }
         self.view = view
         var traits: UIAccessibilityTraits = .staticText
         if isHeading { traits.insert(.header) }
@@ -124,7 +127,8 @@ class TextAccessibilityElement: UIAccessibilityElement {
 /// A block's element. Its block's id keeps it from one layout to the next.
 final class BlockAccessibilityElement: TextAccessibilityElement {
     func update(with item: AccessibilityItem, in view: TranscriptTextView) {
-        update(label: item.label, value: item.value, isHeading: item.isHeading, frame: item.frame, links: item.links, in: view)
+        update(label: item.label, value: item.value, isHeading: item.isHeading, frame: item.frame, frameInContainer: item.frame,
+               links: item.links, in: view)
     }
 }
 
@@ -139,6 +143,7 @@ final class TableAccessibilityElement: UIAccessibilityElement, UIAccessibilityCo
 
     func update(frame: CGRect, table: AccessibilityItem.Table, in view: TranscriptTextView) {
         frameInView = frame
+        if accessibilityFrameInContainerSpace != frame { accessibilityFrameInContainerSpace = frame }
         self.view = view
         rowCount = table.rowCount
         columnCount = table.columnCount
@@ -146,7 +151,7 @@ final class TableAccessibilityElement: UIAccessibilityElement, UIAccessibilityCo
         for (index, cell) in table.cells.enumerated() {
             let element = index < self.cells.count && self.cells[index].row == cell.row && self.cells[index].column == cell.column
                 ? self.cells[index] : CellAccessibilityElement(accessibilityContainer: self)
-            element.update(with: cell, in: view)
+            element.update(with: cell, inTableAt: frame.origin, in: view)
             cells.append(element)
         }
         self.cells = cells
@@ -190,10 +195,11 @@ final class CellAccessibilityElement: TextAccessibilityElement, UIAccessibilityC
     private(set) var row = -1
     private(set) var column = -1
 
-    func update(with cell: AccessibilityItem.Table.Cell, in view: TranscriptTextView) {
+    func update(with cell: AccessibilityItem.Table.Cell, inTableAt origin: CGPoint, in view: TranscriptTextView) {
         row = cell.row
         column = cell.column
-        update(label: cell.label, value: nil, isHeading: false, frame: cell.frame, links: cell.links, in: view)
+        update(label: cell.label, value: nil, isHeading: false, frame: cell.frame,
+               frameInContainer: cell.frame.offsetBy(dx: -origin.x, dy: -origin.y), links: cell.links, in: view)
     }
 
     nonisolated func accessibilityRowRange() -> NSRange { onMainThread { NSRange(location: row, length: 1) } }

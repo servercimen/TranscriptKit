@@ -115,10 +115,32 @@ final class TranscriptImageStore: @unchecked Sendable {
 
     // MARK: Formulas
 
+    /// Which formula of a block: the block's id, and how many formulas come
+    /// before it in the block. While a formula streams in, its LaTeX changes
+    /// and its slot stays the same.
+    struct MathSlot: Hashable, Sendable {
+        let block: String
+        let index: Int
+    }
+
+    /// What to show for a formula.
+    enum Formula {
+        /// Its image, or while it is drawn, the last image of its slot.
+        case drawn(TranscriptMathImage)
+        /// It is being drawn, and its slot has no image yet.
+        case pending
+        /// Its LaTeX as written: there is no renderer, or it returned nil.
+        case asWritten
+    }
+
     private var mathRenderer: TranscriptMathRenderer?
     private var mathCache: TranscriptMathCache
     private var mathGeneration = 0
-    private var formulasRequested: Set<TranscriptMathCache.Key> = []
+    /// For each slot, as for code blocks: the formula it last showed drawn,
+    /// the one being drawn, and the newest one waiting for its turn.
+    private var shownFormulas: [MathSlot: TranscriptMathCache.Key] = [:]
+    private var drawingFormulas: [MathSlot: TranscriptMathCache.Key] = [:]
+    private var waitingFormulas: [MathSlot: TranscriptMathCache.Key] = [:]
 
     /// - Parameter mathCache: where drawn formulas are kept. A store has a
     ///   cache of its own unless it is given one that views share.
@@ -134,9 +156,7 @@ final class TranscriptImageStore: @unchecked Sendable {
     func setMathRenderer(_ renderer: TranscriptMathRenderer?) {
         lock.withLock {
             mathRenderer = renderer
-            mathGeneration += 1
-            _revision += 1
-            formulasRequested = []
+            resetFormulas()
         }
     }
 
@@ -145,41 +165,84 @@ final class TranscriptImageStore: @unchecked Sendable {
         lock.withLock {
             guard cache !== mathCache else { return }
             mathCache = cache
-            mathGeneration += 1
-            _revision += 1
-            formulasRequested = []
+            resetFormulas()
         }
     }
 
-    /// The drawn formula if it has arrived. Starts drawing it if not.
-    func formula(for math: TranscriptMath, fontSize: CGFloat) -> TranscriptMathImage? {
+    private func resetFormulas() {
+        mathGeneration += 1
+        _revision += 1
+        shownFormulas = [:]
+        drawingFormulas = [:]
+        waitingFormulas = [:]
+    }
+
+    /// What to show for `math` in `slot`. When it is not drawn yet, drawing
+    /// starts (or waits for the slot's current one to end), and the slot's
+    /// last image is given meanwhile: while a formula streams in, its last
+    /// image is closer to the new one than empty space is.
+    func formula(for math: TranscriptMath, fontSize: CGFloat, in slot: MathSlot) -> Formula {
         let key = TranscriptMathCache.Key(math: math, fontSize: fontSize)
-        let (formula, start): (TranscriptMathImage?, (TranscriptMathRenderer, TranscriptMathCache, Int)?) = lock.withLock {
-            guard let mathRenderer else { return (nil, nil) }
+        let (formula, start): (Formula, (TranscriptMathRenderer, TranscriptMathCache, Int)?) = lock.withLock {
+            guard let mathRenderer else { return (.asWritten, nil) }
             switch mathCache.result(for: key) {
-            case .drawn(let formula)?: return (formula, nil)
-            case .failed?: return (nil, nil)
-            case nil: break
+            case .drawn(let image)?:
+                shownFormulas[slot] = key
+                return (.drawn(image), nil)
+            case .failed?:
+                return (.asWritten, nil)
+            case nil:
+                break
             }
-            guard !formulasRequested.contains(key) else { return (nil, nil) }
-            formulasRequested.insert(key)
-            return (nil, (mathRenderer, mathCache, mathGeneration))
+            var meanwhile = Formula.pending
+            if let shown = shownFormulas[slot], Self.mayBeEarlierVersion(shown.math, of: math),
+               case .drawn(let image)? = mathCache.result(for: shown) {
+                meanwhile = .drawn(image)
+            }
+            if let drawing = drawingFormulas[slot] {
+                waitingFormulas[slot] = drawing == key ? nil : key
+                return (meanwhile, nil)
+            }
+            drawingFormulas[slot] = key
+            return (meanwhile, (mathRenderer, mathCache, mathGeneration))
         }
         if let (renderer, cache, generation) = start {
-            cache.draw(key, with: renderer) { [weak self] result in
-                self?.finishFormula(key, result, generation: generation)
-            }
+            draw(key, in: slot, with: renderer, cache: cache, generation: generation)
         }
         return formula
     }
 
-    private func finishFormula(_ key: TranscriptMathCache.Key, _ result: TranscriptMathCache.Result, generation: Int) {
-        let handler: (@Sendable () -> Void)? = lock.withLock {
-            guard generation == mathGeneration else { return nil }
-            formulasRequested.remove(key)
-            guard case .drawn = result else { return nil }
+    /// Whether `earlier` can be the same formula as `later` before more of
+    /// it arrived. Block ids repeat in documents parsed with the same id
+    /// prefix, so a slot can hold another document's formula.
+    static func mayBeEarlierVersion(_ earlier: TranscriptMath, of later: TranscriptMath) -> Bool {
+        guard earlier.isDisplay == later.isDisplay else { return false }
+        let shared = zip(earlier.tex, later.tex).prefix { $0 == $1 }.count
+        return shared > 0 && shared * 2 >= earlier.tex.count
+    }
+
+    private func draw(_ key: TranscriptMathCache.Key, in slot: MathSlot, with renderer: @escaping TranscriptMathRenderer,
+                      cache: TranscriptMathCache, generation: Int) {
+        cache.draw(key, with: renderer) { [weak self] result in
+            self?.finishFormula(key, in: slot, result, generation: generation)
+        }
+    }
+
+    private func finishFormula(_ key: TranscriptMathCache.Key, in slot: MathSlot, _ result: TranscriptMathCache.Result,
+                               generation: Int) {
+        let (handler, next): ((@Sendable () -> Void)?, (TranscriptMathCache.Key, TranscriptMathRenderer, TranscriptMathCache)?) = lock.withLock {
+            guard generation == mathGeneration else { return (nil, nil) }
+            if case .drawn = result { shownFormulas[slot] = key }
             _revision += 1
-            return onChange
+            if let waiting = waitingFormulas.removeValue(forKey: slot), waiting != key, let mathRenderer {
+                drawingFormulas[slot] = waiting
+                return (onChange, (waiting, mathRenderer, mathCache))
+            }
+            drawingFormulas[slot] = nil
+            return (onChange, nil)
+        }
+        if let (waiting, renderer, cache) = next {
+            draw(waiting, in: slot, with: renderer, cache: cache, generation: generation)
         }
         handler?()
     }

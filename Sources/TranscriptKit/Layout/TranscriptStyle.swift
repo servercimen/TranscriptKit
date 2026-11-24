@@ -257,7 +257,7 @@ public struct TranscriptStyle: Equatable, Sendable {
             var traits = extraTraits
             var isLink = false
             var image: TranscriptImage?
-            var math: TranscriptMath?
+            var math: (math: TranscriptMath, start: Int)?
             // Spans are sorted with outer ones first, so an inner tag's colors win.
             var foreground: TranscriptColor?
             var background: TranscriptColor?
@@ -265,7 +265,7 @@ public struct TranscriptStyle: Equatable, Sendable {
                 traits.formUnion(span.traits)
                 if span.link != nil || span.reference.map({ definitions[$0] != nil }) == true { isLink = true }
                 if let spanImage = span.image { image = spanImage }
-                if let spanMath = span.math { math = spanMath }
+                if let spanMath = span.math { math = (spanMath, span.range.lowerBound + start) }
                 if let decoration = span.customTag?.decoration {
                     if let color = decoration.foreground { foreground = color }
                     if let color = decoration.background { background = color }
@@ -287,8 +287,9 @@ public struct TranscriptStyle: Equatable, Sendable {
             if let background { result.addAttribute(Self.backgroundKey, value: background, range: range) }
             if image != nil || math != nil, range.length == 1 {
                 let font = result.attribute(Self.fontKey, at: lower, effectiveRange: nil).map { $0 as! CTFont } ?? self.font(for: block.kind)
-                let attachment = math.map { ImageAttachment(math: $0, sizing: images, font: font, style: self) }
-                    ?? ImageAttachment(image: image!, sizing: images, font: font, style: self)
+                let attachment = math.map {
+                    ImageAttachment(math: $0.math, slot: Self.mathSlot(in: block, at: $0.start), sizing: images, font: font, style: self)
+                } ?? ImageAttachment(image: image!, sizing: images, font: font, style: self)
                 result.addAttribute(Self.imageKey, value: attachment, range: range)
                 result.addAttribute(Self.runDelegateKey, value: attachment.makeRunDelegate(), range: range)
             }
@@ -299,6 +300,15 @@ public struct TranscriptStyle: Equatable, Sendable {
             result.addAttribute(Self.kernKey, value: kern + (customFont(for: block.kind)?.letterSpacing ?? 0), range: character)
         }
         return result
+    }
+}
+
+extension TranscriptStyle {
+    /// The slot of the formula that starts at UTF-16 offset `start` of
+    /// `block`: it is the same whichever part of the block is laid out.
+    static func mathSlot(in block: TranscriptBlock, at start: Int) -> TranscriptImageStore.MathSlot {
+        let before = block.spans.reduce(0) { $0 + ($1.math != nil && $1.range.lowerBound < start ? 1 : 0) }
+        return TranscriptImageStore.MathSlot(block: block.id, index: before)
     }
 }
 
@@ -325,11 +335,11 @@ final class ImageAttachment: @unchecked Sendable {
 
     /// A formula, drawn by the store's math renderer, or its LaTeX as written
     /// until it is (or if it is not).
-    init(math: TranscriptMath, sizing: ImageSizing?, font: CTFont, style: TranscriptStyle) {
+    init(math: TranscriptMath, slot: TranscriptImageStore.MathSlot, sizing: ImageSizing?, font: CTFont, style: TranscriptStyle) {
         self.image = TranscriptImage(source: "", alt: math.tex)
         self.math = math
         let maximumWidth = max(sizing?.maximumWidth ?? 320, 20)
-        if let formula = sizing?.store?.formula(for: math, fontSize: CTFontGetSize(font)) {
+        if case .drawn(let formula)? = sizing?.store?.formula(for: math, fontSize: CTFontGetSize(font), in: slot) {
             let natural = CGSize(width: max(formula.size.width, 1), height: max(formula.size.height, 1))
             let scale = min(1, maximumWidth / natural.width)
             self.picture = formula.image

@@ -263,3 +263,28 @@ private func attachment(in layout: DocumentLayout) -> ImageAttachment? {
     let side = pixel(line.frame.midX - 25)
     #expect(side.0 > 200 && side.1 > 200 && side.2 > 200)
 }
+
+@Test func aFormulaWhoseLatexChangesKeepsItsImageUntilTheNewOneIsDrawn() async {
+    let store = TranscriptImageStore()
+    store.setMathRenderer { math, _ in
+        try? await Task.sleep(for: .milliseconds(50))
+        return boxFormula(width: 20 * math.tex.count, height: 20, baseline: 4)
+    }
+    let style = TranscriptStyle()
+    let first = MarkdownStreamParser.document(from: "$$x$$")
+    var revision = store.revision
+    _ = DocumentLayout(document: first, width: 300, style: style, reusing: nil, images: store)
+    await waitUntil { store.revision > revision }
+    let drawn = DocumentLayout(document: first, width: 300, style: style, reusing: nil, images: store)
+    #expect(attachment(in: drawn)?.size.width == 20)
+    // The same block, as when an app parses each new snapshot of the text.
+    let grown = MarkdownStreamParser.document(from: "$$x+y$$")
+    #expect(grown.blocks[0].id == first.blocks[0].id)
+    revision = store.revision
+    let meanwhile = DocumentLayout(document: grown, width: 300, style: style, reusing: drawn, images: store)
+    #expect(attachment(in: meanwhile)?.isMask == true)
+    #expect(attachment(in: meanwhile)?.size.width == 20)
+    await waitUntil { store.revision > revision }
+    let after = DocumentLayout(document: grown, width: 300, style: style, reusing: meanwhile, images: store)
+    #expect(attachment(in: after)?.size.width == 60)
+}

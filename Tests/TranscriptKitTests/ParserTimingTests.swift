@@ -53,13 +53,13 @@ private enum TimingText {
 
 }
 
-private func timePerAppend(_ text: String, chunk: Int, tags: [TranscriptTag] = []) -> Double {
+private func timePerAppend(_ text: String, chunk: Int, tags: [TranscriptTag] = [], newlinesAsLineBreaks: Bool = false) -> Double {
     var parts: [String] = []
     var rest = Substring(text)
     while !rest.isEmpty { parts.append(String(rest.prefix(chunk))); rest = rest.dropFirst(chunk) }
     var best = Double.infinity
     for _ in 0..<(ProcessInfo.processInfo.environment["TIMING_LONG"] != nil ? 400 : 7) {
-        var parser = MarkdownStreamParser(idPrefix: "t", tags: tags)
+        var parser = MarkdownStreamParser(idPrefix: "t", tags: tags, newlinesAsLineBreaks: newlinesAsLineBreaks)
         let start = DispatchTime.now().uptimeNanoseconds
         for part in parts { parser.append(part) }
         let seconds = Double(DispatchTime.now().uptimeNanoseconds - start) / 1e9
@@ -118,6 +118,8 @@ func parserTiming() {
         .map { $0.offset % 12 == 11 ? $0.element + "\n" : $0.element + " " }.joined().prefix(15600))
     print("TIMING very long paragraph: \(veryLongParagraph.count) chars, 2 per append: \(String(format: "%.1f", timePerAppend(veryLongParagraph, chunk: 2))) µs/append")
     print("TIMING long paragraph: \(longParagraph.count) chars in \(longParagraph.split(separator: "\n").count) lines, 2 per append: \(String(format: "%.1f", timePerAppend(longParagraph, chunk: 2))) µs/append")
+    print("TIMING long paragraph, newlines as line breaks: \(String(format: "%.1f", timePerAppend(longParagraph, chunk: 2, newlinesAsLineBreaks: true))) µs/append")
+    print("TIMING very long paragraph, newlines as line breaks: \(String(format: "%.1f", timePerAppend(veryLongParagraph, chunk: 2, newlinesAsLineBreaks: true))) µs/append")
     let mixed = "Café **crème**, 日本語の`コード` and [ссылка](https://x.y) 👩‍💻 éé. "
     let mixedParagraph = String(String(repeating: mixed, count: 70).split(separator: " ").enumerated()
         .map { $0.offset % 10 == 9 ? $0.element + "\n" : $0.element + " " }.joined().prefix(3000))

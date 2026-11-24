@@ -15,6 +15,7 @@ import SwiftUI
 ///   -hold 1                  stay open after the run instead of exiting
 ///   -noTail 1                TranscriptKit draws the growing end on the main thread, as before
 ///   -mode scroll             scroll through the history instead of streaming
+///   -mode many               replace the documents of many texts at once (see `ManyTextsModel`)
 ///   -scrollSeconds <s>       how long to scroll (default 10)
 ///   -scrollSpeed <pt/s>      scrolling speed (default 3000)
 ///   -corpus rich             stream `Corpus.richSection` text instead of the default
@@ -326,6 +327,16 @@ private extension WebRenderer {
 }
 
 struct BenchRoot: View {
+    var body: some View {
+        if UserDefaults.standard.string(forKey: "mode") == "many" {
+            ManyTextsRenderer()
+        } else {
+            BenchRendererRoot()
+        }
+    }
+}
+
+struct BenchRendererRoot: View {
     @State private var model = BenchModel()
 
     var body: some View {

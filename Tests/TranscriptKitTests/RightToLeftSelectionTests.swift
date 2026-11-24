@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreText
 import Foundation
 import Testing
 @testable import TranscriptKit
@@ -93,4 +94,54 @@ private func layout(_ markdown: String, width: CGFloat = 300) -> DocumentLayout 
     }
     let before = (block.caretRect(atOffset: 2).midX + block.caretRect(atOffset: 3).midX) / 2
     #expect(document.link(at: CGPoint(x: before, y: block.lines[0].frame.midY)) == nil)
+}
+
+// MARK: Ligatures
+
+/// Checks that each character of a ligature that starts at `start` and is
+/// `count` characters long gets its own part of the glyph, and that a tap on
+/// that part finds the character.
+private func expectLigatureParts(_ document: DocumentLayout, start: Int, count: Int, rightToLeft: Bool) {
+    let block = document.entry(at: 0).layout
+    let whole = document.selectionRects(for: start..<(start + count))
+    #expect(whole.count == 1)
+    var parts: [CGRect] = []
+    for offset in start..<(start + count) {
+        let rects = document.selectionRects(for: offset..<(offset + 1))
+        #expect(rects.count == 1, "offset \(offset) has \(rects.count) rects")
+        guard let rect = rects.first else { return }
+        parts.append(rect)
+        #expect(block.characterOffset(at: CGPoint(x: rect.midX, y: rect.midY)) == offset)
+    }
+    guard let first = whole.first, parts.count == count else { return }
+    let ordered = rightToLeft ? parts.reversed() : parts
+    #expect(abs(ordered.first!.minX - first.minX) < 0.5)
+    #expect(abs(ordered.last!.maxX - first.maxX) < 0.5)
+    for (left, right) in zip(ordered, ordered.dropFirst()) {
+        #expect(abs(left.maxX - right.minX) < 0.5)
+    }
+}
+
+@Test func eachCharacterOfAnArabicLigatureIsSelectedOnItsOwn() {
+    // Lam and alef are drawn as one glyph.
+    let document = layout("لا بأس")
+    expectLigatureParts(document, start: 0, count: 2, rightToLeft: true)
+}
+
+@Test func eachCharacterOfALatinLigatureNextToHebrewIsSelectedOnItsOwn() {
+    var style = TranscriptStyle()
+    style.bodyFont = TranscriptFont(name: "Times-Roman", size: 17)
+    let document = DocumentLayout(document: MarkdownStreamParser.document(from: "office שלום"), width: 300, style: style)
+    let line = document.entry(at: 0).layout.lines[0]
+    let runs = CTLineGetGlyphRuns(line.ctLine) as! [CTRun]
+    // Only a test of something if the font joins "ffi" or "fi".
+    let glyphCount = runs.reduce(0) { $0 + CTRunGetGlyphCount($1) }
+    #expect(glyphCount < "office שלום".utf16.count)
+    for offset in 0..<6 {
+        #expect(document.selectionRects(for: offset..<(offset + 1)).count == 1, "offset \(offset)")
+    }
+    let rects = (0..<6).compactMap { document.selectionRects(for: $0..<($0 + 1)).first }
+    for (left, right) in zip(rects, rects.dropFirst()) {
+        #expect(abs(left.maxX - right.minX) < 0.5)
+    }
 }

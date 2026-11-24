@@ -666,10 +666,15 @@ final class BlockLayout: @unchecked Sendable {
         guard let line = lines.first(where: { $0.frame.minY <= point.y && point.y < $0.frame.maxY
                                                && point.x >= $0.frame.minX && point.x < $0.frame.maxX }),
               !line.range.isEmpty else { return nil }
-        if line.hasRightToLeftRuns {
+        if hasRightToLeftText(line) {
             let x = point.x - line.frame.minX
             guard let glyph = glyphs(of: line).first(where: { $0.minX <= x && x < $0.maxX }) else { return nil }
-            return line.range.contains(glyph.character) ? glyph.character : nil
+            // In a ligature, the character whose part of the glyph is under the point.
+            let character = glyph.characters.first { offset in
+                let part = glyph.part(offset..<(offset + 1), in: line)
+                return part.minX <= x && x < part.maxX
+            } ?? glyph.characters.lowerBound
+            return line.range.contains(character) ? character : nil
         }
         let localBoundary = CTLineGetStringIndexForPosition(line.ctLine, CGPoint(x: point.x - line.frame.minX, y: 0))
         guard localBoundary != kCFNotFound else { return nil }
@@ -691,6 +696,7 @@ final class BlockLayout: @unchecked Sendable {
         return nil
     }
 
+
     /// A part of a selection on one line: the glyphs of one or more runs
     /// next to each other that go the same way.
     struct SelectionSegment: Equatable {
@@ -698,6 +704,8 @@ final class BlockLayout: @unchecked Sendable {
         var isRightToLeft: Bool
         /// The first and the last of its selected characters, in block offsets.
         var characters: ClosedRange<Int>
+        /// The index of its line in the block.
+        var line: Int
         /// Whether it holds the first selected character, where the start
         /// handle goes, and the last one, where the end handle goes.
         var containsStart = false
@@ -721,8 +729,8 @@ final class BlockLayout: @unchecked Sendable {
             if line.range.lowerBound >= range.upperBound { break }
             let continuesPastLine = range.upperBound >= line.range.upperBound && index < lines.count - 1
             let lower = max(range.lowerBound, line.range.lowerBound)
-            if isRightToLeft || line.hasRightToLeftRuns {
-                segments += runSegments(of: line, selecting: range, continuesPastLine: continuesPastLine)
+            if hasRightToLeftText(line) {
+                segments += runSegments(of: line, at: index, selecting: range, continuesPastLine: continuesPastLine)
                 continue
             }
             let startX = x(forOffset: lower, in: line)
@@ -731,7 +739,7 @@ final class BlockLayout: @unchecked Sendable {
                 let last = max(min(range.upperBound, line.range.upperBound) - 1, lower)
                 segments.append(SelectionSegment(
                     rect: CGRect(x: startX, y: line.frame.minY, width: max(endX - startX, 4), height: line.frame.height),
-                    isRightToLeft: false, characters: lower...last))
+                    isRightToLeft: false, characters: lower...last, line: index))
             }
         }
         if let start = segments.indices.min(by: { segments[$0].characters.lowerBound < segments[$1].characters.lowerBound }) {
@@ -744,10 +752,17 @@ final class BlockLayout: @unchecked Sendable {
         return segments
     }
 
+    /// Whether Core Text can have drawn some of the line right to left. A
+    /// block without a right-to-left character has no such line.
+    private func hasRightToLeftText(_ line: Line) -> Bool {
+        isRightToLeft || (paragraphDirection != nil && line.hasRightToLeftRuns)
+    }
+
     /// The selected glyphs of a line, as rects of the runs they are in.
     /// Whitespace at the end of a line, which Core Text puts outside the
     /// line box, is left out.
-    private func runSegments(of line: Line, selecting range: Range<Int>, continuesPastLine: Bool) -> [SelectionSegment] {
+    private func runSegments(of line: Line, at lineIndex: Int, selecting range: Range<Int>,
+                             continuesPastLine: Bool) -> [SelectionSegment] {
         var segments: [SelectionSegment] = []
         var current: (run: Int, minX: CGFloat, maxX: CGFloat, characters: ClosedRange<Int>, rightToLeft: Bool)?
         func flush() {
@@ -759,20 +774,27 @@ final class BlockLayout: @unchecked Sendable {
                 segments[segments.count - 1].characters = min(last.characters.lowerBound, part.characters.lowerBound)
                     ... max(last.characters.upperBound, part.characters.upperBound)
             } else {
-                segments.append(SelectionSegment(rect: rect, isRightToLeft: part.rightToLeft, characters: part.characters))
+                segments.append(SelectionSegment(rect: rect, isRightToLeft: part.rightToLeft, characters: part.characters,
+                                                 line: lineIndex))
             }
         }
-        for glyph in glyphs(of: line) where range.contains(glyph.character) && line.range.contains(glyph.character) {
-            let minX = max(glyph.minX, 0)
-            let maxX = min(glyph.maxX, line.frame.width)
+        for glyph in glyphs(of: line) {
+            let lower = max(range.lowerBound, line.range.lowerBound, glyph.characters.lowerBound)
+            let upper = min(range.upperBound, line.range.upperBound, glyph.characters.upperBound)
+            guard lower < upper else { continue }
+            let selected = lower..<upper
+            let edges = glyph.part(selected, in: line)
+            let minX = max(edges.minX, 0)
+            let maxX = min(edges.maxX, line.frame.width)
             guard maxX > minX else { continue }
+            let characters = selected.lowerBound...(selected.upperBound - 1)
             if let part = current, part.run == glyph.run {
                 current = (part.run, min(part.minX, minX), max(part.maxX, maxX),
-                           min(part.characters.lowerBound, glyph.character)...max(part.characters.upperBound, glyph.character),
+                           min(part.characters.lowerBound, characters.lowerBound)...max(part.characters.upperBound, characters.upperBound),
                            part.rightToLeft)
             } else {
                 flush()
-                current = (glyph.run, minX, maxX, glyph.character...glyph.character, glyph.rightToLeft)
+                current = (glyph.run, minX, maxX, characters, glyph.rightToLeft)
             }
         }
         flush()
@@ -781,15 +803,48 @@ final class BlockLayout: @unchecked Sendable {
             let lower = max(range.lowerBound, line.range.lowerBound)
             let x = x(forOffset: lower, in: line)
             segments.append(SelectionSegment(rect: CGRect(x: isRightToLeft ? x - 4 : x, y: line.frame.minY, width: 4, height: line.frame.height),
-                                             isRightToLeft: isRightToLeft, characters: lower...lower))
+                                             isRightToLeft: isRightToLeft, characters: lower...lower, line: lineIndex))
         }
         return segments
     }
 
-    /// The glyphs of a line from left to right, with the character each
-    /// stands for (a block offset) and its left and right edges in the line.
-    private func glyphs(of line: Line) -> [(character: Int, minX: CGFloat, maxX: CGFloat, rightToLeft: Bool, run: Int)] {
-        var result: [(character: Int, minX: CGFloat, maxX: CGFloat, rightToLeft: Bool, run: Int)] = []
+    /// A glyph of a line: the characters it stands for (block offsets), and
+    /// its left and right edges in the line.
+    private struct Glyph {
+        /// More than one character for a ligature.
+        let characters: Range<Int>
+        let minX: CGFloat
+        let maxX: CGFloat
+        let rightToLeft: Bool
+        let run: Int
+
+        /// The left and right edges of the part of the glyph that stands for
+        /// the characters of `range`.
+        func part(_ range: Range<Int>, in line: Line) -> (minX: CGFloat, maxX: CGFloat) {
+            let lower = max(range.lowerBound, characters.lowerBound)
+            let upper = min(range.upperBound, characters.upperBound)
+            guard lower > characters.lowerBound || upper < characters.upperBound else { return (minX, maxX) }
+            let a = edge(before: lower, in: line)
+            let b = edge(before: upper, in: line)
+            return (min(a, b), max(a, b))
+        }
+
+        /// Where the caret before character `offset` is in the glyph: from
+        /// Core Text if it puts it inside the glyph, else at an even share.
+        private func edge(before offset: Int, in line: Line) -> CGFloat {
+            let start = rightToLeft ? maxX : minX
+            let end = rightToLeft ? minX : maxX
+            if offset <= characters.lowerBound { return start }
+            if offset >= characters.upperBound { return end }
+            let x = CTLineGetOffsetForStringIndex(line.ctLine, offset - line.indexBase, nil)
+            if x > minX + 0.01, x < maxX - 0.01 { return x }
+            return start + (end - start) * CGFloat(offset - characters.lowerBound) / CGFloat(characters.count)
+        }
+    }
+
+    /// The glyphs of a line from left to right.
+    private func glyphs(of line: Line) -> [Glyph] {
+        var result: [Glyph] = []
         for (runIndex, run) in (CTLineGetGlyphRuns(line.ctLine) as! [CTRun]).enumerated() {
             let count = CTRunGetGlyphCount(run)
             guard count > 0 else { continue }
@@ -800,9 +855,19 @@ final class BlockLayout: @unchecked Sendable {
             CTRunGetPositions(run, CFRange(location: 0, length: 0), &positions)
             CTRunGetAdvances(run, CFRange(location: 0, length: 0), &advances)
             let rightToLeft = CTRunGetStatus(run).contains(.rightToLeft)
+            let runRange = CTRunGetStringRange(run)
+            // A glyph stands for its character and those after it up to the
+            // next one that a glyph of the run starts at.
+            let starts = Set(indices).sorted()
+            var ends: [CFIndex: CFIndex] = [:]
+            for (position, start) in starts.enumerated() {
+                ends[start] = position + 1 < starts.count ? starts[position + 1] : max(runRange.location + runRange.length, start + 1)
+            }
             for glyph in 0..<count {
-                result.append((indices[glyph] + line.indexBase, positions[glyph].x, positions[glyph].x + advances[glyph].width,
-                               rightToLeft, runIndex))
+                let start = indices[glyph] + line.indexBase
+                let end = (ends[indices[glyph]] ?? indices[glyph] + 1) + line.indexBase
+                result.append(Glyph(characters: start..<end, minX: positions[glyph].x, maxX: positions[glyph].x + advances[glyph].width,
+                                    rightToLeft: rightToLeft, run: runIndex))
             }
         }
         return result

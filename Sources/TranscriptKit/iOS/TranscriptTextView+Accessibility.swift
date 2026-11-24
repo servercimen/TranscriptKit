@@ -15,6 +15,8 @@ extension TranscriptTextView {
         if cache.layout === layout { return cache.elements }
         var byKey: [AccessibilityItem.Key: UIAccessibilityElement] = [:]
         var elements: [UIAccessibilityElement] = []
+        let scrolling = Set((0..<layout.entryCount).lazy.map(layout.entry(at:)).filter { $0.layout.maximumScrollOffset > 0 }
+            .map(\.layout.block.id))
         for item in layout.accessibilityItems(math: mathAccessibilityLabel ?? \.tex, words: cache.words) {
             let element: UIAccessibilityElement
             if let table = item.table {
@@ -25,7 +27,7 @@ extension TranscriptTextView {
             } else {
                 let blockElement = cache.byKey[item.key] as? BlockAccessibilityElement
                     ?? BlockAccessibilityElement(accessibilityContainer: self)
-                blockElement.update(with: item, in: self)
+                blockElement.update(with: item, scrollsSideways: scrolling.contains(item.key.id), in: self)
                 element = blockElement
             }
             byKey[item.key] = element
@@ -70,7 +72,7 @@ class TextAccessibilityElement: UIAccessibilityElement {
     private var traits: UIAccessibilityTraits = .staticText
     /// The element in the view's coordinates.
     private(set) var frameInView: CGRect = .zero
-    private weak var view: TranscriptTextView?
+    private(set) weak var view: TranscriptTextView?
     private var links: [AccessibilityItem.Link]?
     private var actions: [UIAccessibilityCustomAction]?
 
@@ -136,10 +138,23 @@ class TextAccessibilityElement: UIAccessibilityElement {
 }
 
 /// A block's element. Its block's id keeps it from one layout to the next.
+/// When the block scrolls sideways, a three-finger swipe moves the block.
 final class BlockAccessibilityElement: TextAccessibilityElement {
-    func update(with item: AccessibilityItem, in view: TranscriptTextView) {
+    /// The id of the block, when the block scrolls sideways.
+    private var sideScrollingID: String?
+
+    func update(with item: AccessibilityItem, scrollsSideways: Bool, in view: TranscriptTextView) {
         update(label: item.label, value: item.value, isHeading: item.isHeading, frame: item.frame, frameInContainer: item.frame,
                links: item.links, in: view)
+        sideScrollingID = scrollsSideways ? item.key.id : nil
+    }
+
+    nonisolated override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+        onMainThread {
+            _ = current
+            guard let id = sideScrollingID, let view else { return false }
+            return view.accessibilityScrollBlock(id, direction)
+        }
     }
 }
 

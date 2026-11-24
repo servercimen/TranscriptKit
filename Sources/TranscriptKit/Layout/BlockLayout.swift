@@ -79,6 +79,33 @@ final class BlockLayout: @unchecked Sendable {
     /// For a block with reference links: those whose label was defined when
     /// it was laid out, and so styled as links.
     let definedReferences: Set<String>?
+    /// The right edge of the widest line.
+    let contentRight: CGFloat
+    /// How far the block's lines can move left: how much wider they are than
+    /// the block's box, its trailing padding included. Zero for a block that
+    /// does not scroll sideways, or whose lines fit.
+    let maximumScrollOffset: CGFloat
+
+    /// The box that the lines of a block that scrolls sideways show in.
+    var scrollBox: CGRect { CGRect(x: contentLeading, y: 0, width: max(width - contentLeading, 0), height: height) }
+
+    /// The widest an image or a formula grows in a block that scrolls sideways.
+    static let unlimitedWidth: CGFloat = 100_000
+
+    /// Whether `block` is a paragraph that holds only display math.
+    static func isDisplayMath(_ block: TranscriptBlock) -> Bool {
+        block.spans.count == 1 && block.spans[0].math?.isDisplay == true
+            && block.text.trimmingCharacters(in: .whitespacesAndNewlines) == "\u{FFFC}"
+    }
+
+    /// Whether the style lets `block` scroll sideways instead of wrapping or scaling down.
+    static func scrollsSideways(_ block: TranscriptBlock, style: TranscriptStyle) -> Bool {
+        switch block.kind {
+        case .code: return !style.codeWraps
+        case .paragraph: return style.displayMathScrolls && isDisplayMath(block)
+        case .heading, .rule, .table: return false
+        }
+    }
 
     /// The labels of `block`'s reference links that `definitions` defines,
     /// or nil if it has none.
@@ -130,14 +157,19 @@ final class BlockLayout: @unchecked Sendable {
             lines = laidOut.lines
             self.height = laidOut.height
             self.table = laidOut.table
+            self.contentRight = laidOut.table.frame.maxX
+            self.maximumScrollOffset = 0
         } else {
-            let sizing = ImageSizing(store: images, maximumWidth: available)
+            let scrolls = Self.scrollsSideways(block, style: style)
+            let sizing = ImageSizing(store: images, maximumWidth: scrolls ? Self.unlimitedWidth : available)
             let laidOut = Self.layOutText(block, style: style, insets: insets, available: available, blockWidth: width,
-                                          sizing: sizing, definitions: definitions,
+                                          wraps: !scrolls, sizing: sizing, definitions: definitions,
                                           reusing: previous.flatMap { $0.width == width && $0.imageRevision == revision ? $0 : nil })
             lines = laidOut.lines
             self.height = laidOut.height
             self.table = nil
+            self.contentRight = laidOut.right
+            self.maximumScrollOffset = scrolls ? max(ceil(laidOut.right + insets.trailing - width), 0) : 0
         }
         self.lines = lines
         self.marker = Self.makeMarker(for: block, style: style, firstLine: lines.first)
@@ -146,15 +178,18 @@ final class BlockLayout: @unchecked Sendable {
 
     // MARK: Text
 
+    /// - Parameter wraps: whether lines break at `available`, or only at line breaks.
     private static func layOutText(_ block: TranscriptBlock, style: TranscriptStyle, insets: TranscriptStyle.Insets,
-                                   available: CGFloat, blockWidth: CGFloat, sizing: ImageSizing, definitions: [String: String],
-                                   reusing previous: BlockLayout?) -> (lines: SharedList<Line>, height: CGFloat) {
+                                   available: CGFloat, blockWidth: CGFloat, wraps: Bool, sizing: ImageSizing,
+                                   definitions: [String: String],
+                                   reusing previous: BlockLayout?) -> (lines: SharedList<Line>, height: CGFloat, right: CGFloat) {
         let length = block.utf16Count
         let font = style.font(for: block.kind)
         let hasDecorations = DecoratedTags.appear(in: block)
         var lines = SharedList<Line>()
         var y = insets.vertical
         var restart = 0
+        var right: CGFloat = 0
         if let previous, previous.style == style, previous.block.isStyledPrefix(of: block), previous.lines.count > 1 {
             // Line breaks are chosen greedily, so appended text can only
             // change the last line and what follows it.
@@ -169,11 +204,28 @@ final class BlockLayout: @unchecked Sendable {
                     line.range.allSatisfy { text.character(at: $0) == 0x0A }
                 }
                 while keep > 0, holdsOnlyLineBreaks(previous.lines[keep]) { keep -= 1 }
+                // The padding after a tag that runs to the end of the text,
+                // as an open one does, is on the last character, so the word
+                // written last may have gone down a line for it alone. Once
+                // more text comes, the padding moves on, and the line above
+                // may take that word back.
+                let previousLength = previous.block.utf16Count
+                let endsInPadding = previous.block.spans.contains { span in
+                    span.range.upperBound == previousLength && (span.customTag?.decoration.padding ?? 0) > 0
+                }
+                if keep > 0, endsInPadding { keep -= 1 }
+                // A tag that keeps together may have gone down a line, and
+                // may no longer fit on a line of its own: the line above it
+                // is laid out again.
+                while keep > 0, DecoratedTags.keptTagStarts(at: previous.lines[keep].range.lowerBound, in: block) { keep -= 1 }
             }
             if keep > 0 {
                 lines = previous.lines.prefix(keep)
                 restart = previous.lines[keep].range.lowerBound
                 y = previous.lines[keep].frame.minY
+                // The lines typeset again hold at least the text they held, so
+                // the widest of the earlier lines is no wider than this.
+                right = previous.contentRight
             }
         }
 
@@ -182,13 +234,13 @@ final class BlockLayout: @unchecked Sendable {
 
         let fixedHeight = style.lineHeight(for: block.kind)
         let gap = fixedHeight == nil ? style.lineSpacing : 0
-        let isDisplayMath = block.spans.count == 1 && block.spans[0].math?.isDisplay == true
-            && block.text.trimmingCharacters(in: .whitespacesAndNewlines) == "\u{FFFC}"
+        let isDisplayMath = Self.isDisplayMath(block)
         func add(_ ctLine: CTLine, range: Range<Int>, indexBase: Int, leading: CGFloat = 0, text: NSAttributedString? = nil) {
             let metrics = fitted(lineMetrics(ctLine, isEmpty: range.isEmpty, font: font), to: fixedHeight)
             let x = insets.leading + leading + (isDisplayMath
-                ? max(((available - leading - metrics.width) / 2).rounded(.down), 0)
+                ? offset(for: style.displayMathAlignment, width: metrics.width, room: available - leading)
                 : alignmentOffset(block, style: style, width: metrics.width, room: available - leading))
+            right = max(right, x + metrics.width)
             var decorations: LineDecorations?
             if let decorated, let text {
                 decorations = LineDecorations.make(line: ctLine, range: range, indexBase: indexBase, visibleWidth: metrics.width,
@@ -211,13 +263,22 @@ final class BlockLayout: @unchecked Sendable {
             let attributed = style.attributedString(for: block, from: restart, images: sizing, definitions: definitions,
                                                     kerns: decorated?.kerns ?? [:])
             let typesetter = CTTypesetterCreateWithAttributedString(attributed)
+            let string = attributed.string as NSString
             var start = restart
             while start < length {
                 let local = start - restart
                 // A padded tag that starts the line has no character before it
                 // on the line to carry its padding, so the line moves over.
-                let leading = min(decorated?.startPadding[start] ?? 0, available / 2)
-                let count = max(CTTypesetterSuggestLineBreak(typesetter, local, Double(available - leading)), 1)
+                func room(at offset: Int) -> CGFloat { min(decorated?.startPadding[offset] ?? 0, available / 2) }
+                let leading = room(at: start)
+                var count = wraps
+                    ? max(CTTypesetterSuggestLineBreak(typesetter, local, Double(available - leading)), 1)
+                    : Self.lengthToLineBreak(in: string, from: local)
+                if wraps, let decorated, start + count < length {
+                    count = decorated.lineEnd(from: start, to: start + count) { range in
+                        Self.width(of: range.lowerBound - restart, count: range.count, in: typesetter) <= available - room(at: range.lowerBound)
+                    } - start
+                }
                 let ctLine = CTTypesetterCreateLine(typesetter, CFRange(location: local, length: count))
                 add(ctLine, range: start..<(start + count), indexBase: restart, leading: leading, text: attributed)
                 start += count
@@ -228,7 +289,25 @@ final class BlockLayout: @unchecked Sendable {
             let empty = CTLineCreateWithAttributedString(NSAttributedString(string: "", attributes: style.attributes(for: block.kind)))
             add(empty, range: length..<length, indexBase: length)
         }
-        return (lines, y - gap + insets.vertical)
+        return (lines, y - gap + insets.vertical, right)
+    }
+
+    /// The length of the line of `string` that starts at `start`: up to and
+    /// including its line break, or to the end.
+    static func lengthToLineBreak(in string: NSString, from start: Int) -> Int {
+        let rest = NSRange(location: start, length: string.length - start)
+        let found = string.rangeOfCharacter(from: .newlines, options: [], range: rest)
+        guard found.location != NSNotFound else { return max(rest.length, 1) }
+        var end = found.location + found.length
+        if string.character(at: found.location) == 0x0D, end < string.length, string.character(at: end) == 0x0A { end += 1 }
+        return end - start
+    }
+
+    /// How wide `count` characters from `start` are on one line, without
+    /// the space at their end.
+    private static func width(of start: Int, count: Int, in typesetter: CTTypesetter) -> CGFloat {
+        let line = CTTypesetterCreateLine(typesetter, CFRange(location: start, length: count))
+        return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil) - CTLineGetTrailingWhitespaceWidth(line))
     }
 
     /// Line metrics made `height` tall, with the text centred, when the app
@@ -243,8 +322,14 @@ final class BlockLayout: @unchecked Sendable {
     /// alignment. Only paragraphs and headings outside lists and quotes move.
     static func alignmentOffset(_ block: TranscriptBlock, style: TranscriptStyle, width: CGFloat, room: CGFloat) -> CGFloat {
         guard isAligned(block, style: style) else { return 0 }
+        return offset(for: style.textAlignment, width: width, room: room)
+    }
+
+    /// How far a line `width` wide moves right in `room` for `alignment`.
+    /// A line wider than `room` stays at the leading edge.
+    static func offset(for alignment: TranscriptTextAlignment, width: CGFloat, room: CGFloat) -> CGFloat {
         let slack = max(room - width, 0)
-        switch style.textAlignment {
+        switch alignment {
         case .leading: return 0
         case .center: return (slack / 2).rounded(.down)
         case .trailing: return slack
@@ -283,6 +368,9 @@ final class BlockLayout: @unchecked Sendable {
         lines = kept
         let bottom = kept.last.map { $0.frame.maxY } ?? 0
         height = bottom + insets.vertical
+        contentRight = kept.reduce(0) { max($0, $1.frame.maxX) }
+        maximumScrollOffset = original.table == nil && Self.scrollsSideways(block, style: style)
+            ? max(ceil(contentRight + insets.trailing - width), 0) : 0
         length = kept.last?.range.upperBound ?? 0
         attachments = original.attachments.filter { $0.rect.minY < bottom }
     }
@@ -365,8 +453,11 @@ final class BlockLayout: @unchecked Sendable {
 
         typealias Cell = (text: NSAttributedString, typesetter: CTTypesetter, range: Range<Int>)
         func makeCells(_ row: Int) -> [Cell] {
-            model.rows[row].prefix(columns).map { range in
-                let text = style.attributedString(for: block, range: range, extraTraits: row == 0 ? .bold : [], images: sizing,
+            let header = row == 0
+            let weight = header ? style.tableHeaderWeight : nil
+            let traits: InlineSpan.Traits = header && weight == nil ? .bold : []
+            return model.rows[row].prefix(columns).map { range in
+                let text = style.attributedString(for: block, range: range, extraTraits: traits, weight: weight, images: sizing,
                                                   definitions: definitions, kerns: decorated?.kerns ?? [:])
                 return (text, CTTypesetterCreateWithAttributedString(text), range)
             }
@@ -396,6 +487,12 @@ final class BlockLayout: @unchecked Sendable {
                         wordStart = index + 1
                     }
                     start += count
+                }
+                if let decorated {
+                    let base = cell.range.lowerBound
+                    longestWord = max(longestWord, decorated.widestKeptTag(in: cell.range) { range in
+                        Self.width(of: range.lowerBound - base, count: range.count, in: cell.typesetter)
+                    })
                 }
                 natural.append(ceil(widest) + padding * 2)
                 minimum.append(ceil(longestWord) + padding * 2)
@@ -493,7 +590,13 @@ final class BlockLayout: @unchecked Sendable {
                 }
                 var start = 0
                 while start < cell.text.length {
-                    let count = max(CTTypesetterSuggestLineBreak(cell.typesetter, start, Double(textWidth)), 1)
+                    var count = max(CTTypesetterSuggestLineBreak(cell.typesetter, start, Double(textWidth)), 1)
+                    if let decorated, start + count < cell.text.length {
+                        let base = cell.range.lowerBound
+                        count = decorated.lineEnd(from: base + start, to: base + start + count) { range in
+                            Self.width(of: range.lowerBound - base, count: range.count, in: cell.typesetter) <= textWidth
+                        } - base - start
+                    }
                     let ctLine = CTTypesetterCreateLine(cell.typesetter, CFRange(location: start, length: count))
                     add(ctLine, range: (cell.range.lowerBound + start)..<(cell.range.lowerBound + start + count))
                     start += count
@@ -519,6 +622,7 @@ final class BlockLayout: @unchecked Sendable {
         guard let kind = block.marker, let firstLine, let item = block.containers.lastIndex(of: .listItem) else { return nil }
         // The marker sits in the gutter of the innermost list item.
         let gutterEnd = style.contentLeading(for: Array(block.containers[...item]))
+        let quoteColor = style.textColor(inside: block.containers[..<item])
         let font = style.font(for: .paragraph)
         switch kind {
         case .task(let checked):
@@ -527,13 +631,18 @@ final class BlockLayout: @unchecked Sendable {
             return .checkbox(CGRect(x: gutterEnd - side - 6, y: (middle - side / 2).rounded(), width: side, height: side), checked: checked)
         case .bullet, .number:
             let text: String
+            var attributes: [NSAttributedString.Key: Any]
             if case .number(let number) = kind {
-                text = number
+                text = style.listNumberFormat.text(for: number)
+                attributes = style.attributes(for: .paragraph, weight: style.listNumberWeight)
+                if let color = style.listNumberColor ?? quoteColor { attributes[TranscriptStyle.foregroundKey] = color }
             } else {
-                let depth = block.listLevel
-                text = depth <= 1 ? "•" : (depth == 2 ? "◦" : "▪")
+                let bullet = style.bullet(at: block.listLevel)
+                text = bullet.text
+                attributes = style.attributes(for: .paragraph)
+                if let color = bullet.color ?? quoteColor { attributes[TranscriptStyle.foregroundKey] = color }
             }
-            let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: style.attributes(for: .paragraph)))
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
             let markerWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
             return .text(line, origin: CGPoint(x: max(gutterEnd - markerWidth - 7, 0), y: firstLine.baseline))
         }

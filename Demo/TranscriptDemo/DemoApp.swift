@@ -184,13 +184,16 @@ enum Sample {
 
 /// Launch with `-replacementCheck` to replace the text of a card every two
 /// seconds, with a short text and a long one in turn. Add `-crossfade` to lay
-/// out each new text at once and crossfade to it. Each swap logs when it
-/// happened, and each change of the card's height logs when SwiftUI saw it.
+/// out each new text at once and crossfade to it. Add `-animatedSwap` to
+/// swap inside `withAnimation`, so that the card's height animates. Each swap
+/// logs when it happened, and each change of the card's height logs when
+/// SwiftUI saw it.
 struct ReplacementCheckView: View {
     @State private var showsLong = false
     @State private var swap = 0
     @State private var swapTime: CFTimeInterval = 0
     private let crossfades = ProcessInfo.processInfo.arguments.contains("-crossfade")
+    private let animatesSwap = ProcessInfo.processInfo.arguments.contains("-animatedSwap")
 
     var body: some View {
         ScrollView {
@@ -218,7 +221,11 @@ struct ReplacementCheckView: View {
                 swap += 1
                 swapTime = CACurrentMediaTime()
                 print("replacement-check swap=\(swap) long=\(!showsLong)")
-                showsLong.toggle()
+                if animatesSwap {
+                    withAnimation(.easeInOut(duration: 0.6)) { showsLong.toggle() }
+                } else {
+                    showsLong.toggle()
+                }
             }
         }
     }

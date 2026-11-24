@@ -9,7 +9,8 @@ import UIKit
 /// and laid out in the background and go straight to the view, and SwiftUI
 /// only re-measures the view when its height changes. With
 /// `init(_ document:)`, every new document goes through a full SwiftUI
-/// update (layout still happens in the background).
+/// update (layout still happens in the background, unless
+/// `crossfadesReplacedText(_:duration:)` lays out a replaced one at once).
 public struct TranscriptText: UIViewRepresentable {
     private enum Source {
         case document(TranscriptDocument)
@@ -25,6 +26,7 @@ public struct TranscriptText: UIViewRepresentable {
     private var mathAccessibilityLabel: ((TranscriptMath) -> String)?
     private var animatesTags = true
     private var textFadeInDuration: TimeInterval?
+    private var replacementCrossfadeDuration: TimeInterval?
     private var animationTiming: TranscriptAnimationTiming = .immediately
     private var animatesFirstText = false
     private var isSelectable = true
@@ -106,6 +108,25 @@ public struct TranscriptText: UIViewRepresentable {
     public func fadesInText(_ fades: Bool = true, duration: TimeInterval = 0.3) -> TranscriptText {
         var copy = self
         copy.textFadeInDuration = fades ? duration : nil
+        return copy
+    }
+
+    /// Lays out a document that replaces the one before at once, so that
+    /// SwiftUI gets its new height in the same update, and crossfades from
+    /// the old text to the new one; see
+    /// `TranscriptTextView.replacementCrossfadeDuration`. A document that
+    /// only adds text to the one before is laid out in the background, as
+    /// before. That includes a text that starts with the old one, parsed
+    /// with the same `idPrefix`, and the first text after an empty
+    /// document. Off by default.
+    ///
+    /// ```swift
+    /// TranscriptText(showsSummary ? summary : details)
+    ///     .crossfadesReplacedText(duration: 0.25)
+    /// ```
+    public func crossfadesReplacedText(_ crossfades: Bool = true, duration: TimeInterval = 0.25) -> TranscriptText {
+        var copy = self
+        copy.replacementCrossfadeDuration = crossfades ? duration : nil
         return copy
     }
 
@@ -213,6 +234,7 @@ public struct TranscriptText: UIViewRepresentable {
         view.animatesTags = animatesTags
         view.animatesTagsInFirstText = animatesFirstText
         view.textFadeInDuration = textFadeInDuration
+        view.replacementCrossfadeDuration = replacementCrossfadeDuration
         view.tagAnimationTiming = animationTiming
         view.isSelectable = isSelectable
         view.showsWritingTools = showsWritingTools

@@ -267,6 +267,36 @@ and Core Animation plays each fade, so the main thread does no work for each fra
 underline and strikethrough fade in. Backgrounds, images and formulas show at once. A tag that starts its animation
 ends the fades. The fade is off with Reduce Motion, and with a line limit.
 
+### Replacing the text
+
+By default, a new document is laid out in the background, also when it replaces the text on screen. Until that
+layout is ready, the view shows the old text and reports the old height. An app that swaps one complete text for
+another, for example a summary for its details, can lay out the new text at once and crossfade to it:
+
+```swift
+TranscriptText(showsSummary ? summary : details)
+    .crossfadesReplacedText(duration: 0.25)
+```
+
+The view then lays out the new document on the main thread in the same SwiftUI update, so SwiftUI gets the new
+height at once. The old drawing crossfades to the new one, as a `UITextView` does in a `.transitionCrossDissolve`
+transition. While the crossfade plays, the drawing is clipped to the view's bounds and the space that tags' shapes
+may draw in, so the old text does not show below a view that got shorter. A duration of zero shows the new text at
+once. A document that only adds text to the one before (the same blocks with more text, or more blocks) still goes
+to the background, and so do the updates of a stream. The crossfade has no motion, so it also plays with Reduce
+Motion. In UIKit, set `replacementCrossfadeDuration` on `TranscriptTextView`.
+
+Block ids decide what adds to the text. A summary that is the start of its details, parsed with the same id prefix,
+gives the details the ids of the summary's blocks, so the switch to the details only adds text: it goes to the
+background, with no crossfade. Parse the two texts with different prefixes to crossfade both ways:
+
+```swift
+let summary = MarkdownStreamParser.document(from: summaryText, idPrefix: "summary")
+let details = MarkdownStreamParser.document(from: detailsText, idPrefix: "details")
+```
+
+The first text after an empty document also only adds text, so it goes to the background too.
+
 ### Images
 
 Images in the text show their alt text unless you provide a loader. The library never fetches anything itself, so

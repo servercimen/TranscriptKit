@@ -12,7 +12,8 @@ import QuartzCore
 /// main run loop.
 ///
 /// The main thread lays out synchronously only when it cannot wait: the
-/// first layout, and a change of width or style. It does so through
+/// first layout, a change of width or style, and a replaced document when
+/// the view's `replacementCrossfadeDuration` asks for it. It does so through
 /// `queue.sync`, so the engine's state is only ever touched on its queue.
 ///
 /// While text is being appended, the engine also draws the end of the
@@ -94,6 +95,8 @@ final class LayoutEngine: @unchecked Sendable {
     // Guarded by `lock`.
     private let lock = NSLock()
     private var pending: Request?
+    /// `pending` waits for `relayout` on the main thread: a drain leaves it.
+    private var pendingIsForMain = false
     private var drainScheduled = false
     /// Layouts are made at most this often: a document that arrives sooner
     /// waits, and is replaced by any newer one that arrives meanwhile. More
@@ -235,6 +238,7 @@ final class LayoutEngine: @unchecked Sendable {
         lock.withLock {
             isShutDown = true
             pending = nil
+            pendingIsForMain = false
             mailbox = nil
             onOutput = nil
         }
@@ -252,8 +256,13 @@ final class LayoutEngine: @unchecked Sendable {
 
     /// Asks for `request` to be laid out. Any thread. Returns false once the
     /// engine has shut down, so a stream can stop sending to it.
+    ///
+    /// - Parameter schedulesLayout: false when the caller calls `relayout`
+    ///   at once, which lays out the request on the main thread. The queue
+    ///   then does not lay it out first, also when a drain is already
+    ///   scheduled.
     @discardableResult
-    func submit(_ request: Request) -> Bool {
+    func submit(_ request: Request, schedulesLayout: Bool = true) -> Bool {
         var accepted = true
         let delay: CFTimeInterval? = lock.withLock {
             guard !isShutDown else { accepted = false; return nil }
@@ -265,7 +274,8 @@ final class LayoutEngine: @unchecked Sendable {
             guard request.sequence > lastSequence else { return nil }
             lastSequence = request.sequence
             pending = request
-            if drainScheduled { return nil }
+            pendingIsForMain = !schedulesLayout
+            if drainScheduled || !schedulesLayout { return nil }
             drainScheduled = true
             return max(lastDrain + frameInterval - CACurrentMediaTime(), 0)
         }
@@ -282,7 +292,10 @@ final class LayoutEngine: @unchecked Sendable {
 
     private func takePending() -> Request? {
         lock.withLock { () -> Request? in
-            defer { pending = nil }
+            defer {
+                pending = nil
+                pendingIsForMain = false
+            }
             return pending
         }
     }
@@ -301,7 +314,7 @@ final class LayoutEngine: @unchecked Sendable {
     private func drain() {
         let next: Request? = lock.withLock {
             drainScheduled = false
-            guard let request = pending else { return nil }
+            guard let request = pending, !pendingIsForMain else { return nil }
             pending = nil
             lastDrain = CACurrentMediaTime()
             return request

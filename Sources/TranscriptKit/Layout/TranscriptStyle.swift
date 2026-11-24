@@ -135,8 +135,10 @@ public struct TranscriptStyle: Equatable, Sendable {
     public init() {}
 
     /// The most lines to show, or nil for all of them. When text is left out,
-    /// the last line shown ends in "…". Selection and copying cover only the
-    /// text that is shown. Tables are shown whole or not at all.
+    /// the last line shown ends in "…". The selection shows only on the text
+    /// that is shown, but a selection that reaches its end also copies the
+    /// text that is left out, and VoiceOver reads all of the text. Tables
+    /// are shown whole or not at all.
     public var lineLimit: Int?
     /// Where the lines of paragraphs and headings sit in their column. Lists,
     /// quotes, code and tables stay at the leading edge.

@@ -22,6 +22,7 @@ public struct TranscriptText: UIViewRepresentable {
     private var highlighter: TranscriptCodeHighlighter?
     private var mathRenderer: TranscriptMathRenderer?
     private var mathCache: TranscriptMathCache = .shared
+    private var mathAccessibilityLabel: ((TranscriptMath) -> String)?
     private var animatesTags = true
     private var textFadeInDuration: TimeInterval?
     private var animationTiming: TranscriptAnimationTiming = .immediately
@@ -89,6 +90,15 @@ public struct TranscriptText: UIViewRepresentable {
         var copy = self
         copy.mathRenderer = renderer
         copy.mathCache = cache
+        return copy
+    }
+
+    /// The words that VoiceOver says for a formula; see
+    /// `TranscriptTextView.mathAccessibilityLabel`. Read once, when the view
+    /// is created.
+    public func mathAccessibilityLabel(_ label: @escaping (TranscriptMath) -> String) -> TranscriptText {
+        var copy = self
+        copy.mathAccessibilityLabel = label
         return copy
     }
 
@@ -184,6 +194,7 @@ public struct TranscriptText: UIViewRepresentable {
             view.mathCache = mathCache
             view.mathRenderer = mathRenderer
         }
+        if let mathAccessibilityLabel { view.mathAccessibilityLabel = mathAccessibilityLabel }
         return view
     }
 

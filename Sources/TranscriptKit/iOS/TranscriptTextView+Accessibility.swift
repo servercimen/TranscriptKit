@@ -2,101 +2,261 @@
 import UIKit
 
 /// One accessibility element for each block: VoiceOver reads the text block
-/// by block, finds headings with the rotor, and opens links as actions.
+/// by block, finds headings with the rotor, and opens links as actions. A
+/// list item tells its position in its list, and a table is a data table
+/// with one element for each cell.
 extension TranscriptTextView {
-    /// The elements for `layout`, made again only when the layout changes.
+    /// The elements for `layout`, brought up to date only when the layout
+    /// changes. A block keeps its element from one layout to the next, so
+    /// VoiceOver focus stays where it is while text streams in.
     func accessibilityElements(for layout: DocumentLayout) -> [UIAccessibilityElement] {
-        if let cached = accessibilityCache, cached.layout === layout { return cached.elements }
+        let cache = accessibilityCache ?? AccessibilityCache()
+        accessibilityCache = cache
+        if cache.layout === layout { return cache.elements }
+        var byKey: [AccessibilityItem.Key: UIAccessibilityElement] = [:]
         var elements: [UIAccessibilityElement] = []
-        let definitions = layout.document.linkDefinitions
-        for index in 0..<layout.entryCount {
-            let entry = layout.entry(at: index)
-            let block = entry.layout.block
-            let text = Self.readableText(of: block, upTo: min(entry.layout.length, block.utf16Count))
-            if text.isEmpty, block.kind != .rule { continue }
+        let scrolling = Set((0..<layout.entryCount).lazy.map(layout.entry(at:)).filter { $0.layout.maximumScrollOffset > 0 }
+            .map(\.layout.block.id))
+        for item in layout.accessibilityItems(math: mathAccessibilityLabel ?? \.tex, words: cache.words) {
             let element: UIAccessibilityElement
-            if entry.layout.maximumScrollOffset > 0 {
-                let scrolling = SideScrollingElement(accessibilityContainer: self)
-                let id = block.id
-                scrolling.onScroll = { [weak self] direction in self?.accessibilityScrollBlock(id, direction) ?? false }
-                element = scrolling
+            if let table = item.table {
+                let tableElement = cache.byKey[item.key] as? TableAccessibilityElement
+                    ?? TableAccessibilityElement(accessibilityContainer: self)
+                tableElement.update(frame: item.frame, table: table, in: self)
+                element = tableElement
             } else {
-                element = UIAccessibilityElement(accessibilityContainer: self)
+                let blockElement = cache.byKey[item.key] as? BlockAccessibilityElement
+                    ?? BlockAccessibilityElement(accessibilityContainer: self)
+                blockElement.update(with: item, scrollsSideways: scrolling.contains(item.key.id), in: self)
+                element = blockElement
             }
-            element.accessibilityLabel = Self.spokenText(text, of: block)
-            element.accessibilityFrameInContainerSpace = entry.frame
-            var traits: UIAccessibilityTraits = .staticText
-            if case .heading = block.kind { traits.insert(.header) }
-            var actions: [UIAccessibilityCustomAction] = []
-            let shown = min(entry.layout.length, block.utf16Count)
-            let original = block.text as NSString
-            for span in block.spans where span.range.upperBound <= shown {
-                guard let target = span.link ?? span.reference.flatMap({ definitions[$0] }), let url = URL(string: target) else {
-                    continue
-                }
-                let title = original.substring(with: NSRange(location: span.range.lowerBound, length: span.range.count))
-                let format = NSLocalizedString("Open %@", comment: "VoiceOver action that opens a link; %@ is the link's text")
-                actions.append(UIAccessibilityCustomAction(name: String(format: format, title)) { [weak self] _ in
-                    self?.openLink(url)
-                    return true
-                })
-            }
-            if !actions.isEmpty { traits.insert(.link) }
-            element.accessibilityTraits = traits
-            element.accessibilityCustomActions = actions
+            byKey[item.key] = element
             elements.append(element)
         }
-        accessibilityCache = AccessibilityCache(layout: layout, elements: elements)
+        if cache.watch.geometry == nil { cache.watch.start(with: layout) }
+        cache.layout = layout
+        cache.byKey = byKey
+        cache.elements = elements
         return elements
     }
 
-    /// A block's text with images as their alt text and formulas as their
-    /// LaTeX, in place of the U+FFFC character each stands for.
-    static func readableText(of block: TranscriptBlock, upTo end: Int) -> String {
-        let text = NSMutableString(string: (block.text as NSString).substring(to: end))
-        for span in block.spans.reversed() where span.range.lowerBound < end && span.range.count == 1 {
-            guard let replacement = span.image?.alt ?? span.math?.tex else { continue }
-            text.replaceCharacters(in: NSRange(location: span.range.lowerBound, length: 1), with: replacement)
-        }
-        return text as String
+    /// Makes the elements again on the next request, for example with new
+    /// words for formulas.
+    func invalidateAccessibilityElements() {
+        guard let cache = accessibilityCache, cache.layout != nil else { return }
+        cache.layout = nil
+        cache.words = AccessibilityWords()
+        UIAccessibility.post(notification: .layoutChanged, argument: nil)
     }
 
-    /// What VoiceOver says for a block: its list marker, then its text.
-    static func spokenText(_ text: String, of block: TranscriptBlock) -> String {
-        switch block.marker {
-        case .task(let checked)?:
-            let state = checked
-                ? NSLocalizedString("Checked", comment: "VoiceOver: a task list item that is done")
-                : NSLocalizedString("Unchecked", comment: "VoiceOver: a task list item that is not done")
-            return state + ", " + text
-        case .number(let number)?:
-            return number + " " + text
-        case .bullet?, nil:
-            if case .rule = block.kind {
-                return NSLocalizedString("Separator", comment: "VoiceOver: a thematic break between blocks")
+    /// Tells assistive technologies that elements came or went, or moved,
+    /// after `layout` was installed (see `AccessibilityLayoutWatch`).
+    /// Elements keep their identity, so VoiceOver focus stays on its block.
+    /// Nothing is posted before an assistive technology has asked for the
+    /// elements.
+    func postAccessibilityLayoutChangeIfNeeded(for layout: DocumentLayout, isAppend: Bool) {
+        guard let cache = accessibilityCache, cache.layout != nil else { return }
+        let isNeeded = cache.watch.install(layout, isAppend: isAppend)
+        if isNeeded, window != nil { UIAccessibility.post(notification: .layoutChanged, argument: nil) }
+    }
+}
+
+/// The text and frame of a block or a table cell. Assistive technologies
+/// can ask for them from any thread, so they are kept here, and the
+/// getters read them on the main thread (see `onMainThread`). A getter
+/// first brings the elements up to date, because a client can keep an
+/// element while text streams in.
+class TextAccessibilityElement: UIAccessibilityElement {
+    private var label: String?
+    private var value: String?
+    private var traits: UIAccessibilityTraits = .staticText
+    /// The element in the view's coordinates.
+    private(set) var frameInView: CGRect = .zero
+    private(set) weak var view: TranscriptTextView?
+    private var links: [AccessibilityItem.Link]?
+    private var actions: [UIAccessibilityCustomAction]?
+
+    /// - Parameter frameInContainer: the frame in the container's
+    ///   coordinates, which UIKit can use to scroll the element into view.
+    func update(label: String, value: String?, isHeading: Bool, frame: CGRect, frameInContainer: CGRect,
+                links: [AccessibilityItem.Link], in view: TranscriptTextView) {
+        self.label = label
+        self.value = value
+        frameInView = frame
+        if accessibilityFrameInContainerSpace != frameInContainer { accessibilityFrameInContainerSpace = frameInContainer }
+        self.view = view
+        var traits: UIAccessibilityTraits = .staticText
+        if isHeading { traits.insert(.header) }
+        if !links.isEmpty { traits.insert(.link) }
+        self.traits = traits
+        guard self.links != links else { return }
+        self.links = links
+        let format = NSLocalizedString("Open %@", comment: "VoiceOver action that opens a link; %@ is the link's text")
+        actions = links.map { link in
+            UIAccessibilityCustomAction(name: String(format: format, link.title)) { @Sendable [weak view] _ in
+                onMainThread { view?.openLink(link.url) }
+                return true
             }
-            return text
+        }
+    }
+
+    nonisolated override var accessibilityLabel: String? {
+        get { onMainThread { current.label } }
+        set { onMainThread { label = newValue } }
+    }
+
+    nonisolated override var accessibilityValue: String? {
+        get { onMainThread { current.value } }
+        set { onMainThread { value = newValue } }
+    }
+
+    nonisolated override var accessibilityTraits: UIAccessibilityTraits {
+        get { onMainThread { current.traits } }
+        set { onMainThread { traits = newValue } }
+    }
+
+    /// From the view: a table cell's container is the table's element, not a view.
+    nonisolated override var accessibilityFrame: CGRect {
+        get { onMainThread { current.screenFrame } }
+        set {}
+    }
+
+    nonisolated override var accessibilityCustomActions: [UIAccessibilityCustomAction]? {
+        get { onMainThread { current.actions } }
+        set { onMainThread { actions = newValue } }
+    }
+
+    /// This element, once the elements are up to date.
+    fileprivate var current: TextAccessibilityElement {
+        view?.updateAccessibilityElements()
+        return self
+    }
+
+    private var screenFrame: CGRect {
+        view.map { UIAccessibility.convertToScreenCoordinates(frameInView, in: $0) } ?? .zero
+    }
+}
+
+/// A block's element. Its block's id keeps it from one layout to the next.
+/// When the block scrolls sideways, a three-finger swipe moves the block.
+final class BlockAccessibilityElement: TextAccessibilityElement {
+    /// The id of the block, when the block scrolls sideways.
+    private var sideScrollingID: String?
+
+    func update(with item: AccessibilityItem, scrollsSideways: Bool, in view: TranscriptTextView) {
+        update(label: item.label, value: item.value, isHeading: item.isHeading, frame: item.frame, frameInContainer: item.frame,
+               links: item.links, in: view)
+        sideScrollingID = scrollsSideways ? item.key.id : nil
+    }
+
+    nonisolated override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
+        onMainThread {
+            _ = current
+            guard let id = sideScrollingID, let view else { return false }
+            return view.accessibilityScrollBlock(id, direction)
         }
     }
 }
 
-/// The element of a block that scrolls sideways: a three-finger swipe
-/// moves the block.
-final class SideScrollingElement: UIAccessibilityElement {
-    var onScroll: ((UIAccessibilityScrollDirection) -> Bool)?
+/// A table's element: a data table that holds one element for each cell,
+/// so VoiceOver reads the table cell by cell, with the row and column.
+final class TableAccessibilityElement: UIAccessibilityElement, UIAccessibilityContainerDataTable {
+    private var cells: [CellAccessibilityElement] = []
+    private var rowCount = 0
+    private var columnCount = 0
+    private var frameInView: CGRect = .zero
+    private weak var view: TranscriptTextView?
 
-    override func accessibilityScroll(_ direction: UIAccessibilityScrollDirection) -> Bool {
-        onScroll?(direction) ?? false
+    func update(frame: CGRect, table: AccessibilityItem.Table, in view: TranscriptTextView) {
+        frameInView = frame
+        if accessibilityFrameInContainerSpace != frame { accessibilityFrameInContainerSpace = frame }
+        self.view = view
+        rowCount = table.rowCount
+        columnCount = table.columnCount
+        var cells: [CellAccessibilityElement] = []
+        for (index, cell) in table.cells.enumerated() {
+            let element = index < self.cells.count && self.cells[index].row == cell.row && self.cells[index].column == cell.column
+                ? self.cells[index] : CellAccessibilityElement(accessibilityContainer: self)
+            element.update(with: cell, inTableAt: frame.origin, in: view)
+            cells.append(element)
+        }
+        self.cells = cells
+    }
+
+    nonisolated override var isAccessibilityElement: Bool {
+        get { false }
+        set {}
+    }
+
+    nonisolated override var accessibilityContainerType: UIAccessibilityContainerType {
+        get { .dataTable }
+        set {}
+    }
+
+    nonisolated override var accessibilityElements: [Any]? {
+        get { onMainThread { current.cells } }
+        set {}
+    }
+
+    nonisolated override var accessibilityFrame: CGRect {
+        get { onMainThread { current.screenFrame } }
+        set {}
+    }
+
+    nonisolated func accessibilityDataTableCellElement(forRow row: Int, column: Int) -> (any UIAccessibilityContainerDataTableCell)? {
+        onMainThread { current.cells.first { $0.row == row && $0.column == column } }
+    }
+
+    nonisolated func accessibilityRowCount() -> Int { onMainThread { current.rowCount } }
+
+    nonisolated func accessibilityColumnCount() -> Int { onMainThread { current.columnCount } }
+
+    nonisolated func accessibilityHeaderElements(forColumn column: Int) -> [any UIAccessibilityContainerDataTableCell]? {
+        onMainThread { current.cells.first { $0.row == 0 && $0.column == column }.map { [$0] } }
+    }
+
+    /// This element, once the elements are up to date.
+    private var current: TableAccessibilityElement {
+        view?.updateAccessibilityElements()
+        return self
+    }
+
+    private var screenFrame: CGRect {
+        view.map { UIAccessibility.convertToScreenCoordinates(frameInView, in: $0) } ?? .zero
+    }
+}
+
+/// A table cell's element.
+final class CellAccessibilityElement: TextAccessibilityElement, UIAccessibilityContainerDataTableCell {
+    private(set) var row = -1
+    private(set) var column = -1
+
+    func update(with cell: AccessibilityItem.Table.Cell, inTableAt origin: CGPoint, in view: TranscriptTextView) {
+        row = cell.row
+        column = cell.column
+        update(label: cell.label, value: cell.value, isHeading: false, frame: cell.frame,
+               frameInContainer: cell.frame.offsetBy(dx: -origin.x, dy: -origin.y), links: cell.links, in: view)
+    }
+
+    nonisolated func accessibilityRowRange() -> NSRange { onMainThread { NSRange(location: cell.row, length: 1) } }
+
+    nonisolated func accessibilityColumnRange() -> NSRange { onMainThread { NSRange(location: cell.column, length: 1) } }
+
+    /// This cell, once the elements are up to date.
+    private var cell: CellAccessibilityElement {
+        _ = current
+        return self
     }
 }
 
 final class AccessibilityCache {
-    let layout: DocumentLayout
-    let elements: [UIAccessibilityElement]
-
-    init(layout: DocumentLayout, elements: [UIAccessibilityElement]) {
-        self.layout = layout
-        self.elements = elements
-    }
+    /// The layout that the elements were last brought up to date for.
+    var layout: DocumentLayout?
+    /// The geometry of the layout installed last, from the first request on.
+    var watch = AccessibilityLayoutWatch()
+    /// The words of those items, for the current `mathAccessibilityLabel`.
+    var words = AccessibilityWords()
+    var byKey: [AccessibilityItem.Key: UIAccessibilityElement] = [:]
+    var elements: [UIAccessibilityElement] = []
 }
 #endif

@@ -59,19 +59,21 @@ jobs:
         run: xcodebuild -version
       - name: Pick a simulator
         run: |
+          sdk=$(xcrun --sdk iphonesimulator --show-sdk-version)
           udid=$(xcrun simctl list devices available --json | python3 -c '
           import json, sys
           devices = json.load(sys.stdin)["devices"]
+          sdk = [int(part) for part in sys.argv[1].split(".")]
           def version(runtime):
               return [int(part) for part in runtime.rsplit("iOS-", 1)[1].split("-")]
-          runtimes = sorted((r for r in devices if ".SimRuntime.iOS-" in r), key=version, reverse=True)
+          runtimes = sorted((r for r in devices if ".SimRuntime.iOS-" in r and version(r) <= sdk), key=version, reverse=True)
           phones = [(r, d) for r in runtimes for d in devices[r] if ".iPhone-" in d["deviceTypeIdentifier"]]
           if not phones:
               sys.exit("No iPhone simulator is available.")
           runtime, device = phones[0]
           print(device["name"], runtime, file=sys.stderr)
           print(device["udid"])
-          ')
+          ' "$sdk")
           echo "SIMULATOR_UDID=$udid" >> "$GITHUB_ENV"
       - name: Run the view tests
         run: >

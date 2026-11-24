@@ -28,12 +28,14 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// Whether the view sets the text heavier when the Bold Text setting is
     /// on. On by default. Regular text becomes semibold, and bold text
     /// becomes heavy. A named font, such as "Avenir-Book", keeps its own
-    /// weight; the default code font takes its bold face. Off, the text
-    /// keeps the same weights in both settings.
+    /// weight. The default code font takes its bold face, so bold code then
+    /// looks the same as the code around it. Off, the view does not make the
+    /// fonts heavier itself. See `withBoldText(_:)`.
     public var followsBoldText = true
-    /// Set by the view from its trait collection: Bold Text is on and
-    /// `followsBoldText` lets it change the fonts.
-    var usesBoldText = false
+    /// Whether the Bold Text setting is on, as `withBoldText(_:)` sets it.
+    var isBoldTextOn = false
+    /// Whether layout makes the fonts heavier for Bold Text.
+    var usesBoldText: Bool { isBoldTextOn && followsBoldText }
 
     public var bodySize: CGFloat = 17
     public var lineSpacing: CGFloat = 3
@@ -109,6 +111,7 @@ public struct TranscriptStyle: Equatable, Sendable {
             var font: TranscriptFont?
             var code: TranscriptFont?
             var boldText: Bool
+            var followsBoldText: Bool
         }
 
         private let lock = NSLock()
@@ -137,8 +140,20 @@ public struct TranscriptStyle: Equatable, Sendable {
         case .code: role = 7
         }
         let key = FontCache.Key(role: role, size: bodySize, traits: traits.rawValue, font: customFont(for: kind),
-                                code: traits.contains(.code) ? codeFont : nil, boldText: usesBoldText)
+                                code: traits.contains(.code) ? codeFont : nil, boldText: isBoldTextOn,
+                                followsBoldText: followsBoldText)
         return Self.fontCache.font(for: key) { makeFont(for: kind, traits: traits) }
+    }
+
+    /// The font that a formula's LaTeX is shown in until it is drawn: the
+    /// code font at `size`.
+    func mathFallbackFont(size: CGFloat) -> CTFont {
+        let key = FontCache.Key(role: 8, size: size, traits: 0, font: nil, code: codeFont, boldText: isBoldTextOn,
+                                followsBoldText: followsBoldText)
+        return Self.fontCache.font(for: key) {
+            adjustedForBoldText(codeFont?.makeFont(size: size) ?? CTFontCreateUIFontForLanguage(.userFixedPitch, size, nil)!,
+                                source: codeFont, defaultWeight: nil, traits: [])
+        }
     }
 
     /// The font the app set for this kind of text, if any.
@@ -195,10 +210,14 @@ public struct TranscriptStyle: Equatable, Sendable {
         return adjustedForBoldText(font, source: source, defaultWeight: defaultWeight, traits: traits)
     }
 
-    /// The style that layout uses when the Bold Text setting is `isOn`.
-    func withBoldText(_ isOn: Bool) -> TranscriptStyle {
+    /// A copy for when the Bold Text setting is `isOn`. With
+    /// `followsBoldText`, its system fonts are heavier when `isOn` is true.
+    /// `TranscriptTextView` applies it from the trait collection's
+    /// `legibilityWeight`. With a `DocumentLayout` of your own, lay out with
+    /// the copy, and lay out again when the setting changes.
+    public func withBoldText(_ isOn: Bool) -> TranscriptStyle {
         var copy = self
-        copy.usesBoldText = isOn && followsBoldText
+        copy.isBoldTextOn = isOn
         return copy
     }
 
@@ -394,8 +413,7 @@ final class ImageAttachment: @unchecked Sendable {
             self.ascent = size.height - formula.baseline * scale
         } else {
             let size = CTFontGetSize(font) * 0.85
-            let code = style.adjustedForBoldText(style.codeFont?.makeFont(size: size) ?? CTFontCreateUIFontForLanguage(.userFixedPitch, size, nil)!,
-                                                 source: style.codeFont, defaultWeight: nil, traits: [])
+            let code = style.mathFallbackFont(size: size)
             let attributes: [NSAttributedString.Key: Any] = [
                 TranscriptStyle.fontKey: code,
                 NSAttributedString.Key(kCTForegroundColorFromContextAttributeName as String): true,

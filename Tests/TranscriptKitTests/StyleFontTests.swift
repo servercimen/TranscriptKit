@@ -95,7 +95,7 @@ private func boldTextStyle(_ configure: (inout TranscriptStyle) -> Void = { _ in
     var off = TranscriptStyle()
     configure(&off)
     var on = off
-    on.usesBoldText = true
+    on.isBoldTextOn = true
     return (off, on)
 }
 
@@ -150,12 +150,16 @@ private func boldTextStyle(_ configure: (inout TranscriptStyle) -> Void = { _ in
     #expect(style.withBoldText(false) == style)
     style.followsBoldText = false
     #expect(!style.withBoldText(true).usesBoldText)
-    #expect(style.withBoldText(true) == style)
+    #expect(style.withBoldText(true) != style)
+    let on = style.withBoldText(true).font(for: .paragraph, traits: .bold)
+    let off = style.font(for: .paragraph, traits: .bold)
+    #expect(postScriptName(on) == postScriptName(off))
+    #expect(weight(on) == weight(off))
 }
 
 @Test func boldTextKeepsAFontThatIsAlreadyHeavyEnough() {
     var style = TranscriptStyle()
-    style.usesBoldText = true
+    style.isBoldTextOn = true
     let source = TranscriptFont(size: 17)
     let semibold = TranscriptFont(size: 17, weight: 0.3).makeFont()
     #expect(style.adjustedForBoldText(semibold, source: source, defaultWeight: 0, traits: []) === semibold)
@@ -163,4 +167,20 @@ private func boldTextStyle(_ configure: (inout TranscriptStyle) -> Void = { _ in
     #expect(abs(weight(style.adjustedForBoldText(regular, source: source, defaultWeight: 0, traits: [])) - 0.3) < 0.05)
     let heavy = TranscriptFont(size: 17, weight: 0.56).makeFont()
     #expect(style.adjustedForBoldText(heavy, source: nil, defaultWeight: 0, traits: .bold) === heavy)
+}
+
+@Test func theFallbackFontOfAFormulaIsCachedAndFollowsBoldText() {
+    let styles = boldTextStyle()
+    #expect(styles.on.mathFallbackFont(size: 14) === styles.on.mathFallbackFont(size: 14))
+    #expect(CTFontGetSymbolicTraits(styles.on.mathFallbackFont(size: 14)).contains(.traitBold))
+    #expect(!CTFontGetSymbolicTraits(styles.off.mathFallbackFont(size: 14)).contains(.traitBold))
+    #expect(CTFontGetSize(styles.on.mathFallbackFont(size: 12)) == 12)
+}
+
+@Test func boldTextKeepsBoldCodeHeavierInASystemCodeFont() {
+    let styles = boldTextStyle { $0.codeFont = TranscriptFont(size: 15, monospaced: true) }
+    let code = styles.on.font(for: .code(language: nil))
+    let bold = styles.on.font(for: .code(language: nil), traits: .bold)
+    #expect(weight(bold) > weight(code) + 0.15)
+    #expect(weight(styles.on.font(for: .paragraph, traits: [.bold, .code])) > weight(styles.on.font(for: .paragraph, traits: .code)) + 0.15)
 }

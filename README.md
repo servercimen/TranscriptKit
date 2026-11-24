@@ -317,8 +317,12 @@ A line height replaces `lineSpacing` for that kind of text, and a line is never 
 With `TranscriptTextView`, set `style.scaled(for: traitCollection.preferredContentSizeCategory)` yourself.
 
 The text follows the Bold Text setting. With Bold Text on, the view lays out the text again with heavier system fonts:
-regular text becomes semibold, and bold text becomes heavy. The default code font takes its bold face. A named font
-keeps its own weight. To keep the same weights in both settings, set `style.followsBoldText = false`.
+regular text becomes semibold, and bold text becomes heavy. The default code font takes its bold face, so bold code
+then looks the same as the code around it. Set a system `codeFont`, such as
+`TranscriptFont(size: 15, monospaced: true)`, to keep bold code heavier. A named font keeps its own weight. To stop the
+view from making the fonts heavier, set `style.followsBoldText = false`. When you lay out a `DocumentLayout` yourself,
+use `style.withBoldText(traitCollection.legibilityWeight == .bold)`, and lay out again when the setting changes. Draw
+it with `highContrast: traitCollection.accessibilityContrast == .high` to use the Increase Contrast colors.
 
 It also sets the colors. Each one is a `TranscriptColor`, with a value for light and one for dark appearance, and one
 for each when Increase Contrast is on, so the text can be drawn off the main thread. `TranscriptColor(UIColor)` keeps

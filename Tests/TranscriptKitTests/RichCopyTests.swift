@@ -146,3 +146,36 @@ private func offset(of string: String, in text: NSAttributedString) -> Int {
         == NSUnderlineStyle.single.rawValue)
     #endif
 }
+
+@Test func richCopyNamesOnlyPublicFonts() throws {
+    let document = MarkdownStreamParser.document(from: markdown + "\n\n***both*** and **bold *mixed***")
+    let text = TranscriptDocument.withPublicFonts(document.copiedText(in: 0..<document.utf16Count,
+                                                                      style: TranscriptStyle()))
+    var names: Set<String> = []
+    text.enumerateAttribute(TranscriptStyle.fontKey, in: NSRange(location: 0, length: text.length)) { value, _, _ in
+        guard let value else { return }
+        let name = CTFontCopyPostScriptName(value as! CTFont) as String
+        names.insert(name)
+        #expect(!name.hasPrefix("."))
+        #expect(CTFontCopyPostScriptName(CTFontCreateWithName(name as CFString, 12, nil)) as String == name)
+    }
+    #expect(!names.isEmpty)
+
+    let body = try #require(font(text, at: offset(of: "Some", in: text)))
+    let heading = try #require(font(text, at: offset(of: "Title", in: text)))
+    #expect(CTFontGetSize(heading) > CTFontGetSize(body))
+    #expect(traits(text, at: offset(of: "Title", in: text)).contains(.traitBold))
+    #expect(traits(text, at: offset(of: "bold", in: text)).contains(.traitBold))
+    #expect(!traits(text, at: offset(of: "bold", in: text)).contains(.traitItalic))
+    #expect(traits(text, at: offset(of: "italic", in: text)).contains(.traitItalic))
+    #expect(!traits(text, at: offset(of: "italic", in: text)).contains(.traitBold))
+    #expect(traits(text, at: offset(of: "both", in: text)).isSuperset(of: [.traitBold, .traitItalic]))
+    #expect(traits(text, at: offset(of: "mixed", in: text)).isSuperset(of: [.traitBold, .traitItalic]))
+    #expect(!traits(text, at: offset(of: "Some", in: text)).contains(.traitBold))
+    #expect(traits(text, at: offset(of: "code", in: text)).contains(.traitMonoSpace))
+    #expect(traits(text, at: offset(of: "let x", in: text)).contains(.traitMonoSpace))
+
+    let item = document.pasteboardItem(in: 0..<document.utf16Count, style: TranscriptStyle())
+    let rtf = String(decoding: try #require(item[UTType.rtf.identifier] as? Data), as: UTF8.self)
+    #expect(!rtf.contains("fcharset0 ."))
+}

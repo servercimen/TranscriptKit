@@ -11,15 +11,44 @@ extension TranscriptDocument {
     /// identifier: the plain text of `copyText(in:)`, and the same text as
     /// RTF, with the fonts of `style`, links, strikethrough and underline.
     /// The RTF has no colors, so pasted text takes the colors of the place
-    /// it goes to.
+    /// it goes to. The system font becomes Helvetica Neue, with the same
+    /// size, bold and italic.
     func pasteboardItem(in range: Range<Int>, style: TranscriptStyle) -> [String: Any] {
-        let text = copiedText(in: range, style: style)
+        let text = Self.withPublicFonts(copiedText(in: range, style: style))
         var item: [String: Any] = [UTType.utf8PlainText.identifier: text.string]
         if let rtf = try? text.data(from: NSRange(location: 0, length: text.length),
                                     documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]) {
             item[UTType.rtf.identifier] = rtf
         }
         return item
+    }
+
+    /// `text` with each font that has a private name (the system fonts,
+    /// whose names start with a period) changed to a public font of the
+    /// same size and traits. Apps that find a font by its name in the RTF
+    /// do not find a private name, and show another font, without bold or
+    /// italic.
+    static func withPublicFonts(_ text: NSAttributedString) -> NSAttributedString {
+        let result = NSMutableAttributedString(attributedString: text)
+        let whole = NSRange(location: 0, length: result.length)
+        text.enumerateAttribute(TranscriptStyle.fontKey, in: whole) { value, range, _ in
+            guard let value else { return }
+            let font = value as! CTFont
+            let name = CTFontCopyPostScriptName(font) as String
+            guard name.hasPrefix(".") else { return }
+            result.addAttribute(TranscriptStyle.fontKey, value: publicFont(like: font), range: range)
+        }
+        return result
+    }
+
+    private static func publicFont(like font: CTFont) -> CTFont {
+        let traits = CTFontGetSymbolicTraits(font)
+        let size = CTFontGetSize(font)
+        if traits.contains(.traitMonoSpace) { return CTFontCreateWithName("Menlo-Regular" as CFString, size, nil) }
+        let base = CTFontCreateWithName("HelveticaNeue" as CFString, size, nil)
+        let wanted = traits.intersection([.traitBold, .traitItalic])
+        guard !wanted.isEmpty else { return base }
+        return CTFontCreateCopyWithSymbolicTraits(base, 0, nil, wanted, wanted) ?? base
     }
 
     /// Styles the spans of `block` in `piece`, which holds the block's text

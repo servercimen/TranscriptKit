@@ -288,7 +288,8 @@ position in its list and the number of items, such as "Item 2 of 3". A table is 
 cell, so VoiceOver reads it cell by cell, with the row, the column and the column's header. When a table starts a list
 item, its first cell reads the item's marker and tells its position. While text streams in, each block keeps its
 element, so VoiceOver focus stays on its block. The view tells VoiceOver that the layout changed only when elements
-come or go, or when a new layout moves or changes them. Text that streams into the last block does not tell it.
+come or go, or when a new layout moves them or changes their size. Text that streams into the last block does not
+tell it.
 
 Assistive technologies, such as VoiceOver, Speak Screen and Voice Control, can ask for the elements and the text from
 any thread. TranscriptKit then does the work on the main thread and gives the answer to the thread that asked.

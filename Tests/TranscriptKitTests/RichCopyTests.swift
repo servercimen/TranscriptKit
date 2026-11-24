@@ -3,14 +3,16 @@ import Foundation
 import Testing
 import UniformTypeIdentifiers
 @testable import TranscriptKit
-#if canImport(AppKit)
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
 import AppKit
 #endif
 
 private let markdown = """
 # Title
 
-Some **bold**, *italic*, `code`, ~~gone~~ and a [link](https://example.com/a) with an ![alt](u.png) image.
+Some **bold**, *italic*, `code`, ~~gone~~, <u>under</u> and a [link](https://example.com/a) with an ![alt](u.png) image.
 
 - one
   - nested **item**
@@ -83,6 +85,9 @@ private func offset(of string: String, in text: NSAttributedString) -> Int {
     #expect(text.attribute(.link, at: offset(of: "Some", in: text), effectiveRange: nil) == nil)
     #expect(text.attribute(.strikethroughStyle, at: offset(of: "gone", in: text), effectiveRange: nil) as? Int
         == NSUnderlineStyle.single.rawValue)
+    #expect(text.attribute(.underlineStyle, at: offset(of: "under", in: text), effectiveRange: nil) as? Int
+        == NSUnderlineStyle.single.rawValue)
+    #expect(text.attribute(.underlineStyle, at: offset(of: "Some", in: text), effectiveRange: nil) == nil)
 
     // Replaced and added text keeps the font of the block it is in.
     #expect(font(text, at: offset(of: "alt", in: text)) != nil)
@@ -122,7 +127,14 @@ private func offset(of string: String, in text: NSAttributedString) -> Int {
     #expect(!readTraits("Some").contains(.boldFontMask))
     let codeFont = read.attribute(.font, at: offset(of: "let x", in: read), effectiveRange: nil) as? NSFont
     #expect(codeFont?.isFixedPitch == true)
-    let link = read.attribute(.link, at: offset(of: "link", in: read), effectiveRange: nil)
-    #expect((link as? URL)?.absoluteString == "https://example.com/a" || (link as? String) == "https://example.com/a")
+    func readLink(_ string: String) -> String? {
+        let link = read.attribute(.link, at: offset(of: string, in: read), effectiveRange: nil)
+        return (link as? URL)?.absoluteString ?? link as? String
+    }
+    #expect(readLink("link") == "https://example.com/a")
+    #expect(read.attribute(.strikethroughStyle, at: offset(of: "gone", in: read), effectiveRange: nil) as? Int
+        == NSUnderlineStyle.single.rawValue)
+    #expect(read.attribute(.underlineStyle, at: offset(of: "under", in: read), effectiveRange: nil) as? Int
+        == NSUnderlineStyle.single.rawValue)
     #endif
 }

@@ -40,7 +40,7 @@ private func isAsTallAsItsText(_ view: TranscriptTextView) -> Bool {
     view.bounds.height == fittingHeight(of: view)
 }
 
-@Suite(.serialized) @MainActor
+@Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct TranscriptTextTests {
     /// A window of a fixed size, so that no test depends on the screen. Each
     /// test has its own, and it lasts as long as the test.

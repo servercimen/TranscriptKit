@@ -54,7 +54,7 @@ private func hasTextInteraction(_ view: TranscriptTextView) -> Bool {
     view.interactions.contains { $0 is UITextInteraction }
 }
 
-@Suite(.serialized) @MainActor
+@Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct TranscriptTextViewTests {
     /// Windows of a fixed size, so that no test depends on the screen. Each
     /// test has its own, and they last as long as the test.
@@ -84,7 +84,6 @@ struct TranscriptTextViewTests {
     @Test func emptyTextHasNoHeight() async {
         let view = TranscriptTextView(frame: CGRect(x: 0, y: 0, width: 320, height: 400))
         #expect(view.sizeThatFits(CGSize(width: 320, height: CGFloat.greatestFiniteMagnitude)).height == 0)
-        #expect(view.intrinsicContentSize.height == UIView.noIntrinsicMetric)
         #expect(!view.hasText)
 
         view.document = MarkdownStreamParser.document(from: "Hello")

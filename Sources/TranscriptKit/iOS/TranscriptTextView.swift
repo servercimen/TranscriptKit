@@ -1237,8 +1237,6 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// the view resign, and the selection must stay for them.
     @discardableResult
     public override func becomeFirstResponder() -> Bool {
-        // The interaction shows the selection only if it is in place when
-        // the view becomes first responder.
         addTextInteractionIfNeeded()
         let became = super.becomeFirstResponder()
         if became { NotificationCenter.default.post(name: Self.didBecomeFirstResponder, object: self) }

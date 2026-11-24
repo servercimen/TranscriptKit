@@ -303,8 +303,8 @@ In a right-to-left block, the leading edge is on the right. Lines start there, a
 `.trailing` puts the lines at the left. The indents of lists and quotes, list markers and quote bars are on the right,
 and a table puts its first column on the right. Code blocks are always left to right.
 
-A selection follows the glyphs. In text of mixed direction, one line can have several selection rects, and the
-handles go to the ends of the selected text. Copy gives the text in the order it was written.
+A selection follows the glyphs. In text of mixed direction, one line can have several selection rects. Copy gives the
+text in the order it was written.
 
 ### Styling
 

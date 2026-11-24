@@ -84,6 +84,8 @@ final class LayoutEngine: @unchecked Sendable {
     // Guarded by `lock`.
     private let lock = NSLock()
     private var pending: Request?
+    /// `pending` waits for `relayout` on the main thread: a drain leaves it.
+    private var pendingIsForMain = false
     private var drainScheduled = false
     /// Layouts are made at most this often: a document that arrives sooner
     /// waits, and is replaced by any newer one that arrives meanwhile. More
@@ -209,6 +211,7 @@ final class LayoutEngine: @unchecked Sendable {
         lock.withLock {
             isShutDown = true
             pending = nil
+            pendingIsForMain = false
             mailbox = nil
             onOutput = nil
         }
@@ -229,7 +232,8 @@ final class LayoutEngine: @unchecked Sendable {
     ///
     /// - Parameter schedulesLayout: false when the caller calls `relayout`
     ///   at once, which lays out the request on the main thread. The queue
-    ///   then does not lay it out first.
+    ///   then does not lay it out first, also when a drain is already
+    ///   scheduled.
     @discardableResult
     func submit(_ request: Request, schedulesLayout: Bool = true) -> Bool {
         var accepted = true
@@ -243,6 +247,7 @@ final class LayoutEngine: @unchecked Sendable {
             guard request.sequence > lastSequence else { return nil }
             lastSequence = request.sequence
             pending = request
+            pendingIsForMain = !schedulesLayout
             if drainScheduled || !schedulesLayout { return nil }
             drainScheduled = true
             return max(lastDrain + frameInterval - CACurrentMediaTime(), 0)
@@ -259,7 +264,10 @@ final class LayoutEngine: @unchecked Sendable {
 
     private func takePending() -> Request? {
         lock.withLock { () -> Request? in
-            defer { pending = nil }
+            defer {
+                pending = nil
+                pendingIsForMain = false
+            }
             return pending
         }
     }
@@ -278,7 +286,7 @@ final class LayoutEngine: @unchecked Sendable {
     private func drain() {
         let next: Request? = lock.withLock {
             drainScheduled = false
-            guard let request = pending else { return nil }
+            guard let request = pending, !pendingIsForMain else { return nil }
             pending = nil
             lastDrain = CACurrentMediaTime()
             return request

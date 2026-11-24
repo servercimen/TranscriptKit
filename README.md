@@ -217,6 +217,17 @@ same blocks with more text, or more blocks) still goes to the background, and so
 crossfade has no motion, so it also plays with Reduce Motion. In UIKit, set `replacementCrossfadeDuration` on
 `TranscriptTextView`.
 
+Block ids decide what adds to the text. A summary that is the start of its details, parsed with the same id prefix,
+gives the details the ids of the summary's blocks, so the switch to the details only adds text: it goes to the
+background, with no crossfade. Parse the two texts with different prefixes to crossfade both ways:
+
+```swift
+let summary = MarkdownStreamParser.document(from: summaryText, idPrefix: "summary")
+let details = MarkdownStreamParser.document(from: detailsText, idPrefix: "details")
+```
+
+The first text after an empty document also only adds text, so it goes to the background too.
+
 ### Images
 
 Images in the text show their alt text unless you provide a loader. The library never fetches anything itself, so

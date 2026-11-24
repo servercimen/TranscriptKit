@@ -92,8 +92,13 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// `.transitionCrossDissolve`. Zero shows the new text at once.
     ///
     /// Text that only grows, and the updates of a `stream`, keep the
-    /// background path. A crossfade has no motion, so it also plays with
-    /// Reduce Motion.
+    /// background path. A new document that starts with the blocks of the
+    /// old one, with the same ids, only grows the text: for example a
+    /// summary that is the start of its details, parsed with the same
+    /// `idPrefix`. It does not crossfade. Parse the two texts with different
+    /// prefixes to crossfade between them. The first text after an empty
+    /// document also only grows the text. A crossfade has no motion, so it
+    /// also plays with Reduce Motion.
     public var replacementCrossfadeDuration: TimeInterval?
 
     /// The document setter lays out the direct document now, so the engine
@@ -772,6 +777,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             return
         }
         let isAppend = output.isAppend && output.base != nil && output.base === installed
+        if !isAppend { canvas.layer.removeAnimation(forKey: Self.crossfadeKey) }
         install(output.layout, changedTop: isAppend ? output.changedTop : nil, tail: output.tail,
                 restyled: isAppend ? output.restyled : [], started: output.started, waiting: output.waiting,
                 fade: isAppend ? output.fade : nil, fadingFrom: output.hidden.fadingFrom, isFinished: output.isFinished)
@@ -807,6 +813,7 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         let signpost = replacementSignposter.beginInterval("Replace document")
         relayoutNow()
         replacementSignposter.endInterval("Replace document", signpost)
+        canvas.layer.removeAnimation(forKey: Self.crossfadeKey)
         guard installed !== shown, duration > 0, window != nil else { return }
         // The render server fades from the canvas as the last commit showed
         // it to the canvas as this commit shows it, with the tiles that the
@@ -816,8 +823,10 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         transition.type = .fade
         transition.duration = duration
         transition.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-        canvas.layer.add(transition, forKey: "replacement")
+        canvas.layer.add(transition, forKey: Self.crossfadeKey)
     }
+
+    private static let crossfadeKey = "replacement"
 
     /// Puts `layout` on screen.
     ///

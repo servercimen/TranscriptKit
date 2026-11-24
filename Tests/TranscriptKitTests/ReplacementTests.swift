@@ -64,6 +64,16 @@ private let otherAnswer = """
     #expect(DocumentUpdate.choose(replacing: TranscriptDocument(), with: new, isLaidOut: true, crossfade: 0.25) == .background)
 }
 
+@Test func aPrefixWithOtherIDsIsAReplacement() {
+    let summary = String(shortAnswer.prefix(120))
+    // With the same ids, the full text only adds to its start.
+    #expect(MarkdownStreamParser.document(from: shortAnswer).extends(MarkdownStreamParser.document(from: summary)))
+    let old = MarkdownStreamParser.document(from: summary, idPrefix: "summary")
+    let new = MarkdownStreamParser.document(from: shortAnswer, idPrefix: "details")
+    #expect(DocumentUpdate.choose(replacing: old, with: new, isLaidOut: true, crossfade: 0.25) == .now(crossfade: 0.25))
+    #expect(DocumentUpdate.choose(replacing: new, with: old, isLaidOut: true, crossfade: 0.25) == .now(crossfade: 0.25))
+}
+
 @Test func aBlockWithTheSameIDAndOtherTextIsAReplacement() {
     let old = TranscriptDocument(blocks: [TranscriptBlock(id: "a", text: "First answer")])
     let new = TranscriptDocument(blocks: [TranscriptBlock(id: "a", text: "Second answer")])
@@ -95,6 +105,24 @@ private func engineShowing(_ document: TranscriptDocument, width: CGFloat = 375)
     #expect(result?.layout.height != shown.height)
     #expect(engine.measure(width: 375, style: .init()) == fresh.height)
     // The queue does not lay it out again, and nothing older comes after it.
+    engine.drainNow()
+    #expect(engine.takeOutput() == nil)
+    #expect(engine.backgroundLayoutCount == 0)
+}
+
+@Test func aDrainThatIsAlreadyScheduledLeavesAReplacementToTheCallingThread() {
+    let (engine, _) = engineShowing(MarkdownStreamParser.document(from: shortAnswer))
+    let queued = MarkdownStreamParser.document(from: shortAnswer + "\n\nMore text.")
+    let new = MarkdownStreamParser.document(from: otherAnswer)
+    // Holds the queue, so the drain that the first request schedules runs
+    // after the replacement is submitted.
+    let gate = DispatchSemaphore(value: 0)
+    engine.queue.async { gate.wait() }
+    engine.submit(.init(document: queued, source: 0, sequence: 2, isFinished: true))
+    engine.submit(.init(document: new, source: 0, sequence: 3, isFinished: true), schedulesLayout: false)
+    gate.signal()
+    let result = engine.relayout(width: 375, style: .init())
+    #expect(result?.layout.document == new)
     engine.drainNow()
     #expect(engine.takeOutput() == nil)
     #expect(engine.backgroundLayoutCount == 0)

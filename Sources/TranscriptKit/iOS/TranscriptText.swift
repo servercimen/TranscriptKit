@@ -100,7 +100,9 @@ public struct TranscriptText: UIViewRepresentable {
     /// the old text to the new one; see
     /// `TranscriptTextView.replacementCrossfadeDuration`. A document that
     /// only adds text to the one before is laid out in the background, as
-    /// before. Off by default.
+    /// before. That includes a text that starts with the old one, parsed
+    /// with the same `idPrefix`, and the first text after an empty
+    /// document. Off by default.
     ///
     /// ```swift
     /// TranscriptText(showsSummary ? summary : details)

@@ -192,6 +192,7 @@ public struct TranscriptStyle: Equatable, Sendable {
     static let foregroundKey = NSAttributedString.Key("TranscriptKit.foreground")
     static let backgroundKey = NSAttributedString.Key("TranscriptKit.background")
     private static let kernKey = NSAttributedString.Key(kCTKernAttributeName as String)
+    static let paragraphStyleKey = NSAttributedString.Key(kCTParagraphStyleAttributeName as String)
 
     func attributes(for kind: TranscriptBlock.Kind) -> [NSAttributedString.Key: Any] {
         var attributes: [NSAttributedString.Key: Any] = [
@@ -205,21 +206,25 @@ public struct TranscriptStyle: Equatable, Sendable {
 
     /// The styled text of `block` from UTF-16 offset `start` to its end.
     func attributedString(for block: TranscriptBlock, from start: Int = 0, images: ImageSizing? = nil,
-                          definitions: [String: String] = [:], kerns: [Int: CGFloat] = [:]) -> NSAttributedString {
-        attributedString(for: block, range: start..<block.utf16Count, images: images, definitions: definitions, kerns: kerns)
+                          definitions: [String: String] = [:], kerns: [Int: CGFloat] = [:],
+                          direction: WritingDirection? = nil) -> NSAttributedString {
+        attributedString(for: block, range: start..<block.utf16Count, images: images, definitions: definitions, kerns: kerns,
+                         direction: direction)
     }
 
     /// The styled text of `range` of `block`, with `extraTraits` added to all of it.
     /// A reference link is styled as a link once `definitions` has its label.
     /// `kerns` is extra advance after characters, by block offset: room for
-    /// custom tags' padding (see `DecoratedTags`).
+    /// custom tags' padding (see `DecoratedTags`). `direction` is the base
+    /// direction of the block's text, or nil for Core Text's natural one.
     func attributedString(for block: TranscriptBlock, range: Range<Int>, extraTraits: InlineSpan.Traits = [],
                           images: ImageSizing? = nil, definitions: [String: String] = [:],
-                          kerns: [Int: CGFloat] = [:]) -> NSAttributedString {
+                          kerns: [Int: CGFloat] = [:], direction: WritingDirection? = nil) -> NSAttributedString {
         let start = range.lowerBound
         let text = range == 0..<block.utf16Count ? block.text : (block.text as NSString).substring(with: NSRange(location: start, length: range.count))
         var base = attributes(for: block.kind)
         if !extraTraits.isEmpty { base[Self.fontKey] = font(for: block.kind, traits: extraTraits) }
+        if let direction { base[Self.paragraphStyleKey] = direction.paragraphStyle }
         let result = NSMutableAttributedString(string: text, attributes: base)
         let length = result.length
         if case .code(let language) = block.kind, let store = images?.store {

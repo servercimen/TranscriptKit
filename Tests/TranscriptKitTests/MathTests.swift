@@ -211,7 +211,7 @@ private func attachment(in layout: DocumentLayout) -> ImageAttachment? {
     return nil
 }
 
-@Test func aFormulaShowsItsLatexUntilTheRendererDrawsIt() async {
+@Test func aFormulaIsEmptySpaceUntilTheRendererDrawsIt() async {
     let store = TranscriptImageStore()
     store.setMathRenderer { _, fontSize in
         boxFormula(width: 40, height: Int(fontSize), baseline: 5)
@@ -220,7 +220,10 @@ private func attachment(in layout: DocumentLayout) -> ImageAttachment? {
     let revision = store.revision
     let first = DocumentLayout(document: document, width: 300, style: TranscriptStyle(), reusing: nil, images: store)
     #expect(attachment(in: first)?.picture == nil)
-    #expect(attachment(in: first)?.label != nil)
+    #expect(attachment(in: first)?.label == nil)
+    #expect((attachment(in: first)?.size.width ?? 0) > 0)
+    // Copy still gives the LaTeX.
+    #expect(document.copyText(in: 0..<document.utf16Count) == "So \\(x\\) here")
     await waitUntil { store.revision > revision }
     let second = DocumentLayout(document: document, width: 300, style: TranscriptStyle(), reusing: first, images: store)
     let drawn = attachment(in: second)
@@ -287,4 +290,62 @@ private func attachment(in layout: DocumentLayout) -> ImageAttachment? {
     await waitUntil { store.revision > revision }
     let after = DocumentLayout(document: grown, width: 300, style: style, reusing: meanwhile, images: store)
     #expect(attachment(in: after)?.size.width == 60)
+}
+
+@Test func aFormulaShowsItsLatexWithoutARendererOrWhenTheRendererFails() async {
+    let document = MarkdownStreamParser.document(from: "So \\(x\\) here")
+    let plain = DocumentLayout(document: document, width: 300, style: TranscriptStyle(), reusing: nil, images: TranscriptImageStore())
+    #expect(attachment(in: plain)?.label != nil)
+
+    let store = TranscriptImageStore()
+    store.setMathRenderer { _, _ in nil }
+    let revision = store.revision
+    let first = DocumentLayout(document: document, width: 300, style: TranscriptStyle(), reusing: nil, images: store)
+    #expect(attachment(in: first)?.label == nil)
+    await waitUntil { store.revision > revision }
+    let failed = DocumentLayout(document: document, width: 300, style: TranscriptStyle(), reusing: first, images: store)
+    #expect(attachment(in: failed)?.label != nil)
+}
+
+@Test func aFormulaBeingDrawnDrawsNothing() {
+    let store = TranscriptImageStore()
+    store.setMathRenderer { _, _ in
+        try? await Task.sleep(for: .seconds(5))
+        return nil
+    }
+    let layout = DocumentLayout(document: MarkdownStreamParser.document(from: "$$\\frac{a}{b}$$"), width: 200,
+                                style: TranscriptStyle(), reusing: nil, images: store)
+    #expect(attachment(in: layout)?.label == nil)
+    let width = 200
+    let height = Int(layout.height.rounded(.up))
+    let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
+                            space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+    layout.draw(in: context, dirtyRect: CGRect(x: 0, y: 0, width: width, height: height),
+                text: CGColor(red: 1, green: 0, blue: 0, alpha: 1), codeBackground: CGColor(gray: 0.9, alpha: 1),
+                accent: CGColor(gray: 0.6, alpha: 1), dark: false)
+    let bytes = UnsafeRawBufferPointer(start: context.data!, count: width * height * 4)
+    #expect(bytes.allSatisfy { $0 == 0 })
+}
+
+@Test func theSpaceForAFormulaFollowsItsLatex() {
+    func shape(_ tex: String) -> (Int, Int, Bool) {
+        let shape = LatexShape(tex)
+        return (shape.symbols, shape.rows, shape.isTall)
+    }
+    #expect(shape("x^2 + y^2") == (5, 1, false))
+    #expect(shape("\\frac{a}{\\alpha}") == (2, 1, true))
+    #expect(shape("\\begin{aligned} a &= b \\\\ c &= d \\end{aligned}") == (6, 2, false))
+    #expect(shape("\\{ x \\, y \\}") == (4, 1, false))
+
+    let font = CTFontCreateWithName("Helvetica" as CFString, 20, nil)
+    let line = ceil(CTFontGetAscent(font) + CTFontGetDescent(font))
+    let inline = ImageAttachment.reservedSpace(for: TranscriptMath(tex: "x^2 + y^2", isDisplay: false), font: font, maximumWidth: 300)
+    #expect(inline.size == CGSize(width: 55, height: line))
+    #expect(inline.ascent == ceil(CTFontGetAscent(font)))
+    let fraction = ImageAttachment.reservedSpace(for: TranscriptMath(tex: "\\frac{a}{b}", isDisplay: true), font: font, maximumWidth: 300)
+    #expect(fraction.size.height == line * 2)
+    #expect(fraction.size.width == 22)
+    let wide = ImageAttachment.reservedSpace(for: TranscriptMath(tex: String(repeating: "x+", count: 100), isDisplay: true),
+                                             font: font, maximumWidth: 300)
+    #expect(wide.size.width == 300)
 }

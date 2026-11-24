@@ -320,7 +320,8 @@ struct ImageSizing {
 }
 
 /// An image in laid-out text: the loaded picture, or a placeholder showing
-/// the alt text when there is none.
+/// the alt text when there is none. A formula that is being drawn has
+/// neither: it is empty space.
 final class ImageAttachment: @unchecked Sendable {
     let image: TranscriptImage
     let picture: CGImage?
@@ -333,19 +334,25 @@ final class ImageAttachment: @unchecked Sendable {
     let math: TranscriptMath?
     var isMask: Bool { math != nil && picture != nil }
 
-    /// A formula, drawn by the store's math renderer, or its LaTeX as written
-    /// until it is (or if it is not).
+    /// A formula, drawn by the store's math renderer. Until it is, it is empty
+    /// space of about its size. Without a renderer, or if the renderer cannot
+    /// draw it, it is its LaTeX as written.
     init(math: TranscriptMath, slot: TranscriptImageStore.MathSlot, sizing: ImageSizing?, font: CTFont, style: TranscriptStyle) {
         self.image = TranscriptImage(source: "", alt: math.tex)
         self.math = math
         let maximumWidth = max(sizing?.maximumWidth ?? 320, 20)
-        if case .drawn(let formula)? = sizing?.store?.formula(for: math, fontSize: CTFontGetSize(font), in: slot) {
+        let formula = sizing?.store?.formula(for: math, fontSize: CTFontGetSize(font), in: slot) ?? .asWritten
+        if case .drawn(let formula) = formula {
             let natural = CGSize(width: max(formula.size.width, 1), height: max(formula.size.height, 1))
             let scale = min(1, maximumWidth / natural.width)
             self.picture = formula.image
             self.label = nil
             self.size = CGSize(width: ceil(natural.width * scale), height: ceil(natural.height * scale))
             self.ascent = size.height - formula.baseline * scale
+        } else if case .pending = formula {
+            self.picture = nil
+            self.label = nil
+            (self.size, self.ascent) = Self.reservedSpace(for: math, font: font, maximumWidth: maximumWidth)
         } else {
             let size = CTFontGetSize(font) * 0.85
             let code = style.codeFont?.makeFont(size: size) ?? CTFontCreateUIFontForLanguage(.userFixedPitch, size, nil)!
@@ -366,6 +373,23 @@ final class ImageAttachment: @unchecked Sendable {
             self.size = CGSize(width: min(width, maximumWidth), height: ceil(CTFontGetAscent(font) + CTFontGetDescent(font)) + 4)
             self.ascent = ceil(CTFontGetAscent(font)) + 2
         }
+    }
+
+    /// Room for a formula that is not drawn yet, so that the text around it
+    /// moves less when it is: about as wide as its symbols, and one line
+    /// tall for inline math. Display math gets a line for each of its rows,
+    /// and two when it has a fraction, a sum or an integral.
+    static func reservedSpace(for math: TranscriptMath, font: CTFont, maximumWidth: CGFloat) -> (size: CGSize, ascent: CGFloat) {
+        let fontSize = CTFontGetSize(font)
+        let ascent = ceil(CTFontGetAscent(font))
+        let lineHeight = ceil(CTFontGetAscent(font) + CTFontGetDescent(font))
+        let shape = LatexShape(math.tex)
+        let rows = math.isDisplay ? shape.rows : 1
+        let symbolsInARow = (shape.symbols + rows - 1) / rows
+        let width = min(max(CGFloat(symbolsInARow) * fontSize * 0.55, fontSize).rounded(), maximumWidth)
+        guard math.isDisplay else { return (CGSize(width: width, height: lineHeight), ascent) }
+        let height = lineHeight * CGFloat(rows) * (shape.isTall ? 2 : 1)
+        return (CGSize(width: width, height: height), height - (lineHeight - ascent))
     }
 
     init(image: TranscriptImage, sizing: ImageSizing?, font: CTFont, style: TranscriptStyle) {
@@ -414,5 +438,54 @@ final class ImageAttachment: @unchecked Sendable {
             getWidth: { Unmanaged<ImageAttachment>.fromOpaque($0).takeUnretainedValue().size.width }
         )
         return CTRunDelegateCreate(&callbacks, Unmanaged.passRetained(self).toOpaque())!
+    }
+}
+
+/// A rough count of what a formula draws, read from its LaTeX.
+struct LatexShape: Equatable {
+    /// Letters, digits, operators and symbol commands such as `\alpha`.
+    var symbols = 0
+    /// Rows, which `\\` separates.
+    var rows = 1
+    /// It has a fraction, a sum, an integral or a product, which are about
+    /// twice as tall as a line.
+    var isTall = false
+
+    private static let layoutCommands: Set<Substring> = [
+        "frac", "dfrac", "tfrac", "left", "right", "mathrm", "mathbf", "mathit", "mathsf", "text", "textrm",
+        "operatorname", "displaystyle", "textstyle", "limits",
+    ]
+    private static let tallCommands: Set<Substring> = ["frac", "dfrac", "sum", "int", "iint", "oint", "prod", "coprod", "binom"]
+
+    init(_ tex: String) {
+        let units = Substring(tex)
+        var index = units.startIndex
+        while index < units.endIndex {
+            let character = units[index]
+            index = units.index(after: index)
+            guard character == "\\" else {
+                if !(character.isWhitespace || "{}^_&~".contains(character)) { symbols += 1 }
+                continue
+            }
+            let name = units[index...].prefix { $0.isLetter }
+            guard !name.isEmpty else {
+                // An escaped character, `\\` between rows, or a space such as `\,`.
+                guard index < units.endIndex else { break }
+                let escaped = units[index]
+                if escaped == "\\" { rows += 1 } else if "{}|%$#".contains(escaped) { symbols += 1 }
+                index = units.index(after: index)
+                continue
+            }
+            index = name.endIndex
+            if Self.tallCommands.contains(name) { isTall = true }
+            if name == "begin" || name == "end" {
+                // The environment's name is not drawn.
+                if index < units.endIndex, units[index] == "{", let close = units[index...].firstIndex(of: "}") {
+                    index = units.index(after: close)
+                }
+            } else if !Self.layoutCommands.contains(name) {
+                symbols += 1
+            }
+        }
     }
 }

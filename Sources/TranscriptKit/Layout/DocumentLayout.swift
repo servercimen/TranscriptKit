@@ -705,11 +705,11 @@ public final class DocumentLayout: @unchecked Sendable {
             }
             return
         }
-        // No picture: a chip with the alt text.
+        // No picture: a chip with the alt text, or for a formula being drawn, nothing.
+        guard let label = attachment.label else { return }
         context.setFillColor(background)
         context.addPath(CGPath(roundedRect: rect.insetBy(dx: 0, dy: 1), cornerWidth: 5, cornerHeight: 5, transform: nil))
         context.fillPath()
-        guard let label = attachment.label else { return }
         var ascent: CGFloat = 0
         var descent: CGFloat = 0
         CTLineGetTypographicBounds(label, &ascent, &descent, nil)

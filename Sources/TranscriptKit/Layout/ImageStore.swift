@@ -10,6 +10,8 @@ import Foundation
 final class TranscriptImageStore: @unchecked Sendable {
     typealias Loader = @Sendable (TranscriptImage) async -> CGImage?
 
+    /// Counts the loads, formulas and highlights in flight.
+    let work: PendingWork
     private let lock = NSLock()
     private var pictures: [String: CGImage] = [:]
     private var requested: Set<String> = []
@@ -38,15 +40,19 @@ final class TranscriptImageStore: @unchecked Sendable {
     /// - Parameters:
     ///   - mathCache: where drawn formulas are kept. A store has a cache of
     ///     its own unless it is given one that views share.
+    ///   - work: counts the loads, formulas and highlights in flight, and
+    ///     each change until `onChange` has run for it.
     ///   - deliver: runs `onChange`.
     ///   - settle: runs its work once the LaTeX of a formula that the
     ///     renderer could not draw may have stopped changing.
     init(mathCache: TranscriptMathCache = TranscriptMathCache(),
+         work: PendingWork = PendingWork(),
          deliver: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) },
          settle: @escaping @Sendable (@escaping @Sendable () -> Void) -> Void = {
              DispatchQueue.global().asyncAfter(deadline: .now() + 1, execute: $0)
          }) {
         self.mathCache = mathCache
+        self.work = work
         self.deliver = deliver
         self.settle = settle
         mathCache.add(self)
@@ -68,7 +74,8 @@ final class TranscriptImageStore: @unchecked Sendable {
 
     /// Sets what to call on the main queue when pictures, colors or formulas
     /// arrive. Those that arrive before it runs share one call, so that the
-    /// view lays out once for them.
+    /// view lays out once for them. Work that the call starts must begin on
+    /// `work` before it returns.
     func setOnChange(_ onChange: (@Sendable () -> Void)?) {
         lock.withLock { self.onChange = onChange }
     }
@@ -113,9 +120,12 @@ final class TranscriptImageStore: @unchecked Sendable {
 
     private func highlight(_ block: String, text: String, language: String?, with highlighter: @escaping TranscriptCodeHighlighter,
                            generation: Int) {
+        let work = work
+        work.begin()
         Task.detached { [weak self] in
             let marks = await highlighter(text, language)
             self?.finishHighlight(block, text: text, language: language, marks: marks, generation: generation)
+            work.end()
         }
     }
 
@@ -294,8 +304,11 @@ final class TranscriptImageStore: @unchecked Sendable {
 
     private func draw(_ key: TranscriptMathCache.Key, in slot: MathSlot, with renderer: @escaping TranscriptMathRenderer,
                       cache: TranscriptMathCache, generation: Int) {
+        let work = work
+        work.begin()
         cache.draw(key, with: renderer) { [weak self] result in
             self?.finishFormula(key, in: slot, result, generation: generation)
+            work.end()
         }
     }
 
@@ -337,7 +350,12 @@ final class TranscriptImageStore: @unchecked Sendable {
             draw(waiting, in: slot, with: renderer, cache: cache, generation: generation)
         }
         if failed {
-            settle { [weak self] in self?.settleFailure(key, in: slot, generation: generation) }
+            let work = work
+            work.begin()
+            settle { [weak self] in
+                self?.settleFailure(key, in: slot, generation: generation)
+                work.end()
+            }
         }
         if changed { notifyChange() }
     }
@@ -368,9 +386,12 @@ final class TranscriptImageStore: @unchecked Sendable {
             return (nil, loader, self.generation)
         }
         if let load {
+            let work = work
+            work.begin()
             Task.detached { [weak self] in
                 let box = PictureBox(picture: await load(image))
                 self?.finish(image.source, box, generation: generation)
+                work.end()
             }
         }
         return picture
@@ -395,7 +416,10 @@ final class TranscriptImageStore: @unchecked Sendable {
             return true
         }
         guard schedule else { return }
+        let work = work
+        work.begin()
         deliver { [weak self] in
+            defer { work.end() }
             guard let self else { return }
             let handler = lock.withLock {
                 changeScheduled = false

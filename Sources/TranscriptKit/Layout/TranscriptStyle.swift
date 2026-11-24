@@ -9,6 +9,26 @@ public enum TranscriptTextAlignment: Hashable, Sendable {
     case trailing
 }
 
+/// How a list item's number is written; see `TranscriptStyle.listNumberFormat`.
+public enum TranscriptListNumberFormat: Hashable, Sendable {
+    /// The number, then "." or ")" as the Markdown wrote it.
+    case asWritten
+    /// The number between `prefix` and `suffix`, such as "(" and ")".
+    case custom(prefix: String, suffix: String)
+
+    /// The number, then ".", whatever the Markdown wrote.
+    public static let period = custom(prefix: "", suffix: ".")
+    /// The number, then ")", whatever the Markdown wrote.
+    public static let parenthesis = custom(prefix: "", suffix: ")")
+
+    /// The text of the marker that the Markdown wrote as `written`, such as "3.".
+    func text(for written: String) -> String {
+        guard case .custom(let prefix, let suffix) = self else { return written }
+        let number = written.prefix { $0.isASCII && $0.isNumber }
+        return prefix + number + suffix
+    }
+}
+
 /// Typography and spacing for a transcript.
 public struct TranscriptStyle: Equatable, Sendable {
     /// The font of paragraphs, list items, quotes and tables. Nil uses the
@@ -46,11 +66,60 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// The color of links and their underlines. A custom tag's color wins over it.
     public var linkColor = TranscriptColor(red: 0, green: 0.478, blue: 1)
     /// Behind code blocks, table headers and image placeholders. Nil uses the
-    /// system's secondary fill color.
+    /// system's secondary fill color. `tableHeaderBackgroundColor` wins over
+    /// it for table headers.
     public var codeBackgroundColor: TranscriptColor?
     /// Quote bars, thematic breaks and table lines. Nil uses the system's
-    /// tertiary label color.
+    /// tertiary label color. `quoteBarColor` wins over it for quote bars.
     public var accentColor: TranscriptColor?
+
+    /// How the numbers of ordered list items are written.
+    public var listNumberFormat: TranscriptListNumberFormat = .asWritten
+    /// The weight of the numbers of ordered list items, from -1 to 1 as
+    /// `TranscriptFont.weight`. Nil uses the weight of the body text. A named
+    /// body font has its own weight: a weight of 0.3 or more uses its bold
+    /// face, and a lower weight uses the font as it is.
+    public var listNumberWeight: CGFloat?
+    /// The color of the numbers of ordered list items. Nil uses the text
+    /// color, or `quoteTextColor` in a block quote.
+    public var listNumberColor: TranscriptColor?
+    /// The bullets of unordered list items: the first for level 1, the
+    /// second for level 2, and so on. Levels past the end use the last one.
+    /// Empty uses "•", "◦" and "▪".
+    public var bullets: [String] = TranscriptStyle.defaultBullets
+    /// The colors of the bullets, by level as `bullets`. Empty uses the text
+    /// color, or `quoteTextColor` in a block quote.
+    public var bulletColors: [TranscriptColor] = []
+    /// The fill of a task box that is checked. Nil uses a system-like blue.
+    public var taskCheckedColor: TranscriptColor?
+    /// The check mark in a task box that is checked. Nil uses white.
+    public var taskCheckmarkColor: TranscriptColor?
+    /// The outline of a task box that is not checked. Nil uses the text color,
+    /// or `quoteTextColor` in a block quote, at 45% opacity.
+    public var taskUncheckedColor: TranscriptColor?
+    /// The color of the bar at the left of a block quote. Nil uses
+    /// `accentColor`.
+    public var quoteBarColor: TranscriptColor?
+    /// The width of the bar at the left of a block quote. Keep it less than
+    /// `quoteIndent`, or the bar covers the text.
+    public var quoteBarWidth: CGFloat = 3
+    /// The color of the text in block quotes. Nil uses the text color. Links,
+    /// code colors and custom tags' colors win over it.
+    public var quoteTextColor: TranscriptColor?
+    /// The fill behind inline code. Nil draws no fill. A custom tag's
+    /// highlight wins over it.
+    public var inlineCodeBackgroundColor: TranscriptColor?
+    /// The corner radius of the fill behind inline code.
+    public var inlineCodeCornerRadius: CGFloat = 4
+    /// The fill behind the header row of a table. Nil uses
+    /// `codeBackgroundColor`.
+    public var tableHeaderBackgroundColor: TranscriptColor?
+    /// The weight of the text in the header row of a table, from -1 to 1 as
+    /// `TranscriptFont.weight`. Nil uses the bold body font. A named body font
+    /// has its own weight: a weight of 0.3 or more uses its bold face, and a
+    /// lower weight uses the font as it is. Inline code in the header row uses
+    /// its bold face at a weight of 0.3 or more.
+    public var tableHeaderWeight: CGFloat?
 
     public init() {}
 
@@ -75,6 +144,22 @@ public struct TranscriptStyle: Equatable, Sendable {
         }
     }
 
+    /// The color of text inside `containers`, outermost first: the quote text
+    /// color when one of them is a block quote, or else nil for the text color.
+    func textColor<Containers: Collection>(inside containers: Containers) -> TranscriptColor?
+        where Containers.Element == TranscriptBlock.Container {
+        containers.contains(.quote) ? quoteTextColor : nil
+    }
+
+    static let defaultBullets = ["•", "◦", "▪"]
+
+    /// The bullet of a list item at `level`, from 1, and its color.
+    func bullet(at level: Int) -> (text: String, color: TranscriptColor?) {
+        let shapes = bullets.isEmpty ? Self.defaultBullets : bullets
+        let color = bulletColors.isEmpty ? nil : bulletColors[min(max(level, 1), bulletColors.count) - 1]
+        return (shapes[min(max(level, 1), shapes.count) - 1], color)
+    }
+
     /// Where the block's own box starts: after the indents of its containers.
     func contentLeading(for containers: [TranscriptBlock.Container]) -> CGFloat {
         containers.reduce(0) { $0 + width(of: $1) }
@@ -97,6 +182,7 @@ public struct TranscriptStyle: Equatable, Sendable {
             var role: Int
             var size: CGFloat
             var traits: Int
+            var weight: CGFloat?
             var font: TranscriptFont?
             var code: TranscriptFont?
         }
@@ -118,17 +204,24 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// The traits that change the font; the others are drawn.
     private static let fontTraits: InlineSpan.Traits = [.bold, .italic, .code]
 
-    func font(for kind: TranscriptBlock.Kind, traits: InlineSpan.Traits = []) -> CTFont {
+    /// - Parameter weight: for body text, a weight as `TranscriptFont.weight`
+    ///   instead of the body font's own.
+    func font(for kind: TranscriptBlock.Kind, traits: InlineSpan.Traits = [], weight: CGFloat? = nil) -> CTFont {
         let traits = traits.intersection(Self.fontTraits)
+        var weight = weight
         let role: Int
         switch kind {
         case .paragraph, .rule, .table: role = 0
-        case .heading(let level): role = min(max(level, 1), 6)
-        case .code: role = 7
+        case .heading(let level):
+            role = min(max(level, 1), 6)
+            weight = nil
+        case .code:
+            role = 7
+            weight = nil
         }
-        let key = FontCache.Key(role: role, size: bodySize, traits: traits.rawValue, font: customFont(for: kind),
+        let key = FontCache.Key(role: role, size: bodySize, traits: traits.rawValue, weight: weight, font: customFont(for: kind),
                                 code: traits.contains(.code) ? codeFont : nil)
-        return Self.fontCache.font(for: key) { makeFont(for: kind, traits: traits) }
+        return Self.fontCache.font(for: key) { makeFont(for: kind, traits: traits, weight: weight) }
     }
 
     /// The font the app set for this kind of text, if any.
@@ -150,9 +243,21 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// The size of body text: the body font's, or `bodySize`.
     var effectiveBodySize: CGFloat { bodyFont?.size ?? bodySize }
 
-    private func makeFont(for kind: TranscriptBlock.Kind, traits: InlineSpan.Traits) -> CTFont {
+    private func makeFont(for kind: TranscriptBlock.Kind, traits: InlineSpan.Traits, weight: CGFloat?) -> CTFont {
         var font: CTFont
-        if let custom = customFont(for: kind) {
+        var traits = traits
+        if let weight {
+            if let custom = customFont(for: kind), custom.name != nil {
+                font = custom.makeFont()
+                if weight >= 0.3 { traits.insert(.bold) }
+            } else {
+                var custom = customFont(for: kind) ?? TranscriptFont(size: bodySize)
+                custom.weight = weight
+                font = custom.makeFont()
+                // The code font below replaces this font and its weight.
+                if weight >= 0.3, traits.contains(.code) { traits.insert(.bold) }
+            }
+        } else if let custom = customFont(for: kind) {
             font = custom.makeFont()
         } else {
             switch kind {
@@ -191,11 +296,13 @@ public struct TranscriptStyle: Equatable, Sendable {
     /// resolved for light or dark when drawn, by `DocumentLayout`.
     static let foregroundKey = NSAttributedString.Key("TranscriptKit.foreground")
     static let backgroundKey = NSAttributedString.Key("TranscriptKit.background")
+    /// The fill behind inline code, a `TranscriptColor`, drawn like a highlight.
+    static let inlineCodeBackgroundKey = NSAttributedString.Key("TranscriptKit.inlineCodeBackground")
     private static let kernKey = NSAttributedString.Key(kCTKernAttributeName as String)
 
-    func attributes(for kind: TranscriptBlock.Kind) -> [NSAttributedString.Key: Any] {
+    func attributes(for kind: TranscriptBlock.Kind, weight: CGFloat? = nil) -> [NSAttributedString.Key: Any] {
         var attributes: [NSAttributedString.Key: Any] = [
-            Self.fontKey: font(for: kind),
+            Self.fontKey: font(for: kind, weight: weight),
             // Text takes the context's fill color, so the view controls light/dark.
             Self.colorFromContextKey: true,
         ]
@@ -209,17 +316,19 @@ public struct TranscriptStyle: Equatable, Sendable {
         attributedString(for: block, range: start..<block.utf16Count, images: images, definitions: definitions, kerns: kerns)
     }
 
-    /// The styled text of `range` of `block`, with `extraTraits` added to all of it.
+    /// The styled text of `range` of `block`, with `extraTraits` added to all
+    /// of it, and in `weight` (as `TranscriptFont.weight`) if it is body text.
     /// A reference link is styled as a link once `definitions` has its label.
     /// `kerns` is extra advance after characters, by block offset: room for
     /// custom tags' padding (see `DecoratedTags`).
-    func attributedString(for block: TranscriptBlock, range: Range<Int>, extraTraits: InlineSpan.Traits = [],
+    func attributedString(for block: TranscriptBlock, range: Range<Int>, extraTraits: InlineSpan.Traits = [], weight: CGFloat? = nil,
                           images: ImageSizing? = nil, definitions: [String: String] = [:],
                           kerns: [Int: CGFloat] = [:]) -> NSAttributedString {
         let start = range.lowerBound
         let text = range == 0..<block.utf16Count ? block.text : (block.text as NSString).substring(with: NSRange(location: start, length: range.count))
-        var base = attributes(for: block.kind)
-        if !extraTraits.isEmpty { base[Self.fontKey] = font(for: block.kind, traits: extraTraits) }
+        var base = attributes(for: block.kind, weight: weight)
+        if !extraTraits.isEmpty { base[Self.fontKey] = font(for: block.kind, traits: extraTraits, weight: weight) }
+        if let color = textColor(inside: block.containers) { base[Self.foregroundKey] = color }
         let result = NSMutableAttributedString(string: text, attributes: base)
         let length = result.length
         if case .code(let language) = block.kind, let store = images?.store {
@@ -274,7 +383,7 @@ public struct TranscriptStyle: Equatable, Sendable {
             }
             let range = NSRange(location: lower, length: upper - lower)
             if !traits.intersection(Self.fontTraits).isEmpty {
-                result.addAttribute(Self.fontKey, value: font(for: block.kind, traits: traits), range: range)
+                result.addAttribute(Self.fontKey, value: font(for: block.kind, traits: traits, weight: weight), range: range)
             }
             if traits.contains(.strikethrough) { result.addAttribute(Self.strikethroughKey, value: true, range: range) }
             if traits.contains(.underline) { result.addAttribute(Self.underlineKey, value: true, range: range) }
@@ -285,7 +394,11 @@ public struct TranscriptStyle: Equatable, Sendable {
                 // Resolved for light or dark when drawn, like a tag's color.
                 result.addAttribute(Self.foregroundKey, value: linkColor, range: range)
             }
-            if let background { result.addAttribute(Self.backgroundKey, value: background, range: range) }
+            if let background {
+                result.addAttribute(Self.backgroundKey, value: background, range: range)
+            } else if traits.contains(.code), let fill = inlineCodeBackgroundColor {
+                result.addAttribute(Self.inlineCodeBackgroundKey, value: fill, range: range)
+            }
             if image != nil || math != nil, range.length == 1 {
                 let font = result.attribute(Self.fontKey, at: lower, effectiveRange: nil).map { $0 as! CTFont } ?? self.font(for: block.kind)
                 let attachment = math.map { math -> ImageAttachment in

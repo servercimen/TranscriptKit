@@ -365,8 +365,11 @@ final class BlockLayout: @unchecked Sendable {
 
         typealias Cell = (text: NSAttributedString, typesetter: CTTypesetter, range: Range<Int>)
         func makeCells(_ row: Int) -> [Cell] {
-            model.rows[row].prefix(columns).map { range in
-                let text = style.attributedString(for: block, range: range, extraTraits: row == 0 ? .bold : [], images: sizing,
+            let header = row == 0
+            let weight = header ? style.tableHeaderWeight : nil
+            let traits: InlineSpan.Traits = header && weight == nil ? .bold : []
+            return model.rows[row].prefix(columns).map { range in
+                let text = style.attributedString(for: block, range: range, extraTraits: traits, weight: weight, images: sizing,
                                                   definitions: definitions, kerns: decorated?.kerns ?? [:])
                 return (text, CTTypesetterCreateWithAttributedString(text), range)
             }
@@ -519,6 +522,7 @@ final class BlockLayout: @unchecked Sendable {
         guard let kind = block.marker, let firstLine, let item = block.containers.lastIndex(of: .listItem) else { return nil }
         // The marker sits in the gutter of the innermost list item.
         let gutterEnd = style.contentLeading(for: Array(block.containers[...item]))
+        let quoteColor = style.textColor(inside: block.containers[..<item])
         let font = style.font(for: .paragraph)
         switch kind {
         case .task(let checked):
@@ -527,13 +531,18 @@ final class BlockLayout: @unchecked Sendable {
             return .checkbox(CGRect(x: gutterEnd - side - 6, y: (middle - side / 2).rounded(), width: side, height: side), checked: checked)
         case .bullet, .number:
             let text: String
+            var attributes: [NSAttributedString.Key: Any]
             if case .number(let number) = kind {
-                text = number
+                text = style.listNumberFormat.text(for: number)
+                attributes = style.attributes(for: .paragraph, weight: style.listNumberWeight)
+                if let color = style.listNumberColor ?? quoteColor { attributes[TranscriptStyle.foregroundKey] = color }
             } else {
-                let depth = block.listLevel
-                text = depth <= 1 ? "•" : (depth == 2 ? "◦" : "▪")
+                let bullet = style.bullet(at: block.listLevel)
+                text = bullet.text
+                attributes = style.attributes(for: .paragraph)
+                if let color = bullet.color ?? quoteColor { attributes[TranscriptStyle.foregroundKey] = color }
             }
-            let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: style.attributes(for: .paragraph)))
+            let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
             let markerWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
             return .text(line, origin: CGPoint(x: max(gutterEnd - markerWidth - 7, 0), y: firstLine.baseline))
         }

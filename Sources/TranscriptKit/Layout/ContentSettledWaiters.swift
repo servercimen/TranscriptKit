@@ -37,9 +37,9 @@ final class ContentSettledWaiters {
                 if waiters.count == 1 { watchWork(true) }
                 check()
             }
-        } onCancel: { [weak self] in
+        } onCancel: { [self] in
             DispatchQueue.main.async {
-                MainActor.assumeIsolated { self?.resume(id) }
+                MainActor.assumeIsolated { self.resume(id) }
             }
         }
     }

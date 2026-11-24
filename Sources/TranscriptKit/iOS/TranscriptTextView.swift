@@ -7,6 +7,9 @@ import UIKit
 private let animationLog = Logger(subsystem: "TranscriptKit", category: "TagAnimations")
 /// Each tag animation as an interval in Instruments' Points of Interest.
 private let animationSignposter = OSSignposter(subsystem: "TranscriptKit", category: .pointsOfInterest)
+/// Each replaced document that is laid out on the main thread, as an
+/// interval in Instruments' Points of Interest.
+private let replacementSignposter = OSSignposter(subsystem: "TranscriptKit", category: .pointsOfInterest)
 
 /// A read-only text view that draws a whole transcript with Core Text and
 /// exposes it to the system as one selectable document.
@@ -17,6 +20,8 @@ private let animationSignposter = OSSignposter(subsystem: "TranscriptKit", categ
 /// Layout happens on a background queue. The view keeps showing, and
 /// answering selection queries from, the last layout it installed until the
 /// next one is ready, so text positions always match what is on screen.
+/// With `replacementCrossfadeDuration`, a replaced document is laid out on
+/// the main thread instead.
 ///
 /// Text is drawn into tiles on the main thread, except while it is being
 /// appended: the end of the document is then drawn on the layout queue into
@@ -50,8 +55,11 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         set {
             let replacesStream = stream != nil
             guard replacesStream || newValue != directDocument else { return }
+            let update = DocumentUpdate.choose(replacing: document, with: newValue, isLaidOut: installed != nil && bounds.width > 0,
+                                               crossfade: replacementCrossfadeDuration)
             directDocument = newValue
             directSequence += 1
+            laysOutDirectDocumentNow = update != .background
             if replacesStream {
                 // Detaching submits `directDocument`, now the new one. Only
                 // one document goes to the engine: an earlier one in between
@@ -59,11 +67,38 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
                 // what the stream's text grew into.
                 stream = nil
             } else {
-                engine.submit(.init(document: newValue, source: source, sequence: directSequence, isFinished: true))
+                engine.submit(.init(document: newValue, source: source, sequence: directSequence, isFinished: true),
+                              schedulesLayout: !laysOutDirectDocumentNow)
             }
-            layOutNowIfNothingIsShown()
+            laysOutDirectDocumentNow = false
+            if case .now(let crossfade) = update {
+                replaceNow(crossfade: crossfade)
+            } else {
+                layOutNowIfNothingIsShown()
+            }
         }
     }
+
+    /// How long a replaced document takes to crossfade from the old text,
+    /// or nil to lay it out in the background, as every other update (the
+    /// default).
+    ///
+    /// With a duration, the view lays out a new `document` on the main
+    /// thread at once when it does not add to the one before (see
+    /// `TranscriptDocument.extends(_:)`). `sizeThatFits(_:)` and
+    /// `intrinsicContentSize` then give the new height in the same update.
+    /// The old drawing crossfades to the new one, as
+    /// `UIView.transition(with:duration:options:animations:)` does with
+    /// `.transitionCrossDissolve`. Zero shows the new text at once.
+    ///
+    /// Text that only grows, and the updates of a `stream`, keep the
+    /// background path. A crossfade has no motion, so it also plays with
+    /// Reduce Motion.
+    public var replacementCrossfadeDuration: TimeInterval?
+
+    /// The document setter lays out the direct document now, so the engine
+    /// must not lay it out first.
+    private var laysOutDirectDocumentNow = false
 
     /// A stream to show. The view then takes each update from the stream
     /// directly, in the background, without the app or SwiftUI setting `document`.
@@ -74,7 +109,8 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
             sinkID = nil
             source += 1
             guard let stream else {
-                engine.submit(.init(document: directDocument, source: source, sequence: directSequence, isFinished: true))
+                engine.submit(.init(document: directDocument, source: source, sequence: directSequence, isFinished: true),
+                              schedulesLayout: !laysOutDirectDocumentNow)
                 return
             }
             let engine = engine
@@ -762,6 +798,24 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
 
     private func layOutNowIfNothingIsShown() {
         if installed == nil { relayoutNow() }
+    }
+
+    /// Lays out a replaced document now (see `replacementCrossfadeDuration`),
+    /// and crossfades to it from the old drawing.
+    private func replaceNow(crossfade duration: TimeInterval) {
+        let shown = installed
+        let signpost = replacementSignposter.beginInterval("Replace document")
+        relayoutNow()
+        replacementSignposter.endInterval("Replace document", signpost)
+        guard installed !== shown, duration > 0, window != nil, UIView.areAnimationsEnabled else { return }
+        // The render server fades from the canvas as the last commit showed
+        // it to the canvas as this commit shows it, with the tiles that the
+        // new layout draws in this commit.
+        let transition = CATransition()
+        transition.type = .fade
+        transition.duration = duration
+        transition.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+        canvas.layer.add(transition, forKey: "replacement")
     }
 
     /// Puts `layout` on screen.

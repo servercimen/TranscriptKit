@@ -529,8 +529,8 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
     /// Marks the parts of existing tiles between those y's for drawing. Tiles
     /// made later draw everything anyway.
     private func redrawTiles(in range: ClosedRange<CGFloat>) {
-        for (index, tile) in tiles {
-            let minY = CGFloat(index) * tileHeight
+        for tile in tiles.values {
+            let minY = tile.frame.minY
             let top = max(range.lowerBound - minY - 2, 0)
             let bottom = min(range.upperBound - minY + 2, tile.bounds.height)
             if top < bottom {
@@ -564,9 +564,8 @@ public final class TranscriptTextView: UIView, UITextInput, UIGestureRecognizerD
         for index in first...last {
             // Wider than the view: tags' shapes may draw past the text column.
             let side = TranscriptPath.maximumSideOverhang
-            let frame = CGRect(x: -side, y: CGFloat(index) * tileHeight, width: bounds.width + 2 * side,
-                               height: TileGrid.tileHeight(at: index, viewHeight: bounds.height,
-                                                          glyphBottom: currentLayout.glyphBottom))
+            let rows = TileGrid.tileFrame(at: index, viewHeight: bounds.height, glyphBottom: currentLayout.glyphBottom)
+            let frame = CGRect(x: -side, y: rows.top, width: bounds.width + 2 * side, height: rows.height)
             if let tile = tiles[index] {
                 if tile.frame != frame {
                     tile.frame = frame

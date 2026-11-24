@@ -136,8 +136,8 @@ TranscriptTag("chip") { attributes in
 ```
 
 Tags the app doesn't define show as written. For a shape of your own, implement `TranscriptShapeRecipe`. It returns
-paths for each line the tag's text is on and may draw a little outside the text, up to 12 points to the sides,
-past the view's edges. The chat sample has two such shapes, `Zigzag` and `SoftUnderline`, in
+paths for each line the tag's text is on and may draw a little outside the text, up to 12 points to the sides
+and 6 points above and below the line, past the view's edges. The chat sample has two such shapes, `Zigzag` and `SoftUnderline`, in
 [`SampleTags.swift`](Examples/ChatSample/ChatSample/SampleTags.swift).
 
 An app can also build a tagged document without the parser. Give the span an `InlineSpan.CustomTag`, made from a

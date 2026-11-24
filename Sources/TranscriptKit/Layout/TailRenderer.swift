@@ -132,7 +132,7 @@ final class TailRenderer {
             var newTop = Self.lastLineTop(of: layout, scale: scale)
             if let fadingTop {
                 let fits = ((layout.height - Self.height + Self.margin) * scale).rounded(.up) / scale
-                newTop = min(newTop, max((max(fadingTop, 0) * scale).rounded(.down) / scale, fits))
+                newTop = min(newTop, max((max(fadingTop, -TranscriptPath.maximumOverhang) * scale).rounded(.down) / scale, fits))
             }
             currentTop = newTop
             start = currentTop
@@ -255,7 +255,8 @@ final class TailRenderer {
             // A table grows by its last row, grid and all.
             lineTop = entry.y + table.rowY[table.rowY.count - 2] - BlockLayout.Table.changeMargin
         }
-        return (max(0, lineTop) * scale).rounded(.down) / scale
+        // Shapes may reach above the first line, as far as the first tile does.
+        return (max(-TranscriptPath.maximumOverhang, lineTop) * scale).rounded(.down) / scale
     }
 
     /// The pixels the tail currently holds, for tests.

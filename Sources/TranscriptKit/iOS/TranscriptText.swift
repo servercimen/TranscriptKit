@@ -112,17 +112,21 @@ public struct TranscriptText: UIViewRepresentable {
     }
 
     /// Lays out a document that replaces the one before at once, so that
-    /// SwiftUI gets its new height in the same update, and crossfades from
+    /// SwiftUI gets its new height in the same update. In an update with an
+    /// animation, for example in `withAnimation`, the view crossfades from
     /// the old text to the new one; see
-    /// `TranscriptTextView.replacementCrossfadeDuration`. A document that
-    /// only adds text to the one before is laid out in the background, as
-    /// before. That includes a text that starts with the old one, parsed
-    /// with the same `idPrefix`, and the first text after an empty
-    /// document. Off by default.
+    /// `TranscriptTextView.replacementCrossfadeDuration`. In an update
+    /// without an animation, the new text shows at once, as a `Text` does.
+    /// A document that only adds text to the one before is laid out in the
+    /// background, as before. That includes a text that starts with the old
+    /// one, parsed with the same `idPrefix`, and the first text after an
+    /// empty document. Off by default.
     ///
     /// ```swift
     /// TranscriptText(showsSummary ? summary : details)
     ///     .crossfadesReplacedText(duration: 0.25)
+    ///
+    /// withAnimation { showsSummary.toggle() }
     /// ```
     public func crossfadesReplacedText(_ crossfades: Bool = true, duration: TimeInterval = 0.25) -> TranscriptText {
         var copy = self
@@ -234,7 +238,9 @@ public struct TranscriptText: UIViewRepresentable {
         view.animatesTags = animatesTags
         view.animatesTagsInFirstText = animatesFirstText
         view.textFadeInDuration = textFadeInDuration
-        view.replacementCrossfadeDuration = replacementCrossfadeDuration
+        // Zero still lays out a replaced document at once, so SwiftUI gets the new height in this update.
+        let animates = context.transaction.animation != nil && !context.transaction.disablesAnimations
+        view.replacementCrossfadeDuration = replacementCrossfadeDuration.map { animates ? $0 : 0 }
         view.tagAnimationTiming = animationTiming
         view.isSelectable = isSelectable
         view.showsWritingTools = showsWritingTools

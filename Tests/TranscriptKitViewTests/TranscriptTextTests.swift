@@ -40,6 +40,35 @@ private func isAsTallAsItsText(_ view: TranscriptTextView) -> Bool {
     view.bounds.height == fittingHeight(of: view)
 }
 
+/// Whether a crossfade plays in `view` or in a view inside it.
+@MainActor
+private func isCrossfading(_ view: UIView) -> Bool {
+    view.layer.animation(forKey: kCATransition) != nil || view.subviews.contains { isCrossfading($0) }
+}
+
+private let shortText = MarkdownStreamParser.document(from: "A short text.", idPrefix: "short")
+private let longText = MarkdownStreamParser.document(from: longParagraph, idPrefix: "long")
+
+@MainActor @Observable
+private final class Swap {
+    var showsLong = false
+    var showsWritingTools = true
+}
+
+/// A text that crossfades when `swap` replaces it.
+private struct SwapView: View {
+    let swap: Swap
+
+    var body: some View {
+        VStack {
+            TranscriptText(swap.showsLong ? longText : shortText)
+                .crossfadesReplacedText(duration: 0.25)
+                .showsWritingTools(swap.showsWritingTools)
+            Spacer()
+        }
+    }
+}
+
 @Suite(.serialized, .timeLimit(.minutes(1))) @MainActor
 struct TranscriptTextTests {
     /// A window of a fixed size, so that no test depends on the screen. Each
@@ -111,6 +140,53 @@ struct TranscriptTextTests {
         let cut = DocumentLayout(document: document, width: view.bounds.width, style: view.style)
         #expect(view.bounds.height == ceil(cut.height))
         #expect(cut.height < DocumentLayout(document: document, width: view.bounds.width).height)
+    }
+
+    /// Shows the short text of `swap`, and returns the root and the text view once the text is on screen.
+    private func showSwap(_ swap: Swap) async throws -> (UIView, TranscriptTextView) {
+        let root = show(SwapView(swap: swap))
+        await waitUntil(root) { placedTextViews(in: root).count == 1 }
+        let view = try #require(placedTextViews(in: root).first)
+        await view.contentSettled()
+        return (root, view)
+    }
+
+    @Test func aReplacementWithoutAnimationShowsAtOnce() async throws {
+        let swap = Swap()
+        let (root, view) = try await showSwap(swap)
+        let before = fittingHeight(of: view)
+
+        swap.showsLong = true
+        root.layoutIfNeeded()
+        try #require(view.document == longText)
+        #expect(fittingHeight(of: view) > before)
+        #expect(!isCrossfading(view))
+    }
+
+    @Test func aReplacementInAnAnimationCrossfades() async throws {
+        let swap = Swap()
+        let (root, view) = try await showSwap(swap)
+        let before = fittingHeight(of: view)
+
+        withAnimation(.easeInOut(duration: 0.25)) { swap.showsLong = true }
+        root.layoutIfNeeded()
+        try #require(view.document == longText)
+        #expect(fittingHeight(of: view) > before)
+        #expect(isCrossfading(view))
+    }
+
+    @Test func anUpdateWithoutAnimationLetsACrossfadeEnd() async throws {
+        let swap = Swap()
+        let (root, view) = try await showSwap(swap)
+
+        withAnimation(.easeInOut(duration: 0.25)) { swap.showsLong = true }
+        root.layoutIfNeeded()
+        try #require(isCrossfading(view))
+
+        swap.showsWritingTools = false
+        root.layoutIfNeeded()
+        try #require(!view.showsWritingTools)
+        #expect(isCrossfading(view))
     }
 }
 #endif

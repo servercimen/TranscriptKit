@@ -280,15 +280,19 @@ another, for example a summary for its details, can lay out the new text at once
 ```swift
 TranscriptText(showsSummary ? summary : details)
     .crossfadesReplacedText(duration: 0.25)
+
+withAnimation { showsSummary.toggle() }
 ```
 
 The view then lays out the new document on the main thread in the same SwiftUI update, so SwiftUI gets the new
-height at once. The old drawing crossfades to the new one, as a `UITextView` does in a `.transitionCrossDissolve`
-transition. While the crossfade plays, the drawing is clipped to the view's bounds and the space that tags' shapes
-may draw in, so the old text does not show below a view that got shorter. A duration of zero shows the new text at
-once. A document that only adds text to the one before (the same blocks with more text, or more blocks) still goes
-to the background, and so do the updates of a stream. The crossfade has no motion, so it also plays with Reduce
-Motion. In UIKit, set `replacementCrossfadeDuration` on `TranscriptTextView`.
+height at once. In an update with an animation, the old drawing crossfades to the new one, as a `UITextView` does in
+a `.transitionCrossDissolve` transition. In an update without an animation, the new text shows at once, as a `Text`
+does, so a text that a binding replaces while the person types does not fade. While the crossfade plays, the drawing
+is clipped to the view's bounds and the space that tags' shapes may draw in, so the old text does not show below a
+view that got shorter. A duration of zero shows the new text at once. A document that only adds text to the one
+before (the same blocks with more text, or more blocks) still goes to the background, and so do the updates of a
+stream. The crossfade has no motion, so it also plays with Reduce Motion. In UIKit, set
+`replacementCrossfadeDuration` on `TranscriptTextView`.
 
 Block ids decide what adds to the text. A summary that is the start of its details, parsed with the same id prefix,
 gives the details the ids of the summary's blocks, so the switch to the details only adds text: it goes to the

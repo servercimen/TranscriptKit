@@ -219,8 +219,9 @@ enum Sample {
 
 /// Launch with `-replacementCheck` to replace the text of a card every two
 /// seconds, with a short text and a long one in turn. Add `-crossfade` to lay
-/// out each new text at once and crossfade to it. Add `-animatedSwap` to
-/// swap inside `withAnimation`, so that the card's height animates. Each swap
+/// out each new text at once. Add `-animatedSwap` to swap inside
+/// `withAnimation`, so that the card's height animates and, with
+/// `-crossfade`, the text crossfades. Each swap
 /// logs when it happened, and each change of the card's height logs when
 /// SwiftUI saw it.
 struct ReplacementCheckView: View {
@@ -233,7 +234,8 @@ struct ReplacementCheckView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                Text(crossfades ? "Crossfade, laid out at once" : "Laid out in the background")
+                Text(crossfades ? (animatesSwap ? "Crossfade, laid out at once" : "Laid out at once")
+                    : "Laid out in the background")
                     .font(.footnote.monospaced())
                     .padding(.bottom, 8)
                 TranscriptText(MarkdownStreamParser.document(from: showsLong ? Self.long : Self.short))

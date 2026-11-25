@@ -195,7 +195,7 @@ private func offset(of string: String, in text: NSAttributedString) -> Int {
     #expect(plain.contains(.traitMonoSpace))
     #expect(plain.isDisjoint(with: [.traitBold, .traitItalic]))
     for at in ["bold code", "italic code", "plain code"] {
-        let font = try #require(font(text, at: offset(of: at, in: text)))
-        #expect(!(CTFontCopyPostScriptName(font) as String).hasPrefix("."))
+        let found = try #require(font(text, at: offset(of: at, in: text)))
+        #expect(!(CTFontCopyPostScriptName(found) as String).hasPrefix("."))
     }
 }
